@@ -321,3 +321,55 @@ def update_target_sequences_pickle(
     print(f"[INFO] Sequence dictionary saved to {pkl_path}")
 
     return seq_dict
+
+def uniprot_dict_to_fasta(
+    output_dir: str | Path,
+    pkl_name: str = "target_sequences.pkl",
+    fasta_name: str = "target_sequences.fasta",
+) -> Path:
+    """
+    Load a UniProt sequence dictionary `{uniprot_id: sequence}` from a pickle file
+    and export it to a FASTA file.
+
+    Parameters
+    ----------
+    output_dir : str | Path
+        Directory containing the pickle file.
+    pkl_name : str, optional
+        Name of the pickle file containing the dictionary.
+    fasta_name : str, optional
+        Name of the output FASTA file.
+
+    Returns
+    -------
+    Path
+        Path to the generated FASTA file.
+    """
+    output_dir = Path(output_dir)
+    pkl_path = output_dir / pkl_name
+    fasta_path = output_dir / fasta_name
+
+    if not pkl_path.exists():
+        raise FileNotFoundError(f"Pickle file not found: {pkl_path}")
+
+    # Load the dictionary
+    with pkl_path.open("rb") as f:
+        seq_dict: Dict[str, Optional[str]] = pickle.load(f)
+
+    # Write FASTA
+    with fasta_path.open("w") as f_out:
+        for uniprot_id, seq in seq_dict.items():
+            if seq is None:
+                # You can log or skip silently
+                # print(f"[WARN] Missing sequence for {uniprot_id}, skipping.")
+                continue
+
+            # Standard FASTA header: >uniprot_id
+            f_out.write(f">{uniprot_id}\n")
+
+            # Wrap sequence in 60-char lines (FASTA convention)
+            for i in range(0, len(seq), 60):
+                f_out.write(seq[i:i+60] + "\n")
+
+    print(f"[INFO] FASTA written to {fasta_path}")
+    return fasta_path
