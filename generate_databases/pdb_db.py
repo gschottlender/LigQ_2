@@ -651,29 +651,27 @@ def build_ligand_smiles_table(
 
 def generate_pdb_database(
     temp_dir: str = "temp_data",
-    output_dir: str = "databases",
+    data_dir: str = "databases/pdb",
     pfam_mapping_filename: str = "pdb_pfam_mapping.txt",
 ):
     """
-    Build the final PDB-based database and save it to disk.
+    Build the initial PDB-based database and save it into `data_dir`.
 
     This pipeline:
       1) Downloads interacting_chains_with_ligand_functions.tsv
       2) Loads and filters ligand information
       3) Loads pdb_pfam_mapping.txt
-      4) Processes PDB entries in parallel (binding sites + Pfam + UniProt)
-      5) Builds a canonical ligand → SMILES table (including RCSB fallback for missing)
-      6) Removes entries without SMILES
-      7) Saves the final clean datasets to disk:
-            databases/pdb_binding_data.parquet
-            databases/pdb_ligand_smiles.parquet
-
-    All temporary data is stored under temp_data/.
-    The function returns nothing. Final datasets are written to disk.
+      4) Processes ALL PDB entries (binding sites + Pfam + UniProt)
+      5) Builds ligand→SMILES table
+      6) Saves:
+            data_dir/pdb_binding_data.parquet
+            data_dir/pdb_ligand_smiles.parquet
+            data_dir/pdb_seen_ids.txt   <-- NEW
     """
-    # Ensure required directories exist
+
+    # Ensure directories exist
     os.makedirs(temp_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
 
     pfam_dir = os.path.join(temp_dir, "pfam")
     os.makedirs(pfam_dir, exist_ok=True)
@@ -681,7 +679,9 @@ def generate_pdb_database(
     binding_cache_dir = os.path.join(temp_dir, "pdbe_binding_sites")
     os.makedirs(binding_cache_dir, exist_ok=True)
 
-    # Download interacting_chains_with_ligand_functions.tsv
+    # ------------------------------------------------------------------
+    # 1) Download interacting_chains_with_ligand_functions.tsv
+    # ------------------------------------------------------------------
     interactions_url = (
         "https://ftp.ebi.ac.uk/pub/databases/msd/pdbechem_v2/additional_data/"
         "pdb_ligand_interactions/interacting_chains_with_ligand_functions.tsv"
@@ -690,48 +690,64 @@ def generate_pdb_database(
         temp_dir, "interacting_chains_with_ligand_functions.tsv"
     )
 
-    print("Downloading interacting_chains_with_ligand_functions.tsv ...")
+    print("[INFO] Downloading interacting_chains_with_ligand_functions.tsv ...")
     r = requests.get(interactions_url)
     r.raise_for_status()
-
     with open(interactions_local_path, "wb") as f:
         f.write(r.content)
-    print("Download complete.")
+    print("[INFO] Download complete.")
 
-    # Load TSV (all ligand–chain info)
+    # Load TSV
     ligands_info = pd.read_csv(interactions_local_path, sep="\t", dtype=str)
 
-    # Filter out invalid ligands using the global blacklist
+    # Filter invalid ligands
     global invalid_ligands
     ligands_info = ligands_info[~ligands_info["LigandID"].isin(invalid_ligands)]
 
-    # Load the PDB–Pfam mapping file
-    mapping_path = download_pdb_pfam_mapping(
-        mapping_dir=pfam_dir,
-        filename=pfam_mapping_filename,
+    # ------------------------------------------------------------------
+    # 2) Save SEEN PDB IDs (complete list after filtering)
+    # ------------------------------------------------------------------
+    pdb_ids = (
+        ligands_info["PDBID"]
+        .dropna()
+        .astype(str)
+        .str.lower()
+        .unique()
+        .tolist()
     )
+
+    seen_file = os.path.join(data_dir, "pdb_seen_ids.txt")
+    with open(seen_file, "w") as f:
+        for pdb in sorted(pdb_ids):
+            f.write(pdb + "\n")
+
+    print(f"[INFO] Saved {len(pdb_ids)} seen PDB IDs to {seen_file}")
+
+    # ------------------------------------------------------------------
+    # 3) Load PDB → Pfam mapping
+    # ------------------------------------------------------------------
+    mapping_path = download_pdb_pfam_mapping(pfam_dir, pfam_mapping_filename)
     df_pfam_all = load_pdb_pfam_mapping(mapping_path)
 
-    # Prepare linking table PDB → UniProt
-    ligands_info_small = (
+    # Prepare PDB → UniProt mapping
+    lig_small = (
         ligands_info[["PDBID", "BestUnpAccession"]]
         .dropna()
         .drop_duplicates()
         .rename(columns={"PDBID": "pdb_id", "BestUnpAccession": "uniprot_id"})
     )
-    ligands_info_small["pdb_id"] = ligands_info_small["pdb_id"].str.lower()
+    lig_small["pdb_id"] = lig_small["pdb_id"].str.lower()
 
-    # Target list of PDB IDs (after filtering invalid ligands)
-    pdb_ids = ligands_info["PDBID"].dropna().unique().tolist()
-
-    # Parallel processing of PDB entries
+    # ------------------------------------------------------------------
+    # 4) Parallel processing of ALL PDB IDs
+    # ------------------------------------------------------------------
     chunk_size = 10
     max_workers = os.cpu_count() or 4
 
     chunk_list_full = list(chunk_list(pdb_ids, chunk_size))
     total_chunks = len(chunk_list_full)
 
-    print(f"Processing {total_chunks} chunks using {max_workers} workers...")
+    print(f"[INFO] Processing {total_chunks} chunks using {max_workers} workers...")
 
     results = []
     start_time = time.time()
@@ -742,10 +758,10 @@ def generate_pdb_database(
                 process_pdb_chunk,
                 chunk,
                 invalid_ligands,
-                ligands_info_small,
+                lig_small,
                 df_pfam_all,
                 binding_cache_dir,
-                10.0,  # API timeout for binding sites
+                10.0,
             ): idx
             for idx, chunk in enumerate(chunk_list_full, start=1)
         }
@@ -754,8 +770,8 @@ def generate_pdb_database(
             idx = futures[fut]
 
             elapsed = time.time() - start_time
-            avg_time = elapsed / completed_i
-            eta = avg_time * (total_chunks - completed_i)
+            avg = elapsed / completed_i
+            eta = avg * (total_chunks - completed_i)
 
             try:
                 df_res = fut.result()
@@ -765,46 +781,44 @@ def generate_pdb_database(
                 print(f"[WARN] Chunk {idx} failed: {e!r}")
 
             sys.stdout.write(
-            f"\r[{completed_i}/{total_chunks}]  Chunk {idx} "
-            f"| Elapsed: {elapsed/60:.1f} min  | ETA: {eta/60:.1f} min"
+                f"\r[{completed_i}/{total_chunks}] Chunk {idx} | "
+                f"Elapsed {elapsed/60:.1f}m | ETA {eta/60:.1f}m"
             )
             sys.stdout.flush()
 
-    # Combine all chunk results
     if results:
-        df_ld_up_all = pd.concat(results, ignore_index=True).drop_duplicates()
+        df_all = pd.concat(results, ignore_index=True).drop_duplicates()
     else:
-        df_ld_up_all = pd.DataFrame(
+        df_all = pd.DataFrame(
             columns=["pdb_id", "chem_comp_id", "pfam_id", "uniprot_id"]
         )
 
-    df_ld_up_all["source"] = "pdb"
-    print("\nPreview of df_ld_up_all:")
-    print(df_ld_up_all.head())
+    df_all["source"] = "pdb"
 
-    # Build canonical PDB ligand → SMILES table
-    df_smiles = build_ligand_smiles_table(df_ld_up_all)
+    # ------------------------------------------------------------------
+    # 5) Build SMILES table
+    # ------------------------------------------------------------------
+    df_smiles = build_ligand_smiles_table(df_all)
 
-    # Normalize uppercase
     df_smiles["chem_comp_id"] = df_smiles["chem_comp_id"].str.upper()
-    df_ld_up_all["chem_comp_id"] = df_ld_up_all["chem_comp_id"].str.upper()
+    df_all["chem_comp_id"] = df_all["chem_comp_id"].str.upper()
 
-    # Remove entries with no SMILES found
-    df_ld_up_all = df_ld_up_all[
-        df_ld_up_all["chem_comp_id"].isin(df_smiles["chem_comp_id"])
-    ]
+    df_all = df_all[df_all["chem_comp_id"].isin(df_smiles["chem_comp_id"])]
 
-    # Save final outputs (no return)
-    out_ld_up = os.path.join(output_dir, "pdb_binding_data.parquet")
-    out_smiles = os.path.join(output_dir, "pdb_ligand_smiles.parquet")
+    # ------------------------------------------------------------------
+    # 6) Save final outputs
+    # ------------------------------------------------------------------
+    out_rel = os.path.join(data_dir, "pdb_binding_data.parquet")
+    out_smiles = os.path.join(data_dir, "pdb_ligand_smiles.parquet")
 
-    df_ld_up_all.to_parquet(out_ld_up, index=False)
+    df_all.to_parquet(out_rel, index=False)
     df_smiles.to_parquet(out_smiles, index=False)
 
-    print("\nPDB database successfully generated:")
-    print(f"  • {out_ld_up}")
-    print(f"  • {out_smiles}")
-    print("Done.")
+    print("\n[INFO] PDB database successfully generated:")
+    print(f"  · {out_rel}")
+    print(f"  · {out_smiles}")
+    print(f"  · {seen_file}  (seen IDs list)")
+
 
 def update_pdb_database_from_dir(
     data_dir: str,
@@ -812,23 +826,21 @@ def update_pdb_database_from_dir(
     pfam_mapping_filename: str = "pdb_pfam_mapping.txt",
 ):
     """
-    Incrementally update an existing PDB-based database stored in `data_dir`.
+    Incrementally update an existing PDB database stored in `data_dir`.
 
-    This function assumes that `data_dir` already contains:
+    Uses:
       - pdb_binding_data.parquet
       - pdb_ligand_smiles.parquet
+      - pdb_seen_ids.txt   <-- NEW
 
-    It will:
-      1) Load existing pdb_binding_data.parquet to get already processed PDB IDs.
-      2) Download the current interacting_chains_with_ligand_functions.tsv.
-      3) Determine which PDB IDs are new (present in the TSV but not in the existing DB).
-      4) Process ONLY those new PDB IDs (binding sites + Pfam + UniProt).
-      5) Merge the new results with the existing DB.
-      6) Rebuild the PDB ligand → SMILES table from the combined data.
-      7) Save the updated parquet files back to `data_dir`.
-
-    All temporary/cache data is stored under `temp_dir/`.
-    The function returns nothing.
+    Logic:
+      1) Load existing seen IDs (true processed/unprocessed history)
+      2) Download current interacting_chains_with_ligand_functions.tsv
+      3) Determine ONLY truly new PDB IDs (not previously seen)
+      4) Process only new IDs
+      5) Merge new binding records with existing
+      6) Update ligand→SMILES table
+      7) Update pdb_seen_ids.txt
     """
 
     os.makedirs(temp_dir, exist_ok=True)
@@ -839,28 +851,37 @@ def update_pdb_database_from_dir(
     binding_cache_dir = os.path.join(temp_dir, "pdbe_binding_sites")
     os.makedirs(binding_cache_dir, exist_ok=True)
 
-    # ----------------------------------------------------------------------
-    # 1) Load existing PDB relations
-    # ----------------------------------------------------------------------
-    pdb_rel_path = os.path.join(data_dir, "pdb_binding_data.parquet")
+    # ------------------------------------------------------------------
+    # 1) Load existing DB
+    # ------------------------------------------------------------------
+    rel_path = os.path.join(data_dir, "pdb_binding_data.parquet")
     try:
-        df_ld_up_existing = pd.read_parquet(pdb_rel_path)
+        df_existing = pd.read_parquet(rel_path)
     except FileNotFoundError:
         raise FileNotFoundError(
-            f"Could not find existing pdb_binding_data.parquet in {data_dir}. "
-            "Please run the full generate_pdb_database() pipeline first or "
-            "make sure the Hugging Face snapshot has been downloaded correctly."
+            f"No pdb_binding_data.parquet in {data_dir}. "
+            "Run generate_pdb_database() first."
         )
 
-    # Normalize existing PDB IDs to lowercase strings
-    existing_pdb_ids = set(
-        df_ld_up_existing["pdb_id"].astype(str).str.lower().unique()
-    )
-    print(f"[INFO] Loaded existing PDB DB with {len(existing_pdb_ids)} PDB IDs.")
+    # This is NOT used to detect "new PDB" anymore.
+    existing_rel_ids = set(df_existing["pdb_id"].astype(str).str.lower().unique())
+    print(f"[INFO] Existing DB contains {len(existing_rel_ids)} PDB with valid records.")
 
-    # ----------------------------------------------------------------------
-    # 2) Download and load interacting_chains_with_ligand_functions.tsv
-    # ----------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 1b) Load SEEN PDB IDs list
+    # ------------------------------------------------------------------
+    seen_file = os.path.join(data_dir, "pdb_seen_ids.txt")
+    if os.path.exists(seen_file):
+        with open(seen_file) as f:
+            seen_ids_before = {line.strip() for line in f}
+        print(f"[INFO] Loaded {len(seen_ids_before)} previously seen PDB IDs.")
+    else:
+        seen_ids_before = set()
+        print("[WARN] No pdb_seen_ids.txt found. Starting seen list empty.")
+
+    # ------------------------------------------------------------------
+    # 2) Download current interacting_chains_with_ligand_functions.tsv
+    # ------------------------------------------------------------------
     interactions_url = (
         "https://ftp.ebi.ac.uk/pub/databases/msd/pdbechem_v2/additional_data/"
         "pdb_ligand_interactions/interacting_chains_with_ligand_functions.tsv"
@@ -878,14 +899,11 @@ def update_pdb_database_from_dir(
 
     ligands_info = pd.read_csv(interactions_local_path, sep="\t", dtype=str)
 
-    # Filter out invalid ligands using the global blacklist
     global invalid_ligands
     ligands_info = ligands_info[~ligands_info["LigandID"].isin(invalid_ligands)]
 
-    # ----------------------------------------------------------------------
-    # 3) Determine which PDB IDs are new
-    # ----------------------------------------------------------------------
-    pdb_ids_all = (
+    # Full candidate list
+    pdb_ids_now = (
         ligands_info["PDBID"]
         .dropna()
         .astype(str)
@@ -894,52 +912,53 @@ def update_pdb_database_from_dir(
         .tolist()
     )
 
-    pdb_ids_to_process = [p for p in pdb_ids_all if p not in existing_pdb_ids]
+    # ------------------------------------------------------------------
+    # 3) Determine TRULY new PDB IDs
+    # ------------------------------------------------------------------
+    pdb_ids_to_process = [p for p in pdb_ids_now if p not in seen_ids_before]
 
     print(
-        f"[INFO] Total PDB IDs in interactions file: {len(pdb_ids_all)} | "
-        f"Already in DB: {len(existing_pdb_ids)} | "
-        f"New to process: {len(pdb_ids_to_process)}"
+        f"[INFO] Total PDB in TSV: {len(pdb_ids_now)} | "
+        f"Previously seen: {len(seen_ids_before)} | "
+        f"New (unseen): {len(pdb_ids_to_process)}"
     )
 
     if not pdb_ids_to_process:
-        print("[INFO] No new PDB IDs to process. Nothing to update.")
+        print("[INFO] No new PDBs to process. Updating seen list and exiting.")
+        # Update seen list (in case TSV changed e.g. filtered ligands)
+        updated_seen = seen_ids_before.union(pdb_ids_now)
+        with open(seen_file, "w") as f:
+            for pdb in sorted(updated_seen):
+                f.write(pdb + "\n")
         return
 
-    # ----------------------------------------------------------------------
-    # 4) Load PDB–Pfam mapping and prepare PDB → UniProt table
-    # ----------------------------------------------------------------------
-    mapping_path = download_pdb_pfam_mapping(
-        mapping_dir=pfam_dir,
-        filename=pfam_mapping_filename,
-    )
+    # ------------------------------------------------------------------
+    # 4) Prepare Pfam & UniProt linking
+    # ------------------------------------------------------------------
+    mapping_path = download_pdb_pfam_mapping(pfam_dir, pfam_mapping_filename)
     df_pfam_all = load_pdb_pfam_mapping(mapping_path)
 
-    ligands_info_small = (
+    lig_small = (
         ligands_info[["PDBID", "BestUnpAccession"]]
         .dropna()
         .drop_duplicates()
         .rename(columns={"PDBID": "pdb_id", "BestUnpAccession": "uniprot_id"})
     )
-    ligands_info_small["pdb_id"] = ligands_info_small["pdb_id"].str.lower()
+    lig_small["pdb_id"] = lig_small["pdb_id"].str.lower()
 
-    # ----------------------------------------------------------------------
-    # 5) Parallel processing of NEW PDB entries
-    # ----------------------------------------------------------------------
-
+    # ------------------------------------------------------------------
+    # 5) Process ONLY NEW PDBs
+    # ------------------------------------------------------------------
     chunk_size = 10
     max_workers = min(os.cpu_count() or 4, 16)
 
     chunk_list_full = list(chunk_list(pdb_ids_to_process, chunk_size))
     total_chunks = len(chunk_list_full)
 
-    print(
-        f"[INFO] Processing {total_chunks} new chunks "
-        f"using {max_workers} workers..."
-    )
+    print(f"[INFO] Processing {total_chunks} new chunks using {max_workers} workers...")
 
     results = []
-    start_time = time.time()
+    start = time.time()
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = {
@@ -947,20 +966,20 @@ def update_pdb_database_from_dir(
                 process_pdb_chunk,
                 chunk,
                 invalid_ligands,
-                ligands_info_small,
+                lig_small,
                 df_pfam_all,
                 binding_cache_dir,
-                10.0,  # API timeout for binding sites
+                10.0,
             ): idx
             for idx, chunk in enumerate(chunk_list_full, start=1)
         }
 
-        for completed_i, fut in enumerate(as_completed(futures), start=1):
+        for completed, fut in enumerate(as_completed(futures), start=1):
             idx = futures[fut]
 
-            elapsed = time.time() - start_time
-            avg_time = elapsed / completed_i
-            eta = avg_time * (total_chunks - completed_i)
+            elapsed = time.time() - start
+            avg = elapsed / completed
+            eta = avg * (total_chunks - completed)
 
             try:
                 df_res = fut.result()
@@ -970,53 +989,53 @@ def update_pdb_database_from_dir(
                 print(f"[WARN] Chunk {idx} failed: {e!r}")
 
             sys.stdout.write(
-            f"\r[{completed_i}/{total_chunks}]  Chunk {idx} "
-            f"| Elapsed: {elapsed/60:.1f} min  | ETA: {eta/60:.1f} min"
+                f"\r[{completed}/{total_chunks}] Chunk {idx} | Elapsed {elapsed/60:.1f}m | ETA {eta/60:.1f}m"
             )
             sys.stdout.flush()
 
     if results:
-        df_ld_up_new = pd.concat(results, ignore_index=True).drop_duplicates()
+        df_new = pd.concat(results, ignore_index=True).drop_duplicates()
     else:
-        print("[WARN] No results from new PDBs. Keeping existing DB unchanged.")
-        return
+        print("[WARN] No results from new PDBs.")
+        df_new = pd.DataFrame(columns=df_existing.columns)
 
-    # ----------------------------------------------------------------------
-    # 6) Merge existing + new relations
-    # ----------------------------------------------------------------------
-    df_ld_up_all = (
-        pd.concat([df_ld_up_existing, df_ld_up_new], ignore_index=True)
+    # ------------------------------------------------------------------
+    # 6) Merge new results with existing
+    # ------------------------------------------------------------------
+    df_all = (
+        pd.concat([df_existing, df_new], ignore_index=True)
         .drop_duplicates()
     )
-    df_ld_up_all["source"] = "pdb"
+    df_all["source"] = "pdb"
 
-    print("\n[INFO] Preview of updated df_ld_up_all:")
-    print(df_ld_up_all.head())
+    # ------------------------------------------------------------------
+    # 7) Rebuild SMILES table
+    # ------------------------------------------------------------------
+    df_smiles = build_ligand_smiles_table(df_all)
 
-    # ----------------------------------------------------------------------
-    # 7) Rebuild ligand → SMILES table from the combined relations
-    # ----------------------------------------------------------------------
-    df_smiles = build_ligand_smiles_table(df_ld_up_all)
-
-    # Normalize uppercase
     df_smiles["chem_comp_id"] = df_smiles["chem_comp_id"].str.upper()
-    df_ld_up_all["chem_comp_id"] = df_ld_up_all["chem_comp_id"].str.upper()
+    df_all["chem_comp_id"] = df_all["chem_comp_id"].str.upper()
 
-    # Remove entries with no SMILES found
-    df_ld_up_all = df_ld_up_all[
-        df_ld_up_all["chem_comp_id"].isin(df_smiles["chem_comp_id"])
-    ]
+    df_all = df_all[df_all["chem_comp_id"].isin(df_smiles["chem_comp_id"])]
 
-    # ----------------------------------------------------------------------
-    # 8) Save updated outputs in the SAME data_dir
-    # ----------------------------------------------------------------------
-    out_ld_up = os.path.join(data_dir, "pdb_binding_data.parquet")
-    out_smiles = os.path.join(data_dir, "pdb_ligand_smiles.parquet")
+    # Save updated outputs
+    rel_out = os.path.join(data_dir, "pdb_binding_data.parquet")
+    smiles_out = os.path.join(data_dir, "pdb_ligand_smiles.parquet")
 
-    df_ld_up_all.to_parquet(out_ld_up, index=False)
-    df_smiles.to_parquet(out_smiles, index=False)
+    df_all.to_parquet(rel_out, index=False)
+    df_smiles.to_parquet(smiles_out, index=False)
 
     print("\n[INFO] PDB database successfully updated:")
-    print(f"  • {out_ld_up}")
-    print(f"  • {out_smiles}")
+    print(f"  · {rel_out}")
+    print(f"  · {smiles_out}")
+
+    # ------------------------------------------------------------------
+    # 8) Update SEEN IDs list
+    # ------------------------------------------------------------------
+    updated_seen = seen_ids_before.union(pdb_ids_now)
+    with open(seen_file, "w") as f:
+        for pdb in sorted(updated_seen):
+            f.write(pdb + "\n")
+
+    print(f"[INFO] Updated PDB seen IDs list saved to {seen_file}")
     print("[INFO] Done.")
