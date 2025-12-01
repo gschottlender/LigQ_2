@@ -104,9 +104,6 @@ def download_base_databases_from_huggingface(output_dir: str) -> None:
     print("[INFO] HuggingFace dataset sync completed.")
 
 
-# ----------------------------------------------------------------------
-# Main pipeline
-# ----------------------------------------------------------------------
 def main():
     args = parse_args()
 
@@ -114,18 +111,34 @@ def main():
     temp_data_dir = args.temp_data_dir
     chembl_version = args.chembl_version
 
+    # Check whether the output_dir already existed BEFORE this run
+    output_dir_already_existed = os.path.isdir(output_dir)
+
     # Ensure root directories exist
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_data_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1) Always sync the base dataset from HuggingFace
+    # 1) Sync base dataset from HuggingFace ONLY if there is no local DB
     # ------------------------------------------------------------------
-    # This guarantees that:
-    #   - db_metadata.json is present with an initial version
-    #   - preprocessed PDB and ChEMBL databases exist locally
-    #   - the local copy is consistent with the HF dataset
-    download_base_databases_from_huggingface(output_dir)
+    # Logic:
+    #   - If output_dir did not exist before, we assume there is no local
+    #     snapshot and we need to fetch the initial one from HF.
+    #   - If it already existed, we trust the local copy and DO NOT overwrite
+    #     it with the (possibly older) HF snapshot.
+    metadata_path = os.path.join(output_dir, "db_metadata.json")
+
+    if not output_dir_already_existed and not os.path.exists(metadata_path):
+        print(
+            "[INFO] No local database snapshot detected. "
+            "Downloading base dataset from HuggingFace..."
+        )
+        download_base_databases_from_huggingface(output_dir)
+    else:
+        print(
+            "[INFO] Local database directory already exists. "
+            "Skipping HuggingFace base download."
+        )
 
     # ------------------------------------------------------------------
     # 2) Load metadata (which should now exist in output_dir)
