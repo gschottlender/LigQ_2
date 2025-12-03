@@ -251,6 +251,8 @@ def main():
     # ------------------------------------------------------------------
     # Assumption: merge_databases() expects a directory that contains
     # subfolders "pdb" and "chembl" with the processed data.
+
+    # This step also generates the vector database of compounds from PDB and ChEMBL 
     data_dir = output_dir
 
     print("[INFO] Merging PDB and ChEMBL databases...")
