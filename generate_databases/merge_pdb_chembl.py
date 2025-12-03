@@ -27,7 +27,7 @@ def merge_databases(data_dir,tanimoto_curation_threshold=0.35):
     ligs_smiles_merged, chembl_to_pdb_id = unify_pdb_chembl(ligs_smiles_pdb, ligs_smiles_chembl)
 
     # Build ligand index under some root directory
-    root = Path(f"{data_dir}/compound_data")
+    root = Path(f"{data_dir}/compound_data/pdb_chembl")
     build_ligand_index(ligs_smiles_merged, root)
 
     # Build Morgan fingerprint representation (1024 bits, radius 2)
