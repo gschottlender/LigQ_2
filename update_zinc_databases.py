@@ -24,10 +24,15 @@ from typing import Optional
 
 from generate_databases.zinc_db import generate_zinc_database
 
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
 
 # ---------------------------------------------------------------------------
 # Helper: download the ZINC URL file from Hugging Face if missing
 # ---------------------------------------------------------------------------
+
+from huggingface_hub import hf_hub_download
+from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
 
 def download_zinc_uri_file_if_missing(
     zinc_data_dir: Path,
@@ -37,26 +42,28 @@ def download_zinc_uri_file_if_missing(
 ) -> Path:
     """
     Ensure that the ZINC URL file exists under `zinc_data_dir`.
-    If not, download it from a Hugging Face repository.
+    If not, download it from a Hugging Face *dataset* repository.
 
     Parameters
     ----------
     zinc_data_dir : Path
         Directory where the ZINC-related files live (e.g. <output_dir>/zinc).
     hf_repo_id : str
-        Hugging Face repository ID that contains the URL file.
+        Hugging Face dataset repository ID that contains the URL file.
     hf_subpath : str
-        Relative path to the URL file inside the repository.
+        Relative path to the URL file inside the dataset repo
+        (e.g. 'zinc/ZINC-downloader-2D-smi.uri').
     filename : str
-        Name of the local file (by default 'ZINC-downloader-2D-smi.uri').
+        Local filename to use under `zinc_data_dir`
+        (e.g. 'ZINC-downloader-2D-smi.uri').
 
     Returns
     -------
     Path
-        Path to the local URL file.
+        Path to the local URL file: zinc_data_dir / filename
     """
     zinc_data_dir.mkdir(parents=True, exist_ok=True)
-    local_path = zinc_data_dir / filename
+    local_path = zinc_data_dir / filename  # <- donde LO QUEREMOS
 
     if local_path.exists():
         print(f"[INFO] ZINC URL file already present: {local_path}")
@@ -64,34 +71,40 @@ def download_zinc_uri_file_if_missing(
 
     print(
         "[INFO] ZINC URL file not found. "
-        f"Downloading from Hugging Face repo '{hf_repo_id}' "
+        f"Downloading from Hugging Face dataset '{hf_repo_id}' "
         f"subpath '{hf_subpath}'..."
     )
 
     try:
-        from huggingface_hub import hf_hub_download
-    except ImportError:
-        raise ImportError(
-            "huggingface_hub is required to download the ZINC URL file but is "
-            "not installed. Please install it with:\n\n"
-            "    pip install huggingface_hub\n"
+        # Descarga desde el dataset, respetando el subpath dentro del repo
+        repo_file_path = hf_hub_download(
+            repo_id=hf_repo_id,
+            repo_type="dataset",
+            filename=hf_subpath,          # p.ej. 'zinc/ZINC-downloader-2D-smi.uri'
+            local_dir=str(zinc_data_dir), # p.ej. '<output_dir>/zinc'
         )
+    except RepositoryNotFoundError as e:
+        print(
+            "[ERROR] Could not access the Hugging Face dataset "
+            f"'{hf_repo_id}'. Double-check that it exists and is public.\n"
+            "URL should look like:\n"
+            f"  https://huggingface.co/datasets/{hf_repo_id}\n"
+        )
+        raise
+    except HfHubHTTPError as e:
+        print(
+            "[ERROR] Failed to download the ZINC URL file from Hugging Face.\n"
+            f"Details: {e}\n"
+            "You can also create the file manually at:\n"
+            f"  {local_path}\n"
+        )
+        raise
 
-    # Download the file from the specified repo/subpath
-    repo_file_path = hf_hub_download(
-        repo_id=hf_repo_id,
-        filename=hf_subpath,
-        local_dir=zinc_data_dir,
-        local_dir_use_symlinks=False,
-    )
-
-    # If hf_hub_download stored it with an extra path, rename/move if needed
     repo_file_path = Path(repo_file_path)
-    if repo_file_path.name != filename:
-        # Move/rename to the expected filename
-        repo_file_path.rename(local_path)
-    else:
-        local_path = repo_file_path
+
+    if repo_file_path != local_path:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        repo_file_path.replace(local_path)
 
     print(f"[INFO] ZINC URL file downloaded to: {local_path}")
     return local_path
