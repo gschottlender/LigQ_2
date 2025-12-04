@@ -12,7 +12,7 @@ def build_chembl_activity_datasets(
     Build two ChEMBL-based datasets:
 
     1) df_relations:
-        chem_comp_id | pfam_id | uniprot_id | pchembl | mechanism | source='chembl'
+        chem_comp_id | pfam_id | uniprot_id | pchembl | mechanism | activity_comment | source='chembl'
 
         - One row per (compound, domain, protein).
         - Includes:
@@ -21,6 +21,10 @@ def build_chembl_activity_datasets(
             * compounds coming only from drug_mechanism (no qualifying activity).
 
         - Targets restricted to SINGLE PROTEIN.
+
+        Nota:
+        - En filas provenientes de drug_mechanism (sin actividad asociada),
+          activity_comment será NULL/NaN.
 
     2) df_smiles:
         chem_comp_id | smiles | source='chembl'
@@ -55,6 +59,7 @@ def build_chembl_activity_datasets(
             d.source_domain_id              AS pfam_id,
             MAX(a.pchembl_value)            AS pchembl,
             MIN(dm.mechanism_of_action)     AS mechanism,
+            MIN(a.activity_comment)         AS activity_comment,
             MIN(cs_struct.canonical_smiles) AS smiles
         FROM activities AS a
         JOIN assays AS ass
@@ -121,6 +126,7 @@ def build_chembl_activity_datasets(
             d.source_domain_id              AS pfam_id,
             NULL                            AS pchembl,
             MIN(dm.mechanism_of_action)     AS mechanism,
+            NULL                            AS activity_comment,
             MIN(cs_struct.canonical_smiles) AS smiles
         FROM drug_mechanism AS dm
         JOIN molecule_dictionary AS md
@@ -177,6 +183,8 @@ def build_chembl_activity_datasets(
     df_all["source"] = "chembl"
 
     # Drop exact duplicates if any
+    # (no incluimos activity_comment en el subset para seguir teniendo
+    # una sola fila por relación, incluso si hubiera varios comentarios)
     df_all = df_all.drop_duplicates(
         subset=["chem_comp_id", "uniprot_id", "pfam_id", "pchembl", "mechanism"]
     )
@@ -185,7 +193,15 @@ def build_chembl_activity_datasets(
     # 1) Relations table
     # ------------------------------------------------------------------
     df_relations = df_all[
-        ["chem_comp_id", "pfam_id", "uniprot_id", "pchembl", "mechanism", "source"]
+        [
+            "chem_comp_id",
+            "pfam_id",
+            "uniprot_id",
+            "pchembl",
+            "mechanism",
+            "activity_comment",
+            "source",
+        ]
     ].copy()
 
     # ------------------------------------------------------------------
@@ -200,6 +216,7 @@ def build_chembl_activity_datasets(
     df_smiles["source"] = "chembl"
 
     return df_relations, df_smiles
+
 
 def generate_chembl_database(chembl_db_path: str, output_dir: str = "databases"):
     """
