@@ -737,13 +737,18 @@ def get_zinc_ligands(
               Else:
                   keep MaxMin reps directly.
       - Query ZINC using search_similar_in_zinc with the final representatives.
+      - Post-process ZINC hits:
+            * remove internal index column,
+            * prefix chem_comp_id with "ZINC",
+            * sort by Tanimoto descending,
+            * drop duplicate ZINC compounds.
 
     Returns
     -------
     pd.DataFrame
         Columns:
           - query_id
-          - chem_comp_id
+          - chem_comp_id  (prefixed with "ZINC")
           - smiles
           - tanimoto
         (lig_idx_zinc is removed before returning)
@@ -829,10 +834,34 @@ def get_zinc_ligands(
         max_hits_per_query=None,
     )
 
+    # If there are no hits, return an empty DataFrame with the expected columns
+    if zinc_ligands.empty:
+        return pd.DataFrame(
+            columns=["query_id", "chem_comp_id", "smiles", "tanimoto"]
+        )
+
     # ------------------------------------------------------------------
     # 4) Remove internal column "lig_idx_zinc"
     # ------------------------------------------------------------------
     if "lig_idx_zinc" in zinc_ligands.columns:
         zinc_ligands = zinc_ligands.drop(columns=["lig_idx_zinc"])
 
-    return zinc_ligands
+    # ------------------------------------------------------------------
+    # 5) Add "ZINC" prefix and remove duplicate ZINC compounds
+    # ------------------------------------------------------------------
+    # Prefix ZINC chem_comp_id to clearly distinguish them from PDB/ChEMBL IDs
+    zinc_ligands["chem_comp_id"] = "ZINC" + zinc_ligands["chem_comp_id"].astype(str)
+
+    # Sort by Tanimoto descending so we keep the strongest hit per compound
+    zinc_ligands = zinc_ligands.sort_values("tanimoto", ascending=False)
+
+    # Drop duplicates by ZINC compound (and smiles for safety), keeping best Tanimoto
+    zinc_ligands = zinc_ligands.drop_duplicates(
+        subset=["chem_comp_id", "smiles"],
+        keep="first",
+    ).reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # 6) Return only the public columns
+    # ------------------------------------------------------------------
+    return zinc_ligands[["chem_comp_id", "smiles", "tanimoto", "query_id"]]
