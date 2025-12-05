@@ -864,4 +864,4 @@ def get_zinc_ligands(
     # ------------------------------------------------------------------
     # 6) Return only the public columns
     # ------------------------------------------------------------------
-    return zinc_ligands[["chem_comp_id", "smiles", "tanimoto", "query_id"]]
+    return zinc_ligands[["chem_comp_id", "query_id", "tanimoto", "smiles"]]
