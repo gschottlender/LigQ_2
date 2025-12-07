@@ -492,9 +492,10 @@ def build_predicted_zinc_binding_data(
         writer.close()
         if temp_path is not None:
             os.replace(temp_path, parquet_path)
-    
+
     print()
     print("[INFO] Finished writing predicted_zinc_binding_data.")
+
 
 # ---------------------------------------------------------------------------
 # 5) Command-line interface (CLI)
@@ -509,16 +510,14 @@ def parse_args() -> argparse.Namespace:
     --data-dir / -d : str
         Root directory containing all input databases.
         Default: 'databases'
-
-    --results-dir / -r : str
-        Root directory where output result tables will be saved.
-        Default: 'results_databases'
+        All result tables will be stored under:
+            <data_dir>/results_databases
 
     --regenerate : flag
         Forces full regeneration of the results directory.
-        If results_dir already exists, it is moved into a backup folder
-        (<results_dir>_backup, <results_dir>_backup1, ...) and recreated
-        from scratch.
+        If <data_dir>/results_databases already exists, it is moved into a
+        backup folder (<results_databases>_backup, <results_databases>_backup1, ...)
+        and recreated from scratch.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -530,21 +529,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-d", "--data-dir",
         default="databases",
-        help="Root directory containing input databases (default: %(default)s)"
-    )
-
-    parser.add_argument(
-        "-r", "--results-dir",
-        default="results_databases",
-        help="Directory where result tables will be written (default: %(default)s)"
+        help="Root directory containing input databases (default: %(default)s)",
     )
 
     parser.add_argument(
         "--regenerate",
         action="store_true",
         help=(
-            "Rebuild all results from scratch. If results_dir already exists, "
-            "it will be moved into a backup directory before regenerating."
+            "Rebuild all results from scratch. If <data_dir>/results_databases "
+            "already exists, it will be moved into a backup directory before "
+            "regenerating."
         ),
     )
 
@@ -581,7 +575,8 @@ def main() -> None:
     args = parse_args()
 
     data_dir = Path(args.data_dir)
-    results_dir = Path(args.results_dir)
+    # All results go into <data_dir>/results_databases
+    results_dir = data_dir / "results_databases"
 
     # ----------------------------------------------------------------------
     # 0) Handle --regenerate (backup + clean start)
@@ -590,12 +585,18 @@ def main() -> None:
         _backup_results_dir(results_dir)
         results_dir.mkdir(parents=True, exist_ok=True)
         resume = False  # Force full regeneration of ZINC prediction tables
-        print("[INFO] Regenerating all results from scratch (resume = False).")
+        print(
+            "[INFO] Regenerating all results from scratch in "
+            f"{results_dir} (resume = False)."
+        )
     else:
         # Normal mode: create results_dir if missing but do not delete anything
         results_dir.mkdir(parents=True, exist_ok=True)
         resume = True
-        print("[INFO] Normal mode: continuing or creating results (resume = True).")
+        print(
+            "[INFO] Normal mode: continuing or creating results in "
+            f"{results_dir} (resume = True)."
+        )
 
     # ----------------------------------------------------------------------
     # 1) Load merged binding and SMILES tables
