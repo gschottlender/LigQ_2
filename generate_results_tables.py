@@ -501,6 +501,7 @@ def build_predicted_zinc_binding_data(
 # 5) Command-line interface (CLI)
 # ---------------------------------------------------------------------------
 
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command-line arguments.
@@ -510,14 +511,15 @@ def parse_args() -> argparse.Namespace:
     --data-dir / -d : str
         Root directory containing all input databases.
         Default: 'databases'
-        All result tables will be stored under:
-            <data_dir>/results_databases
 
     --regenerate : flag
-        Forces full regeneration of the results directory.
-        If <data_dir>/results_databases already exists, it is moved into a
-        backup folder (<results_databases>_backup, <results_databases>_backup1, ...)
-        and recreated from scratch.
+        Forces full regeneration of the results directory
+        (<data_dir>/results_databases).
+        If it already exists, it is moved into a backup folder
+        (<results_databases>_backup, <results_databases>_backup1, ...)
+
+    --max-proteins : int
+        If given, process at most this number of proteins in the ZINC search.
     """
     parser = argparse.ArgumentParser(
         description=(
@@ -537,8 +539,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Rebuild all results from scratch. If <data_dir>/results_databases "
-            "already exists, it will be moved into a backup directory before "
-            "regenerating."
+            "already exists, it will be moved into a backup directory "
+            "before regenerating."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-proteins",
+        type=int,
+        default=None,
+        help=(
+            "If given, process at most this number of proteins in the ZINC search "
+            "(useful for quick tests)."
         ),
     )
 
@@ -575,7 +587,7 @@ def main() -> None:
     args = parse_args()
 
     data_dir = Path(args.data_dir)
-    # All results go into <data_dir>/results_databases
+    # NEW: all results go under <data_dir>/results_databases
     results_dir = data_dir / "results_databases"
 
     # ----------------------------------------------------------------------
@@ -585,18 +597,12 @@ def main() -> None:
         _backup_results_dir(results_dir)
         results_dir.mkdir(parents=True, exist_ok=True)
         resume = False  # Force full regeneration of ZINC prediction tables
-        print(
-            "[INFO] Regenerating all results from scratch in "
-            f"{results_dir} (resume = False)."
-        )
+        print("[INFO] Regenerating all results from scratch (resume = False).")
     else:
         # Normal mode: create results_dir if missing but do not delete anything
         results_dir.mkdir(parents=True, exist_ok=True)
         resume = True
-        print(
-            "[INFO] Normal mode: continuing or creating results in "
-            f"{results_dir} (resume = True)."
-        )
+        print("[INFO] Normal mode: continuing or creating results (resume = True).")
 
     # ----------------------------------------------------------------------
     # 1) Load merged binding and SMILES tables
@@ -666,6 +672,7 @@ def main() -> None:
         rep_zinc=rep_zinc,
         results_dir=results_dir,
         resume=resume,  # True = append; False = regenerate from scratch
+        max_proteins=args.max_proteins,
     )
 
     print("[INFO] Finished.")
