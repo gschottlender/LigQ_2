@@ -824,23 +824,16 @@ def update_pdb_database_from_dir(
     data_dir: str,
     temp_dir: str = "temp_data",
     pfam_mapping_filename: str = "pdb_pfam_mapping.txt",
-):
+) -> bool:
     """
     Incrementally update an existing PDB database stored in `data_dir`.
 
-    Uses:
-      - pdb_binding_data.parquet
-      - pdb_ligand_smiles.parquet
-      - pdb_seen_ids.txt   <-- NEW
-
-    Logic:
-      1) Load existing seen IDs (true processed/unprocessed history)
-      2) Download current interacting_chains_with_ligand_functions.tsv
-      3) Determine ONLY truly new PDB IDs (not previously seen)
-      4) Process only new IDs
-      5) Merge new binding records with existing
-      6) Update ligand→SMILES table
-      7) Update pdb_seen_ids.txt
+    Returns
+    -------
+    updated : bool
+        True if new PDB entries were processed and the binding/SMILES
+        tables were effectively updated. False if no new PDB IDs were
+        found (only the seen-IDs list may have changed).
     """
 
     os.makedirs(temp_dir, exist_ok=True)
@@ -863,7 +856,6 @@ def update_pdb_database_from_dir(
             "Run generate_pdb_database() first."
         )
 
-    # This is NOT used to detect "new PDB" anymore.
     existing_rel_ids = set(df_existing["pdb_id"].astype(str).str.lower().unique())
     print(f"[INFO] Existing DB contains {len(existing_rel_ids)} PDB with valid records.")
 
@@ -930,7 +922,8 @@ def update_pdb_database_from_dir(
         with open(seen_file, "w") as f:
             for pdb in sorted(updated_seen):
                 f.write(pdb + "\n")
-        return
+        # No logical update to binding/smiles tables
+        return False
 
     # ------------------------------------------------------------------
     # 4) Prepare Pfam & UniProt linking
@@ -999,6 +992,17 @@ def update_pdb_database_from_dir(
         print("[WARN] No results from new PDBs.")
         df_new = pd.DataFrame(columns=df_existing.columns)
 
+    # Si por alguna razón no se generaron filas nuevas, podemos considerar
+    # que no hubo actualización lógica.
+    if df_new.empty:
+        print("[INFO] No new valid binding records from unseen PDBs.")
+        # Aun así actualizamos la lista de IDs vistos:
+        updated_seen = seen_ids_before.union(pdb_ids_now)
+        with open(seen_file, "w") as f:
+            for pdb in sorted(updated_seen):
+                f.write(pdb + "\n")
+        return False
+
     # ------------------------------------------------------------------
     # 6) Merge new results with existing
     # ------------------------------------------------------------------
@@ -1039,3 +1043,6 @@ def update_pdb_database_from_dir(
 
     print(f"[INFO] Updated PDB seen IDs list saved to {seen_file}")
     print("[INFO] Done.")
+
+    # Hubo PDB nuevos con registros válidos → actualización real
+    return True
