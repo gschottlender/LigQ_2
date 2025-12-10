@@ -318,6 +318,7 @@ def run_blast_sequence_search(
     max_hits: int = 150,
     blast_program: str = "blastp",
     blast_db_name: str = "target_sequences",
+    n_workers: int = 4,
 ) -> pd.DataFrame:
     """
     Block 1: sequence-based search against local BLAST DB.
@@ -348,6 +349,8 @@ def run_blast_sequence_search(
         BLAST program (blastp, blastx, etc.).
     blast_db_name : str, default 'target_sequences'
         Name of the BLAST DB (without extensions).
+    n_workers : int, default 4
+        Number of CPU threads to pass to BLAST (-num_threads).
 
     Returns
     -------
@@ -389,12 +392,12 @@ def run_blast_sequence_search(
         "-max_target_seqs",
         str(max_hits),
         "-num_threads",
-        "4",               # BLAST uses 4 threads
+        str(n_workers),   # BLAST uses n_workers threads
         "-out",
-        str(blast_out),    # BLAST writes to this file
+        str(blast_out),   # BLAST writes to this file
     ]
 
-    print("[INFO] Running BLAST sequence search (Block 1)...")
+    print(f"[INFO] Running BLAST sequence search (Block 1) with {n_workers} threads...")
     run_command(cmd)
 
     if not blast_out.is_file():
@@ -498,13 +501,14 @@ def run_blast_sequence_search(
 # Block 2 – Domain-based search (HMMER + Pfam)
 # ----------------------------------------------------------------------
 
-def run_hmmer_domain_search(
+ddef run_hmmer_domain_search(
     query_fasta: str | Path,
     data_dir: str | Path = "databases",
     temp_results_dir: str | Path = "temp_results",
     pfam_hmm_name: str = "Pfam-A.hmm",
     evalue_max: float = 1e-5,
     use_ga_cutoff: bool = True,
+    n_workers: int = 4,
 ) -> pd.DataFrame:
     """
     Block 2: domain-based search using HMMER (hmmscan) against Pfam-A.
@@ -523,6 +527,8 @@ def run_hmmer_domain_search(
         Maximum domain i-Evalue accepted (in addition to GA cutoff).
     use_ga_cutoff : bool, default True
         If True, adds '--cut_ga' to hmmscan to use Pfam's GA thresholds.
+    n_workers : int, default 4
+        Number of CPU threads to pass to HMMER (--cpu).
 
     Returns
     -------
@@ -557,8 +563,8 @@ def run_hmmer_domain_search(
     cmd = [
         "hmmscan",
         "--cpu",
-        "4",             # HMMER uses 4 threads
-        "--noali",       # do not output alignments (lighter output)
+        str(n_workers),   # HMMER uses n_workers threads
+        "--noali",        # do not output alignments (lighter output)
         "--domtblout",
         str(domtblout_path),
     ]
@@ -567,7 +573,7 @@ def run_hmmer_domain_search(
 
     cmd.extend([str(pfam_hmm), str(query_fasta)])
 
-    print("[INFO] Running HMMER Pfam domain search (Block 2)...")
+    print(f"[INFO] Running HMMER Pfam domain search (Block 2) with {n_workers} threads...")
     run_command(cmd)
 
     if not domtblout_path.is_file():
