@@ -69,39 +69,142 @@ def parse_args():
 
 
 # ----------------------------------------------------------------------
+# Small helpers
+# ----------------------------------------------------------------------
+def snapshot_dir(root_dir: str) -> dict:
+    """
+    Build a lightweight snapshot of a directory: for each file, store
+    its relative path, size, and modification time.
+
+    Used to detect whether an update step actually changed the PDB
+    processed directory.
+    """
+    snapshot = {}
+    if not os.path.isdir(root_dir):
+        return snapshot
+
+    for base, _, files in os.walk(root_dir):
+        for fname in files:
+            fpath = os.path.join(base, fname)
+            rel = os.path.relpath(fpath, root_dir)
+            try:
+                stat = os.stat(fpath)
+            except OSError:
+                continue
+            snapshot[rel] = (stat.st_size, int(stat.st_mtime))
+    return snapshot
+
+
+# ----------------------------------------------------------------------
 # Download / sync base databases from HuggingFace
 # ----------------------------------------------------------------------
-def download_base_databases_from_huggingface(output_dir: str) -> None:
+def download_base_databases_from_huggingface(output_dir: str) -> dict:
     """
-    Sync the preprocessed database files from the HuggingFace dataset repo
-    into `output_dir`.
+    Sync ONLY the essential preprocessed database files from the HuggingFace
+    dataset repo into `output_dir`:
 
-    This repo is assumed to contain:
       - db_metadata.json
       - preprocessed PDB database under output_dir/pdb
       - preprocessed ChEMBL database under output_dir/chembl
-      - preprocessed Uniprot sequences database under output_dir/sequences
 
-    huggingface_hub will handle local caching, so repeated runs will not
-    re-download all data from scratch.
+    Each item is downloaded only if missing locally:
+      - If output_dir/pdb does not exist or is empty → download all 'pdb/' files.
+      - If output_dir/chembl does not exist or is empty → download all 'chembl/' files.
+      - If db_metadata.json does not exist → download it.
+
+    Returns a dict with booleans indicating whether each component was
+    downloaded in this run:
+      {
+        "pdb_downloaded": bool,
+        "chembl_downloaded": bool,
+        "metadata_downloaded": bool,
+      }
     """
     api = HfApi()
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"[INFO] Syncing preprocessed databases from HF dataset: {HF_DATASET_REPO_ID}")
+    pdb_dir = os.path.join(output_dir, "pdb")
+    chembl_dir = os.path.join(output_dir, "chembl")
+    metadata_path = os.path.join(output_dir, "db_metadata.json")
+
+    # Determine which components are missing locally
+    def is_missing_dir_or_empty(d: str) -> bool:
+        return (not os.path.isdir(d)) or (len(os.listdir(d)) == 0)
+
+    need_pdb = is_missing_dir_or_empty(pdb_dir)
+    need_chembl = is_missing_dir_or_empty(chembl_dir)
+    need_metadata = not os.path.exists(metadata_path)
+
+    pdb_downloaded = False
+    chembl_downloaded = False
+    metadata_downloaded = False
+
+    if not (need_pdb or need_chembl or need_metadata):
+        print(
+            "[INFO] Local PDB, ChEMBL and metadata already present. "
+            "Skipping HuggingFace download."
+        )
+        return {
+            "pdb_downloaded": False,
+            "chembl_downloaded": False,
+            "metadata_downloaded": False,
+        }
+
+    print(f"[INFO] Syncing required components from HF dataset: {HF_DATASET_REPO_ID}")
     files = api.list_repo_files(repo_id=HF_DATASET_REPO_ID, repo_type="dataset")
 
-    for filename in files:
-        # This preserves subdirectory structure inside output_dir
-        hf_hub_download(
-            repo_id=HF_DATASET_REPO_ID,
-            repo_type="dataset",
-            filename=filename,
-            local_dir=output_dir,
-            local_dir_use_symlinks=False,
-        )
+    # Ensure subdirectories exist if we are going to populate them
+    if need_pdb:
+        os.makedirs(pdb_dir, exist_ok=True)
+    if need_chembl:
+        os.makedirs(chembl_dir, exist_ok=True)
 
-    print("[INFO] HuggingFace dataset sync completed.")
+    for filename in files:
+        # PDB subdirectory
+        if need_pdb and filename.startswith("pdb/"):
+            hf_hub_download(
+                repo_id=HF_DATASET_REPO_ID,
+                repo_type="dataset",
+                filename=filename,
+                local_dir=output_dir,
+                local_dir_use_symlinks=False,
+            )
+            pdb_downloaded = True
+
+        # ChEMBL subdirectory
+        elif need_chembl and filename.startswith("chembl/"):
+            hf_hub_download(
+                repo_id=HF_DATASET_REPO_ID,
+                repo_type="dataset",
+                filename=filename,
+                local_dir=output_dir,
+                local_dir_use_symlinks=False,
+            )
+            chembl_downloaded = True
+
+        # Metadata file
+        elif need_metadata and filename == "db_metadata.json":
+            hf_hub_download(
+                repo_id=HF_DATASET_REPO_ID,
+                repo_type="dataset",
+                filename=filename,
+                local_dir=output_dir,
+                local_dir_use_symlinks=False,
+            )
+            metadata_downloaded = True
+
+    print(
+        "[INFO] HuggingFace sync completed "
+        f"(pdb_downloaded={pdb_downloaded}, "
+        f"chembl_downloaded={chembl_downloaded}, "
+        f"metadata_downloaded={metadata_downloaded})."
+    )
+
+    return {
+        "pdb_downloaded": pdb_downloaded,
+        "chembl_downloaded": chembl_downloaded,
+        "metadata_downloaded": metadata_downloaded,
+    }
 
 
 def main():
@@ -111,44 +214,33 @@ def main():
     temp_data_dir = args.temp_data_dir
     chembl_version = args.chembl_version
 
-    # Check whether the output_dir already existed BEFORE this run
-    output_dir_already_existed = os.path.isdir(output_dir)
-
     # Ensure root directories exist
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(temp_data_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 1) Sync base dataset from HuggingFace ONLY if there is no local DB
+    # 1) Sync required base data from HuggingFace (pdb, chembl, metadata)
     # ------------------------------------------------------------------
-    # Logic:
-    #   - If output_dir did not exist before, we assume there is no local
-    #     snapshot and we need to fetch the initial one from HF.
-    #   - If it already existed, we trust the local copy and DO NOT overwrite
-    #     it with the (possibly older) HF snapshot.
-    metadata_path = os.path.join(output_dir, "db_metadata.json")
-
-    if not output_dir_already_existed and not os.path.exists(metadata_path):
-        print(
-            "[INFO] No local database snapshot detected. "
-            "Downloading base dataset from HuggingFace..."
-        )
-        download_base_databases_from_huggingface(output_dir)
-    else:
-        print(
-            "[INFO] Local database directory already exists. "
-            "Skipping HuggingFace base download."
-        )
+    sync_info = download_base_databases_from_huggingface(output_dir)
+    pdb_downloaded = sync_info["pdb_downloaded"]
+    chembl_downloaded = sync_info["chembl_downloaded"]
+    # metadata_downloaded = sync_info["metadata_downloaded"]  # not strictly needed
 
     # ------------------------------------------------------------------
-    # 2) Load metadata (which should now exist in output_dir)
+    # 2) Load metadata (which should now exist, or start from empty)
     # ------------------------------------------------------------------
     metadata_path = os.path.join(output_dir, "db_metadata.json")
+    metadata = {}
 
     if os.path.exists(metadata_path):
         print(f"[INFO] Loading metadata from {metadata_path}")
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
+    else:
+        print(
+            "[WARN] No db_metadata.json found even after HF sync. "
+            "Starting with empty metadata."
+        )
 
     # ------------------------------------------------------------------
     # 3) Update / generate PDB database
@@ -156,13 +248,23 @@ def main():
     pdb_db_dir = os.path.join(output_dir, "pdb")
     os.makedirs(pdb_db_dir, exist_ok=True)
 
-    # NOTE:
-    # - update_pdb_database_from_dir() is assumed to:
-    #   * work on top of the preprocessed PDB database retrieved from HF
-    #   * incorporate new PDB entries if available in the local raw source
+    # Detect changes in the PDB processed directory
+    pdb_before = snapshot_dir(pdb_db_dir)
+
     print("[INFO] Updating PDB database from local PDB directory...")
     update_pdb_database_from_dir(pdb_db_dir, temp_dir=temp_data_dir)
-    metadata["pdb_last_update"] = date.today().isoformat()
+
+    pdb_after = snapshot_dir(pdb_db_dir)
+
+    # PDB is considered updated if:
+    #   - The directory content changed during update_pdb_database_from_dir(), or
+    #   - We just downloaded the PDB data from HuggingFace in this run.
+    pdb_updated = pdb_downloaded or (pdb_before != pdb_after)
+
+    if pdb_updated:
+        metadata["pdb_last_update"] = date.today().isoformat()
+    else:
+        print("[INFO] No changes detected in PDB processed directory.")
 
     # ------------------------------------------------------------------
     # 4) Update / generate ChEMBL database
@@ -178,6 +280,11 @@ def main():
         current_chembl_in_metadata is None
         or current_chembl_in_metadata != chembl_version
     )
+
+    chembl_output_dir = os.path.join(output_dir, "chembl")
+    os.makedirs(chembl_output_dir, exist_ok=True)
+
+    chembl_updated = False
 
     if need_chembl_update:
         print(
@@ -231,8 +338,6 @@ def main():
             )
 
         print(f"[INFO] Generating local ChEMBL database from: {chembl_db_path}")
-        chembl_output_dir = os.path.join(output_dir, "chembl")
-        os.makedirs(chembl_output_dir, exist_ok=True)
 
         generate_chembl_database(
             chembl_db_path=chembl_db_path,
@@ -240,19 +345,31 @@ def main():
         )
 
         metadata["chembl_version"] = chembl_version
+        chembl_updated = True
     else:
         print(
             f"[INFO] ChEMBL database already at version {chembl_version}, "
             "no regeneration needed."
         )
 
+    # If the ChEMBL directory was freshly downloaded from HF, that also
+    # counts as an update that should trigger re-merging.
+    chembl_updated = chembl_updated or chembl_downloaded
+
     # ------------------------------------------------------------------
-    # 5) Merge PDB + ChEMBL
+    # 5) Merge PDB + ChEMBL (only if at least one changed)
     # ------------------------------------------------------------------
+    if not (pdb_updated or chembl_updated):
+        print(
+            "[INFO] No PDB or ChEMBL updates detected. "
+            "Skipping merge and UniProt steps."
+        )
+        print("[INFO] Nothing changed; metadata not modified.")
+        return
+
     # Assumption: merge_databases() expects a directory that contains
     # subfolders "pdb" and "chembl" with the processed data.
-
-    # This step also generates the vector database of compounds from PDB and ChEMBL 
+    # This step also generates the vector database of compounds from PDB and ChEMBL.
     data_dir = output_dir
 
     print("[INFO] Merging PDB and ChEMBL databases...")
