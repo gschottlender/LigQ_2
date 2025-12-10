@@ -343,6 +343,7 @@ def main() -> None:
         save_per_query=True,
         save_summary=True,
         njobs=args.n_workers,
+        chunk_size_queries=500,
     )
 
     print("[INFO] Pipeline completed successfully.")
