@@ -501,7 +501,7 @@ def run_blast_sequence_search(
 # Block 2 – Domain-based search (HMMER + Pfam)
 # ----------------------------------------------------------------------
 
-ddef run_hmmer_domain_search(
+def run_hmmer_domain_search(
     query_fasta: str | Path,
     data_dir: str | Path = "databases",
     temp_results_dir: str | Path = "temp_results",
