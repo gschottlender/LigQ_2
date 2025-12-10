@@ -1011,6 +1011,7 @@ def _process_single_query(
         and "binding_sites" in known_q_collapsed.columns
         and "query_id" in zinc_q.columns
     ):
+        # Work on a copy of zinc_q only when needed
         zinc_q = zinc_q.copy()
 
         # Map: chem_comp_id (known) -> binding_sites (list) for this query
@@ -1020,7 +1021,7 @@ def _process_single_query(
             .to_dict()
         )
 
-        # Vectorized mapping instead of row-wise apply
+        # Vectorized mapping: much faster than row-wise apply
         zinc_q["possible_binding_sites"] = zinc_q["query_id"].map(bs_map)
     elif not zinc_q.empty:
         # No binding_sites or query_id → keep column as NaN
