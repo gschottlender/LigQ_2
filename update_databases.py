@@ -248,23 +248,21 @@ def main():
     pdb_db_dir = os.path.join(output_dir, "pdb")
     os.makedirs(pdb_db_dir, exist_ok=True)
 
-    # Detect changes in the PDB processed directory
-    pdb_before = snapshot_dir(pdb_db_dir)
-
     print("[INFO] Updating PDB database from local PDB directory...")
-    update_pdb_database_from_dir(pdb_db_dir, temp_dir=temp_data_dir)
-
-    pdb_after = snapshot_dir(pdb_db_dir)
+    pdb_was_updated = update_pdb_database_from_dir(
+        pdb_db_dir,
+        temp_dir=temp_data_dir,
+    )
 
     # PDB is considered updated if:
-    #   - The directory content changed during update_pdb_database_from_dir(), or
-    #   - We just downloaded the PDB data from HuggingFace in this run.
-    pdb_updated = pdb_downloaded or (pdb_before != pdb_after)
+    #   - We processed new PDB IDs in this run, OR
+    #   - The PDB data was freshly downloaded from Hugging Face.
+    pdb_updated = pdb_downloaded or pdb_was_updated
 
     if pdb_updated:
         metadata["pdb_last_update"] = date.today().isoformat()
     else:
-        print("[INFO] No changes detected in PDB processed directory.")
+        print("[INFO] No changes detected in PDB database (no new PDB IDs).")
 
     # ------------------------------------------------------------------
     # 4) Update / generate ChEMBL database
