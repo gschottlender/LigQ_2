@@ -149,7 +149,17 @@ This is the primary user-facing entry point.
 results/search_results_summary.tsv
 ```
 
-Contains one row per query protein summarizing the search.
+Contains one row per query protein, summarizing the results obtained from
+sequence-based and domain-based searches.
+
+Columns report:
+- the number of candidate proteins,
+- the number of unique known ligands,
+- and the number of predicted ZINC ligands,
+
+separately for **sequence** and **domain** searches.
+
+---
 
 ### Per-Query Results
 
@@ -157,13 +167,74 @@ Contains one row per query protein summarizing the search.
 results/search_results/<QUERY_ID>/
 ```
 
-Each directory contains:
+Each directory corresponds to a single query protein and contains
+ligand-level results derived from two complementary search strategies:
 
-#### known_ligands.tsv
-Curated ligands from PDB and ChEMBL with structural and annotation data.
+---
 
-#### zinc_ligands.tsv
-Predicted ligands from ZINC based on similarity search.
+#### `search_type: sequence` vs `search_type: domain`
+
+For every ligand entry, the column `search_type` indicates **how the
+protein–ligand association was obtained**:
+
+- **`sequence`**
+
+  The ligand is associated with a protein identified by **direct
+  sequence similarity** to the query protein (full-length alignment).
+
+  These hits typically reflect:
+  - closer evolutionary relationships,
+  - higher confidence functional similarity,
+  - more conservative ligand transfer.
+
+- **`domain`**
+
+  The ligand is associated with a protein identified by **shared protein
+  domains** (e.g. Pfam-based matches), even when full-length sequence
+  similarity is low.
+
+  These hits typically reflect:
+  - conserved catalytic or binding domains,
+  - broader functional similarity,
+  - increased chemical diversity at the cost of lower specificity.
+
+When the same ligand is retrieved by both strategies, **sequence-based
+hits are always prioritized** over domain-based hits when ligand
+collapsing is enabled.
+
+---
+
+### Known Ligands
+
+```
+known_ligands.tsv
+```
+
+Curated ligands retrieved from **PDB and ChEMBL** that are associated with
+candidate proteins identified by sequence-based and/or domain-based
+searches.
+
+Each row represents a ligand–protein association and may include:
+- structural identifiers,
+- binding site information,
+- experimental annotations.
+
+---
+
+### ZINC Ligands
+
+```
+zinc_ligands.tsv
+```
+
+Predicted ligands retrieved from **ZINC**, identified by similarity
+searches starting from known ligands associated with candidate proteins.
+
+Depending on the chosen options:
+- ligands may be **collapsed to one row per compound**, prioritizing
+  sequence-based hits, or
+- multiple rows may be present for the same ligand when repeated ligands
+  are kept.
 
 ---
 
