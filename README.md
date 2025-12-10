@@ -15,6 +15,41 @@ The pipeline is designed to be:
 
 ---
 
+## Installation
+
+LigQ_2 is distributed with a Conda environment file to ensure full reproducibility.
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/gschottlender/LigQ_2.git
+cd LigQ_2
+```
+
+### 2. Create the Conda environment
+
+```bash
+conda env create -f environment.yml -n ligq_2_env
+```
+
+This command will create a Conda environment named **ligq_2_env**, containing:
+- Python
+- RDKit
+- BLAST+
+- HMMER
+- All required Python dependencies
+
+(The environment name is defined inside `environment.yml`.)
+
+### 3. Activate the environment
+
+```bash
+conda activate ligq_2_env
+```
+
+Once activated, all LigQ_2 scripts can be run directly.
+
+---
 
 ## Quick Start
 
