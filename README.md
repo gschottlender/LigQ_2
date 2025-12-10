@@ -53,13 +53,75 @@ Once activated, all LigQ_2 scripts can be run directly.
 
 ## Quick Start
 
+### 1) Default run (recommended)
+
+Run LigQ_2 with the default settings:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results
+```
+
+- Ligands are **collapsed per query** (one row per ligand ID).
+- If a ligand is found by both sequence and domain searches, the
+  sequence-based hit is prioritized.
+- This mode produces cleaner and more compact result tables.
+
+---
+
+### 2) Keep repeated ligands (no collapse)
+
+Run LigQ_2 while **keeping repeated ligands** coming from different
+proteins or search types (sequence / domain):
+
 ```bash
 python run_ligq_2.py \
   --input-fasta queries.fasta \
   --output-dir results \
+  --keep-repeated-ligands
 ```
 
-If required databases are missing, they are automatically downloaded from Hugging Face (updated December 2025).
+- Ligands are **not collapsed**.
+- Multiple rows per ligand may appear if the same compound is associated
+  with different proteins or search types.
+- This mode preserves more contextual information, at the cost of larger
+  output files.
+
+---
+
+### 3) Increase sequence diversity (lower identity threshold)
+
+Run LigQ_2 with a **lower minimum sequence identity** to retrieve a more
+diverse set of candidate proteins from sequence-based searches:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results \
+  --min-identity 0.5
+```
+
+- A lower identity threshold increases the diversity of sequence hits.
+- This may lead to more candidate proteins and a broader ligand space.
+- Useful for exploratory analyses or distant homology searches.
+
+---
+
+### 4) Combine both options
+
+Retrieve diverse sequence hits **and** keep all repeated ligands:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results \
+  --min-identity 0.5 \
+  --keep-repeated-ligands
+```
+
+- Maximizes coverage and diversity.
+- Recommended only when detailed, redundant information is desired.
 
 ---
 
