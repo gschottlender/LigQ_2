@@ -107,7 +107,7 @@ Predicted ligands from ZINC based on similarity search.
 
 ## Updating Databases
 
-### 1. Update PDB and ChEMBL (requires ChEMBL version to download)
+### 1. Update PDB and ChEMBL (requires specification of ChEMBL version to download)
 
 ```bash
 python update_databases.py --chembl-version 36
