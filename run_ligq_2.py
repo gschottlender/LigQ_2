@@ -228,6 +228,18 @@ def parse_args() -> argparse.Namespace:
         help="Maximum domain i-Evalue for HMMER (hmmscan) hits.",
     )
 
+    parser.add_argument(
+    "--keep-repeated-ligands",
+    action="store_true",
+    help=(
+        "Do NOT collapse ligands by chem_comp_id in Block 3. "
+        "If set, repeated ligands coming from multiple proteins "
+        "(sequence and/or domain hits) will be kept as separate rows. "
+        "By default, ligands are collapsed to one row per ID, "
+        "prioritizing sequence-based hits."
+    ),
+    )
+
     # Hugging Face dataset control
     parser.add_argument(
         "--hf-repo-id",
@@ -235,6 +247,8 @@ def parse_args() -> argparse.Namespace:
         help="Hugging Face dataset ID for base data download.",
     )
 
+
+    
     return parser.parse_args()
 
 
@@ -343,7 +357,8 @@ def main() -> None:
         save_per_query=True,
         save_summary=True,
         njobs=args.n_workers,
-        chunk_size_queries=500,
+        chunk_size_queries=100,
+        drop_duplicates=not args.keep_repeated_ligands,
     )
 
     print("[INFO] Pipeline completed successfully.")
