@@ -5,7 +5,7 @@ import shutil
 import shutil as pyshutil
 import subprocess
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -937,6 +937,239 @@ def combine_sequence_and_domain_candidates(
 # Block 3 – Query → ligand results (sequential + parallel versions)
 # ----------------------------------------------------------------------
 
+# ----------------------------------------------------------------------
+# Helpers for Block 3
+# ----------------------------------------------------------------------
+
+def _collapse_known_global(df: pd.DataFrame, ligand_col: str | None) -> pd.DataFrame:
+    """
+    Global collapse of known ligands:
+      groupby(["qseqid", ligand_col]) with priority sequence > domain.
+    """
+    if ligand_col is None or df is None or df.empty:
+        return df
+
+    df = df.copy()
+    df["priority"] = np.where(df["search_type"] == "sequence", 0, 1)
+    df = df.sort_values(["qseqid", ligand_col, "priority"])
+
+    group_cols = ["qseqid", ligand_col]
+    agg_dict: dict[str, object] = {
+        "search_type": "first",  # respect priority
+    }
+
+    if "uniprot_id" in df.columns:
+        agg_dict["uniprot_id"] = _unique_list
+    if "binding_sites" in df.columns:
+        agg_dict["binding_sites"] = _unique_list_flat
+    if "pdb_ids" in df.columns:
+        agg_dict["pdb_ids"] = _unique_list_flat
+
+    # all remaining columns → first
+    for col in df.columns:
+        if col in group_cols or col in agg_dict or col == "priority":
+            continue
+        agg_dict[col] = "first"
+
+    collapsed = (
+        df.groupby(group_cols, as_index=False)
+        .agg(agg_dict)
+        .drop(columns=["priority"], errors="ignore")
+    )
+    return collapsed
+
+
+def _collapse_zinc_global(df: pd.DataFrame, ligand_col: str | None) -> pd.DataFrame:
+    """
+    Global collapse of ZINC ligands:
+      groupby(["qseqid", ligand_col]) with priority sequence > domain.
+    """
+    if ligand_col is None or df is None or df.empty:
+        return df
+
+    df = df.copy()
+    df["priority"] = np.where(df["search_type"] == "sequence", 0, 1)
+    df = df.sort_values(["qseqid", ligand_col, "priority"])
+
+    group_cols = ["qseqid", ligand_col]
+    agg_dict: dict[str, object] = {
+        "search_type": "first",
+    }
+
+    if "uniprot_id" in df.columns:
+        agg_dict["uniprot_id"] = _unique_list
+    if "possible_binding_sites" in df.columns:
+        agg_dict["possible_binding_sites"] = _unique_list_flat
+
+    # all remaining columns → first
+    for col in df.columns:
+        if col in group_cols or col in agg_dict or col == "priority":
+            continue
+        agg_dict[col] = "first"
+
+    collapsed = (
+        df.groupby(group_cols, as_index=False)
+        .agg(agg_dict)
+        .drop(columns=["priority"], errors="ignore")
+    )
+    return collapsed
+
+
+def _prepare_block3_state(
+    df_candidates_all: pd.DataFrame,
+    known_db: pd.DataFrame,
+    zinc_db: pd.DataFrame,
+    output_dir: str | Path,
+    search_results_subdir: str,
+) -> dict[str, object]:
+    """
+    Prepare all heavy data for Block 3 ONCE in the parent process.
+
+    Returns a dict with:
+      - output_dir, search_results_dir
+      - known_db_small, zinc_db_small
+      - known_ligand_col, zinc_ligand_col
+      - cand_by_q, known_by_q, zinc_by_q  (all already grouped by qseqid)
+    """
+    output_dir = ensure_dir(output_dir)
+    search_results_dir = ensure_dir(output_dir / search_results_subdir)
+
+    # --- 1) Prepare candidate table, ensuring 'uniprot_id' column ---
+    if df_candidates_all.empty:
+        print(
+            "[INFO] df_candidates_all is empty. Only summary (all zeros) "
+            "will be returned."
+        )
+        df_cand = df_candidates_all
+        known_db_small = known_db.iloc[0:0].copy()
+        zinc_db_small = zinc_db.iloc[0:0].copy()
+    else:
+        expected_cols = {"qseqid", "sseqid", "search_type"}
+        missing = expected_cols - set(df_candidates_all.columns)
+        if missing:
+            raise ValueError(
+                f"df_candidates_all is missing columns: {missing}. "
+                f"Expected at least: {expected_cols}"
+            )
+        df_cand = df_candidates_all.copy()
+        df_cand = df_cand.rename(columns={"sseqid": "uniprot_id"})
+
+        prot_ids = df_cand["uniprot_id"].unique()
+        known_db_small = known_db[known_db["uniprot_id"].isin(prot_ids)].copy()
+        zinc_db_small = zinc_db[zinc_db["uniprot_id"].isin(prot_ids)].copy()
+
+    # --- 2) Global joins with known and ZINC ligand databases ---
+    if not df_cand.empty:
+        if "uniprot_id" not in known_db_small.columns:
+            raise ValueError("known_db must contain 'uniprot_id' column.")
+        known_merged = df_cand.merge(known_db_small, on="uniprot_id", how="inner")
+    else:
+        known_merged = pd.DataFrame(
+            columns=["qseqid", "search_type"] + list(known_db_small.columns)
+        )
+
+    if not df_cand.empty:
+        if "uniprot_id" not in zinc_db_small.columns:
+            raise ValueError("zinc_db must contain 'uniprot_id' column.")
+        zinc_merged = df_cand.merge(zinc_db_small, on="uniprot_id", how="inner")
+    else:
+        zinc_merged = pd.DataFrame(
+            columns=["qseqid", "search_type"] + list(zinc_db_small.columns)
+        )
+
+    # Ensure minimal columns
+    for df_tmp in (known_merged, zinc_merged):
+        if "qseqid" not in df_tmp.columns:
+            df_tmp["qseqid"] = pd.Series(dtype=str)
+        if "search_type" not in df_tmp.columns:
+            df_tmp["search_type"] = pd.Series(dtype=str)
+
+    # --- 3) Identify ligand ID columns ---
+    known_ligand_col = "chem_comp_id" if "chem_comp_id" in known_db_small.columns else None
+
+    if "zinc_chem_comp_id" in zinc_db_small.columns:
+        zinc_ligand_col = "zinc_chem_comp_id"
+    elif "chem_comp_id" in zinc_db_small.columns:
+        zinc_ligand_col = "chem_comp_id"
+    else:
+        zinc_ligand_col = None
+
+    # --- 4) Global collapse of known ligands ---
+    known_collapsed = _collapse_known_global(known_merged, known_ligand_col)
+
+    # --- 5) Global possible_binding_sites + collapse of ZINC ligands ---
+    if not zinc_merged.empty and zinc_ligand_col is not None:
+        zinc_tmp = zinc_merged.copy()
+
+        # Try to propagate binding_sites from known → ZINC using (qseqid, query_id)
+        if (
+            known_ligand_col is not None
+            and known_collapsed is not None
+            and not known_collapsed.empty
+            and "binding_sites" in known_collapsed.columns
+            and "query_id" in zinc_tmp.columns
+        ):
+            bs_series = (
+                known_collapsed.groupby(["qseqid", known_ligand_col])["binding_sites"]
+                .apply(_unique_list_flat)
+            )
+            bs_df = bs_series.reset_index()
+            bs_df = bs_df.rename(
+                columns={
+                    "binding_sites": "possible_binding_sites",
+                    known_ligand_col: "_bs_ligand_id",
+                }
+            )
+
+            zinc_tmp = zinc_tmp.merge(
+                bs_df,
+                left_on=["qseqid", "query_id"],
+                right_on=["qseqid", "_bs_ligand_id"],
+                how="left",
+            )
+            zinc_tmp = zinc_tmp.drop(columns=["_bs_ligand_id"], errors="ignore")
+        else:
+            if "possible_binding_sites" not in zinc_tmp.columns:
+                zinc_tmp["possible_binding_sites"] = np.nan
+
+        zinc_collapsed = _collapse_zinc_global(zinc_tmp, zinc_ligand_col)
+    else:
+        zinc_collapsed = zinc_merged.copy()
+        if not zinc_collapsed.empty and "possible_binding_sites" not in zinc_collapsed.columns:
+            zinc_collapsed["possible_binding_sites"] = np.nan
+
+    # --- 6) Pre-split all tables by qseqid (ONCE) ---
+    if not df_candidates_all.empty:
+        cand_by_q = dict(tuple(df_candidates_all.groupby("qseqid")))
+    else:
+        cand_by_q = {}
+
+    if known_collapsed is not None and not known_collapsed.empty:
+        known_by_q = dict(tuple(known_collapsed.groupby("qseqid")))
+    else:
+        known_by_q = {}
+
+    if zinc_collapsed is not None and not zinc_collapsed.empty:
+        zinc_by_q = dict(tuple(zinc_collapsed.groupby("qseqid")))
+    else:
+        zinc_by_q = {}
+
+    return {
+        "output_dir": output_dir,
+        "search_results_dir": search_results_dir,
+        "known_db_small": known_db_small,
+        "zinc_db_small": zinc_db_small,
+        "known_ligand_col": known_ligand_col,
+        "zinc_ligand_col": zinc_ligand_col,
+        "cand_by_q": cand_by_q,
+        "known_by_q": known_by_q,
+        "zinc_by_q": zinc_by_q,
+    }
+
+# ----------------------------------------------------------------------
+# Block 3 – Query → ligand results (using global collapses)
+# ----------------------------------------------------------------------
+
 def _process_single_query(
     qseqid: str,
     df_cand_q: pd.DataFrame,
@@ -950,11 +1183,11 @@ def _process_single_query(
     save_per_query: bool = True,
 ) -> dict:
     """
-    Process a single query (qseqid): collapse ligands, write per-query TSV
-    files, and compute summary counts.
+    Process a single query (qseqid): write per-query TSV files from
+    pre-collapsed tables and compute summary counts.
 
-    This version expects per-query slices (already filtered by qseqid) to
-    avoid scanning the full tables repeatedly.
+    IMPORTANT: known_q and zinc_q are expected to be ALREADY collapsed
+    globally by (qseqid, ligand_id). This function should be cheap.
     """
     # --- 0) Candidate proteins for this query ---
     if df_cand_q is None or df_cand_q.empty:
@@ -964,101 +1197,16 @@ def _process_single_query(
         n_prot_seq = df_cand_q[df_cand_q["search_type"] == "sequence"]["sseqid"].nunique()
         n_prot_dom = df_cand_q[df_cand_q["search_type"] == "domain"]["sseqid"].nunique()
 
-    # Ensure we have proper DataFrames (avoid None)
+    # Ensure DataFrames
     if known_q is None:
         known_q = pd.DataFrame(columns=["qseqid", "search_type"])
     if zinc_q is None:
         zinc_q = pd.DataFrame(columns=["qseqid", "search_type"])
 
-    # --- 1) Collapse ligands in known_q with priority sequence > domain ---
-    if not known_q.empty and known_ligand_col is not None:
-        known_q = known_q.copy()
-        known_q["priority"] = np.where(known_q["search_type"] == "sequence", 0, 1)
-        known_q = known_q.sort_values([known_ligand_col, "priority"])
+    known_q_collapsed = known_q
+    zinc_q_collapsed = zinc_q
 
-        group_cols = ["qseqid", known_ligand_col]
-        agg_dict: dict[str, object] = {
-            "search_type": "first",  # respect priority sequence > domain
-        }
-
-        # Special aggregators if columns exist
-        if "uniprot_id" in known_q.columns:
-            agg_dict["uniprot_id"] = _unique_list
-        if "binding_sites" in known_q.columns:
-            agg_dict["binding_sites"] = _unique_list_flat
-        if "pdb_ids" in known_q.columns:
-            agg_dict["pdb_ids"] = _unique_list_flat
-
-        # For all remaining columns, take the first value
-        for col in known_q.columns:
-            if col in group_cols or col in agg_dict or col == "priority":
-                continue
-            agg_dict[col] = "first"
-
-        known_q_collapsed = (
-            known_q.groupby(group_cols, as_index=False)
-            .agg(agg_dict)
-            .drop(columns=["priority"], errors="ignore")
-        )
-    else:
-        known_q_collapsed = known_q  # empty or no ligand ID column
-
-    # --- 2) Build possible_binding_sites for ZINC, if possible ---
-    if (
-        not zinc_q.empty
-        and zinc_ligand_col is not None
-        and not known_q_collapsed.empty
-        and "binding_sites" in known_q_collapsed.columns
-        and "query_id" in zinc_q.columns
-    ):
-        # Work on a copy of zinc_q only when needed
-        zinc_q = zinc_q.copy()
-
-        # Map: chem_comp_id (known) -> binding_sites (list) for this query
-        bs_map = (
-            known_q_collapsed.groupby(known_ligand_col)["binding_sites"]
-            .apply(_unique_list_flat)
-            .to_dict()
-        )
-
-        # Vectorized mapping: much faster than row-wise apply
-        zinc_q["possible_binding_sites"] = zinc_q["query_id"].map(bs_map)
-    elif not zinc_q.empty:
-        # No binding_sites or query_id → keep column as NaN
-        zinc_q = zinc_q.copy()
-        if "possible_binding_sites" not in zinc_q.columns:
-            zinc_q["possible_binding_sites"] = np.nan
-
-    # --- 3) Collapse ZINC ligands with priority sequence > domain ---
-    if not zinc_q.empty and zinc_ligand_col is not None:
-        zinc_q["priority"] = np.where(zinc_q["search_type"] == "sequence", 0, 1)
-        zinc_q = zinc_q.sort_values([zinc_ligand_col, "priority"])
-
-        group_cols_z = ["qseqid", zinc_ligand_col]
-        agg_dict_z: dict[str, object] = {
-            "search_type": "first",
-        }
-
-        if "uniprot_id" in zinc_q.columns:
-            agg_dict_z["uniprot_id"] = _unique_list
-        if "possible_binding_sites" in zinc_q.columns:
-            agg_dict_z["possible_binding_sites"] = _unique_list_flat
-
-        # For remaining columns, take the first value
-        for col in zinc_q.columns:
-            if col in group_cols_z or col in agg_dict_z or col == "priority":
-                continue
-            agg_dict_z[col] = "first"
-
-        zinc_q_collapsed = (
-            zinc_q.groupby(group_cols_z, as_index=False)
-            .agg(agg_dict_z)
-            .drop(columns=["priority"], errors="ignore")
-        )
-    else:
-        zinc_q_collapsed = zinc_q
-
-    # --- 4) Write per-query TSV files (collapsed tables) ---
+    # --- 1) Write per-query TSV files (already collapsed) ---
     if save_per_query and (not known_q_collapsed.empty or not zinc_q_collapsed.empty):
         q_dir = ensure_dir(search_results_dir / qseqid)
 
@@ -1067,6 +1215,10 @@ def _process_single_query(
             cols_known = ["search_type"] + list(known_db.columns)
             cols_known = [c for c in cols_known if c in known_q_collapsed.columns]
             df_known_out = known_q_collapsed[cols_known].copy()
+            df_known_out = df_known_out.sort_values(
+                                by="search_type",
+                                key=lambda s: (s != "sequence")
+                            )
             known_path = q_dir / "known_ligands.tsv"
             df_known_out.to_csv(known_path, sep="\t", index=False)
 
@@ -1074,7 +1226,6 @@ def _process_single_query(
         if not zinc_q_collapsed.empty:
             df_zinc_out = zinc_q_collapsed.copy()
 
-            # Normalize ligand ID column name to 'chem_comp_id'
             ligand_col_out = "chem_comp_id"
             if zinc_ligand_col is not None and zinc_ligand_col != ligand_col_out:
                 if (
@@ -1087,7 +1238,6 @@ def _process_single_query(
             elif zinc_ligand_col is not None:
                 ligand_col_out = zinc_ligand_col
 
-            # Preferred column order for ZINC TSV
             preferred_order = [
                 "search_type",
                 "uniprot_id",
@@ -1097,17 +1247,19 @@ def _process_single_query(
                 "tanimoto",
                 "smiles",
             ]
-            # Columns that exist, in that order
             cols_zinc = [c for c in preferred_order if c in df_zinc_out.columns]
-            # Add any remaining columns at the end
             extra_cols = [c for c in df_zinc_out.columns if c not in cols_zinc]
             cols_zinc = cols_zinc + extra_cols
 
             df_zinc_out = df_zinc_out[cols_zinc]
+            df_zinc_out = df_zinc_out.sort_values(
+                        by="search_type",
+                        key=lambda s: (s != "sequence")
+                    )
             zinc_path = q_dir / "zinc_ligands.tsv"
             df_zinc_out.to_csv(zinc_path, sep="\t", index=False)
 
-    # --- 5) Ligand counts (unique IDs) for summary ---
+    # --- 2) Ligand counts (unique IDs) for summary ---
     # Known
     if known_q_collapsed.empty or known_ligand_col is None:
         n_known_seq = 0
@@ -1150,115 +1302,25 @@ def build_query_ligand_results(
     save_summary: bool = True,
 ) -> pd.DataFrame:
     """
-    Block 3 (sequential version): join candidate proteins with known and
-    ZINC ligands, generate per-query result files (with deduplicated ligands)
-    and a global summary table.
-
-    This version:
-      - reduces known_db and zinc_db to the uniprot_ids that actually appear
-        in df_candidates_all,
-      - pre-splits candidate and merged tables by qseqid to avoid repeated
-        scans for each query.
+    Block 3 (sequential version) using global merges and ligand collapses.
     """
-    output_dir = ensure_dir(output_dir)
-    search_results_dir = ensure_dir(output_dir / search_results_subdir)
+    state = _prepare_block3_state(
+        df_candidates_all=df_candidates_all,
+        known_db=known_db,
+        zinc_db=zinc_db,
+        output_dir=output_dir,
+        search_results_subdir=search_results_subdir,
+    )
 
-    # --- 1) Prepare candidate table, ensuring 'uniprot_id' column ---
-    if df_candidates_all.empty:
-        print(
-            "[INFO] df_candidates_all is empty. Only summary (all zeros) "
-            "will be returned."
-        )
-    else:
-        expected_cols = {"qseqid", "sseqid", "search_type"}
-        missing = expected_cols - set(df_candidates_all.columns)
-        if missing:
-            raise ValueError(
-                f"df_candidates_all is missing columns: {missing}. "
-                f"Expected at least: {expected_cols}"
-            )
+    search_results_dir: Path = state["search_results_dir"]
+    known_db_small: pd.DataFrame = state["known_db_small"]
+    zinc_db_small: pd.DataFrame = state["zinc_db_small"]
+    known_ligand_col: str | None = state["known_ligand_col"]
+    zinc_ligand_col: str | None = state["zinc_ligand_col"]
+    cand_by_q: dict = state["cand_by_q"]
+    known_by_q: dict = state["known_by_q"]
+    zinc_by_q: dict = state["zinc_by_q"]
 
-    if not df_candidates_all.empty:
-        df_cand = df_candidates_all.copy()
-        df_cand = df_cand.rename(columns={"sseqid": "uniprot_id"})
-
-        # --- 1.1 Reduce known_db and zinc_db to relevant uniprot_ids ---
-        prot_ids = df_cand["uniprot_id"].unique()
-        known_db_small = known_db[known_db["uniprot_id"].isin(prot_ids)].copy()
-        zinc_db_small = zinc_db[zinc_db["uniprot_id"].isin(prot_ids)].copy()
-    else:
-        df_cand = df_candidates_all
-        # Keep empty tables with correct columns
-        known_db_small = known_db.iloc[0:0].copy()
-        zinc_db_small = zinc_db.iloc[0:0].copy()
-
-    # --- 2) Join with known and ZINC ligand databases ---
-    # 2.1 known_db
-    if not df_cand.empty:
-        if "uniprot_id" not in known_db_small.columns:
-            raise ValueError("known_db must contain 'uniprot_id' column.")
-
-        known_merged = df_cand.merge(
-            known_db_small,
-            on="uniprot_id",
-            how="inner",
-        )
-    else:
-        known_merged = pd.DataFrame(
-            columns=["qseqid", "search_type"] + list(known_db_small.columns)
-        )
-
-    # 2.2 zinc_db
-    if not df_cand.empty:
-        if "uniprot_id" not in zinc_db_small.columns:
-            raise ValueError("zinc_db must contain 'uniprot_id' column.")
-
-        zinc_merged = df_cand.merge(
-            zinc_db_small,
-            on="uniprot_id",
-            how="inner",
-        )
-    else:
-        zinc_merged = pd.DataFrame(
-            columns=["qseqid", "search_type"] + list(zinc_db_small.columns)
-        )
-
-    # Ensure minimal columns
-    for df_tmp in (known_merged, zinc_merged):
-        if "qseqid" not in df_tmp.columns:
-            df_tmp["qseqid"] = pd.Series(dtype=str)
-        if "search_type" not in df_tmp.columns:
-            df_tmp["search_type"] = pd.Series(dtype=str)
-
-    # --- 3) Identify ligand ID columns ---
-    # Known
-    known_ligand_col = "chem_comp_id" if "chem_comp_id" in known_db_small.columns else None
-
-    # ZINC: can be 'zinc_chem_comp_id' or 'chem_comp_id'
-    if "zinc_chem_comp_id" in zinc_db_small.columns:
-        zinc_ligand_col = "zinc_chem_comp_id"
-    elif "chem_comp_id" in zinc_db_small.columns:
-        zinc_ligand_col = "chem_comp_id"
-    else:
-        zinc_ligand_col = None
-
-    # --- 4) Pre-split tables by qseqid to avoid repeated scans ---
-    if not df_candidates_all.empty:
-        cand_by_q = dict(tuple(df_candidates_all.groupby("qseqid")))
-    else:
-        cand_by_q = {}
-
-    if not known_merged.empty:
-        known_by_q = dict(tuple(known_merged.groupby("qseqid")))
-    else:
-        known_by_q = {}
-
-    if not zinc_merged.empty:
-        zinc_by_q = dict(tuple(zinc_merged.groupby("qseqid")))
-    else:
-        zinc_by_q = {}
-
-    # --- 5) Sequential loop over queries using per-qseqid slices ---
     summary_rows: list[dict] = []
     for qseqid in df_queries["qseqid"]:
         df_cand_q = cand_by_q.get(
@@ -1284,24 +1346,23 @@ def build_query_ligand_results(
     summary_df = pd.DataFrame(summary_rows).sort_values("qseqid").reset_index(drop=True)
 
     if save_summary:
-        summary_path = output_dir / "search_results_summary.tsv"
+        summary_path = state["output_dir"] / "search_results_summary.tsv"
         summary_df.to_csv(summary_path, sep="\t", index=False)
         print(f"[INFO] Global summary saved to: {summary_path}")
 
     return summary_df
 
-
 # ----------------------------------------------------------------------
-# Parallel version of Block 3
+# Parallel version of Block 3 (Process or Thread pool) with query chunking
 # ----------------------------------------------------------------------
 
 _GLOBAL_PARALLEL_STATE: dict[str, object] = {}
 
 
 def _init_parallel_worker(
-    df_candidates_all: pd.DataFrame,
-    known_merged: pd.DataFrame,
-    zinc_merged: pd.DataFrame,
+    cand_by_q: dict,
+    known_by_q: dict,
+    zinc_by_q: dict,
     known_db_small: pd.DataFrame,
     zinc_db_small: pd.DataFrame,
     known_ligand_col: str | None,
@@ -1310,13 +1371,20 @@ def _init_parallel_worker(
     save_per_query: bool,
 ) -> None:
     """
-    Initializer for worker processes: store large shared objects in a
-    global dictionary so they are available to _process_single_query_parallel.
+    Initializer for worker processes/threads.
 
-    It also pre-splits the merged tables by qseqid ONCE per worker, so each
-    query can be processed using a small slice without scanning full tables.
+    Stores shared, read-only objects in a global dictionary so they are
+    available to `_process_single_query_parallel`.
+
+    IMPORTANT:
+    - `cand_by_q`, `known_by_q`, and `zinc_by_q` are ALREADY grouped by
+      `qseqid` in the parent process.
+    - No groupby or heavy computation happens inside the workers.
     """
-    # Store small DBs
+    _GLOBAL_PARALLEL_STATE["cand_by_q"] = cand_by_q
+    _GLOBAL_PARALLEL_STATE["known_by_q"] = known_by_q
+    _GLOBAL_PARALLEL_STATE["zinc_by_q"] = zinc_by_q
+
     _GLOBAL_PARALLEL_STATE["known_db_small"] = known_db_small
     _GLOBAL_PARALLEL_STATE["zinc_db_small"] = zinc_db_small
     _GLOBAL_PARALLEL_STATE["known_ligand_col"] = known_ligand_col
@@ -1324,33 +1392,19 @@ def _init_parallel_worker(
     _GLOBAL_PARALLEL_STATE["search_results_dir"] = Path(search_results_dir)
     _GLOBAL_PARALLEL_STATE["save_per_query"] = save_per_query
 
-    # Pre-split candidate and merged tables by qseqid
-    if df_candidates_all is not None and not df_candidates_all.empty:
-        _GLOBAL_PARALLEL_STATE["cand_by_q"] = dict(
-            tuple(df_candidates_all.groupby("qseqid"))
-        )
-    else:
-        _GLOBAL_PARALLEL_STATE["cand_by_q"] = {}
-
-    if known_merged is not None and not known_merged.empty:
-        _GLOBAL_PARALLEL_STATE["known_by_q"] = dict(
-            tuple(known_merged.groupby("qseqid"))
-        )
-    else:
-        _GLOBAL_PARALLEL_STATE["known_by_q"] = {}
-
-    if zinc_merged is not None and not zinc_merged.empty:
-        _GLOBAL_PARALLEL_STATE["zinc_by_q"] = dict(
-            tuple(zinc_merged.groupby("qseqid"))
-        )
-    else:
-        _GLOBAL_PARALLEL_STATE["zinc_by_q"] = {}
-
 
 def _process_single_query_parallel(qseqid: str) -> dict:
     """
-    Wrapper that retrieves shared state from _GLOBAL_PARALLEL_STATE and
-    delegates to _process_single_query using per-qseqid slices.
+    Wrapper executed by a worker.
+
+    Retrieves shared state from `_GLOBAL_PARALLEL_STATE` and delegates
+    to `_process_single_query` using per-qseqid slices that are already
+    globally collapsed.
+
+    This function is intentionally lightweight:
+    - dictionary lookups by qseqid,
+    - TSV writing,
+    - simple counting for the summary.
     """
     st = _GLOBAL_PARALLEL_STATE
 
@@ -1388,88 +1442,47 @@ def build_query_ligand_results_parallel(
     save_per_query: bool = True,
     save_summary: bool = True,
     njobs: int = 4,
+    executor: str = "process",  # "process" or "thread"
+    chunk_size_queries: int | None = 500,
 ) -> pd.DataFrame:
     """
-    Parallel version of build_query_ligand_results.
+    Parallel version of Block 3 with query chunking.
 
-    Large tables are prepared once in the parent process and then shared
-    with worker processes via a global state dictionary. Each worker
-    processes one or more queries independently, using pre-split slices
-    by qseqid to avoid scanning large tables for every query.
+    Heavy work (joins, groupby operations, ligand collapse) is performed
+    in QUERY CHUNKS in the parent process instead of all-at-once.
+
+    For each chunk of qseqids:
+      1. `df_candidates_all` is filtered to that subset of queries.
+      2. `_prepare_block3_state` performs global merges and collapses
+         ONLY for that chunk.
+      3. Workers process individual queries in parallel:
+           - index by qseqid,
+           - write per-query TSV files,
+           - compute lightweight summary counts.
+      4. Summary rows are accumulated globally.
+
+    This approach:
+      - reduces peak memory usage,
+      - provides earlier partial outputs on disk,
+      - improves stability for very large proteomes.
+
+    Parameters
+    ----------
+    executor : {"process", "thread"}
+        - "process": use ProcessPoolExecutor (default, safer for CPU-bound steps).
+        - "thread": use ThreadPoolExecutor (useful when disk I/O dominates).
+    chunk_size_queries : int or None
+        Number of queries per chunk. If None or <= 0, all queries are
+        processed in a single chunk (previous behavior).
     """
     if njobs is None or njobs < 1:
         njobs = 1
 
-    output_dir = ensure_dir(output_dir)
-    search_results_dir = ensure_dir(output_dir / search_results_subdir)
+    # Global list of all query identifiers
+    qseqids_all = list(df_queries["qseqid"])
 
-    # --- 1) Prepare candidate table, ensuring 'uniprot_id' column ---
-    if df_candidates_all.empty:
-        print(
-            "[INFO] df_candidates_all is empty. Only summary (all zeros) "
-            "will be returned."
-        )
-    else:
-        expected_cols = {"qseqid", "sseqid", "search_type"}
-        missing = expected_cols - set(df_candidates_all.columns)
-        if missing:
-            raise ValueError(
-                f"df_candidates_all is missing columns: {missing}. "
-                f"Expected at least: {expected_cols}"
-            )
-
-    if not df_candidates_all.empty:
-        df_cand = df_candidates_all.copy()
-        df_cand = df_cand.rename(columns={"sseqid": "uniprot_id"})
-
-        # Reduce DBs to relevant uniprot_ids
-        prot_ids = df_cand["uniprot_id"].unique()
-        known_db_small = known_db[known_db["uniprot_id"].isin(prot_ids)].copy()
-        zinc_db_small = zinc_db[zinc_db["uniprot_id"].isin(prot_ids)].copy()
-    else:
-        df_cand = df_candidates_all
-        known_db_small = known_db.iloc[0:0].copy()
-        zinc_db_small = zinc_db.iloc[0:0].copy()
-
-    # --- 2) Join with known and ZINC ligand databases (once) ---
-    if not df_cand.empty:
-        if "uniprot_id" not in known_db_small.columns:
-            raise ValueError("known_db must contain 'uniprot_id' column.")
-        known_merged = df_cand.merge(known_db_small, on="uniprot_id", how="inner")
-    else:
-        known_merged = pd.DataFrame(
-            columns=["qseqid", "search_type"] + list(known_db_small.columns)
-        )
-
-    if not df_cand.empty:
-        if "uniprot_id" not in zinc_db_small.columns:
-            raise ValueError("zinc_db must contain 'uniprot_id' column.")
-        zinc_merged = df_cand.merge(zinc_db_small, on="uniprot_id", how="inner")
-    else:
-        zinc_merged = pd.DataFrame(
-            columns=["qseqid", "search_type"] + list(zinc_db_small.columns)
-        )
-
-    for df_tmp in (known_merged, zinc_merged):
-        if "qseqid" not in df_tmp.columns:
-            df_tmp["qseqid"] = pd.Series(dtype=str)
-        if "search_type" not in df_tmp.columns:
-            df_tmp["search_type"] = pd.Series(dtype=str)
-
-    # --- 3) Identify ligand ID columns ---
-    known_ligand_col = "chem_comp_id" if "chem_comp_id" in known_db_small.columns else None
-
-    if "zinc_chem_comp_id" in zinc_db_small.columns:
-        zinc_ligand_col = "zinc_chem_comp_id"
-    elif "chem_comp_id" in zinc_db_small.columns:
-        zinc_ligand_col = "chem_comp_id"
-    else:
-        zinc_ligand_col = None
-
-    qseqids = list(df_queries["qseqid"])
-
-    # If only one job or single query, fall back to sequential version
-    if njobs == 1 or len(qseqids) <= 1:
+    # Fallback to the sequential implementation when parallelism is pointless
+    if njobs == 1 or len(qseqids_all) <= 1:
         return build_query_ligand_results(
             df_queries=df_queries,
             df_candidates_all=df_candidates_all,
@@ -1481,29 +1494,82 @@ def build_query_ligand_results_parallel(
             save_summary=save_summary,
         )
 
-    # --- 4) Parallel execution ---
-    summary_rows: list[dict] = []
-    with ProcessPoolExecutor(
-        max_workers=njobs,
-        initializer=_init_parallel_worker,
-        initargs=(
-            df_candidates_all,
-            known_merged,
-            zinc_merged,
-            known_db_small,
-            zinc_db_small,
-            known_ligand_col,
-            zinc_ligand_col,
-            search_results_dir,
-            save_per_query,
-        ),
-    ) as ex:
-        futures = {ex.submit(_process_single_query_parallel, q): q for q in qseqids}
-        for fut in as_completed(futures):
-            res = fut.result()
-            summary_rows.append(res)
+    # Normalize chunk size
+    if chunk_size_queries is None or chunk_size_queries <= 0:
+        chunk_size_queries = len(qseqids_all)
 
-    summary_df = pd.DataFrame(summary_rows).sort_values("qseqid").reset_index(drop=True)
+    ExecutorCls = ProcessPoolExecutor if executor == "process" else ThreadPoolExecutor
+
+    summary_rows: list[dict] = []
+    output_dir = ensure_dir(output_dir)
+
+    n_total = len(qseqids_all)
+
+    # Process queries in consecutive chunks
+    for start in range(0, n_total, chunk_size_queries):
+        end = min(start + chunk_size_queries, n_total)
+        q_chunk = qseqids_all[start:end]
+
+        # Filter candidates to the current chunk of queries
+        if df_candidates_all.empty:
+            df_cand_chunk = df_candidates_all
+        else:
+            df_cand_chunk = df_candidates_all[
+                df_candidates_all["qseqid"].isin(q_chunk)
+            ]
+
+        # Prepare heavy Block 3 state ONLY for this chunk
+        state = _prepare_block3_state(
+            df_candidates_all=df_cand_chunk,
+            known_db=known_db,
+            zinc_db=zinc_db,
+            output_dir=output_dir,
+            search_results_subdir=search_results_subdir,
+        )
+
+        search_results_dir: Path = state["search_results_dir"]
+        known_db_small: pd.DataFrame = state["known_db_small"]
+        zinc_db_small: pd.DataFrame = state["zinc_db_small"]
+        known_ligand_col: str | None = state["known_ligand_col"]
+        zinc_ligand_col: str | None = state["zinc_ligand_col"]
+        cand_by_q: dict = state["cand_by_q"]
+        known_by_q: dict = state["known_by_q"]
+        zinc_by_q: dict = state["zinc_by_q"]
+
+        # Parallel execution within the chunk
+        with ExecutorCls(
+            max_workers=njobs,
+            initializer=_init_parallel_worker,
+            initargs=(
+                cand_by_q,
+                known_by_q,
+                zinc_by_q,
+                known_db_small,
+                zinc_db_small,
+                known_ligand_col,
+                zinc_ligand_col,
+                search_results_dir,
+                save_per_query,
+            ),
+        ) as ex:
+            futures = {
+                ex.submit(_process_single_query_parallel, q): q for q in q_chunk
+            }
+            for fut in as_completed(futures):
+                summary_rows.append(fut.result())
+
+        # Progress message
+        print(
+            f"[INFO] Block 3 parallel: processed queries "
+            f"{start + 1}-{end} / {n_total}"
+        )
+
+    # Build the global summary DataFrame (all queries)
+    summary_df = (
+        pd.DataFrame(summary_rows)
+        .sort_values("qseqid")
+        .reset_index(drop=True)
+    )
 
     if save_summary:
         summary_path = output_dir / "search_results_summary.tsv"
@@ -1511,3 +1577,5 @@ def build_query_ligand_results_parallel(
         print(f"[INFO] Global summary saved to: {summary_path}")
 
     return summary_df
+
+
