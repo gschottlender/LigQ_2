@@ -16,7 +16,7 @@ import pandas as pd
 # ----------------------------------------------------------------------
 
 PFAM_A_URL = (
-    "ftp://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz"
+    "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz"
 )
 
 
