@@ -11,12 +11,14 @@ from compound_processing.compound_helpers import (
     unify_pdb_chembl,
     build_ligand_index,
     build_morgan_representation,
+    build_chemberta_representation,
     LigandStore,
 )
 
 from generate_databases.database_curation.curation_helpers import curate_chembl_possible_by_pdb_similarity
 
-def merge_databases(data_dir,tanimoto_curation_threshold=0.35):
+# Hacer opcional (en los argumentos si hacer update de ChemBERTa o solo Morgan Fps)
+def merge_databases(data_dir,chemberta_rep=True,tanimoto_curation_threshold=0.35):
     pdb_data_dir = f'{data_dir}/pdb/'
     chembl_data_dir = f'{data_dir}/chembl/'
 
@@ -32,6 +34,10 @@ def merge_databases(data_dir,tanimoto_curation_threshold=0.35):
 
     # Build Morgan fingerprint representation (1024 bits, radius 2)
     build_morgan_representation(root, n_bits=1024, radius=2, batch_size=20000)
+    
+    # Build Chemberta representation
+    if chemberta_rep == True:
+        build_chemberta_representation(root, n_bits=768, batch_size=128)
 
     # Later, anywhere: load and query fingerprints by comp_id
     store = LigandStore(root)
