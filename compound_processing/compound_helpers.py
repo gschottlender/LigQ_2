@@ -25,7 +25,8 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import inchi, AllChem, DataStructs
 from rdkit import RDLogger
-
+import torch
+from transformers import AutoModel, AutoTokenizer
 
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
@@ -393,6 +394,159 @@ def build_morgan_representation(
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
 
+def build_chemberta_representation(
+    root: str | Path,
+    n_bits: int = 768,
+    radius: int = 2,
+    batch_size: int = 128,
+    name: str = "chemberta_zinc_base_768",
+) -> None:
+    """
+    Compute ChemBERTa embeddings for all ligands in ligands.parquet and
+    store them as a dense float matrix in a memmap on disk.
+
+    Files written under `root`:
+
+      - ligands.parquet (must already exist)
+      - reps/<name>.dat         : memmap dense float matrix, shape (N, dim)
+      - reps/<name>.meta.json   : metadata describing the representation
+
+    Parameters
+    ----------
+    root : str | Path
+        Root directory containing ligands.parquet. Results are written
+        under root / 'reps'.
+    n_bits : int
+        Embedding dimension expected (default: 768 for ChemBERTa-zinc-base-v1).
+        Kept as `n_bits` to be API-identical to build_morgan_representation.
+    radius : int
+        Kept for API-compatibility (not used for embeddings).
+    batch_size : int
+        Number of ligands processed per batch. NOTE: for transformer embeddings,
+        10000 is usually too large; use something like 64-1024 depending on GPU/CPU.
+    name : str
+        Name of the representation (used in file names).
+    """
+    root = Path(root)
+    reps_dir = root / "reps"
+    reps_dir.mkdir(exist_ok=True, parents=True)
+
+    ligs_path = root / "ligands.parquet"
+    ligs = pd.read_parquet(ligs_path)
+    n = len(ligs)
+
+    if n == 0:
+        raise ValueError("ligands.parquet is empty, nothing to process.")
+
+    # -----------------------------
+    # Load ChemBERTa
+    # -----------------------------
+    model_id = "seyonec/ChemBERTa-zinc-base-v1"
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print(f'Generating ChemBERTa embeddings using {device}')
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModel.from_pretrained(model_id).to(device)
+    model.eval()
+
+    # Validate dimensionality matches the API parameter `n_bits`
+    hidden_size = int(getattr(model.config, "hidden_size", 0))
+    if hidden_size <= 0:
+        raise ValueError("Could not infer hidden_size from model.config.")
+    if int(n_bits) != hidden_size:
+        raise ValueError(
+            f"n_bits={n_bits} does not match ChemBERTa hidden_size={hidden_size}. "
+            f"Use n_bits={hidden_size} (or switch to a model whose hidden size matches)."
+        )
+
+    dim = hidden_size
+    data_path = reps_dir / f"{name}.dat"
+
+    # Store as float16 on disk (smaller). Change to float32 if you prefer.
+    mm = np.memmap(
+        data_path,
+        mode="w+",
+        dtype=np.float16,
+        shape=(n, dim),
+    )
+
+    smiles_all = ligs["smiles"].astype(str).tolist()
+
+    # -----------------------------
+    # Embedding helper (mean pooling)
+    # -----------------------------
+    def _embed_batch(smiles_list: list[str]) -> np.ndarray:
+        """
+        Returns (B, dim) float32 numpy.
+        Uses attention-mask mean pooling on last_hidden_state.
+        """
+        enc = tokenizer(
+            smiles_list,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        enc = {k: v.to(device) for k, v in enc.items()}
+
+        with torch.inference_mode():
+            out = model(**enc)  # BaseModelOutput
+            last = out.last_hidden_state  # (B, T, H)
+            attn = enc.get("attention_mask", None)
+
+            if attn is None:
+                pooled = last.mean(dim=1)
+            else:
+                attn_f = attn.unsqueeze(-1).to(last.dtype)          # (B, T, 1)
+                summed = (last * attn_f).sum(dim=1)                 # (B, H)
+                denom = attn_f.sum(dim=1).clamp(min=1.0)            # (B, 1)
+                pooled = summed / denom                             # (B, H)
+
+        return pooled.detach().cpu().to(torch.float32).numpy()
+
+    # -----------------------------
+    # Process ligands batch by batch
+    # -----------------------------
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        batch_smiles = smiles_all[start:end]
+
+        try:
+            emb = _embed_batch(batch_smiles)  # (B, dim)
+            if emb.shape != (end - start, dim):
+                raise RuntimeError(f"Unexpected embedding shape {emb.shape} vs {(end-start, dim)}")
+        except Exception:
+            emb_rows = []
+            for smi in batch_smiles:
+                try:
+                    e = _embed_batch([smi])[0]
+                except Exception:
+                    e = np.zeros((dim,), dtype=np.float32)
+                emb_rows.append(e)
+            emb = np.stack(emb_rows, axis=0)
+
+        mm[start:end, :] = emb.astype(np.float16, copy=False)
+
+    mm.flush()
+
+    # -----------------------------
+    # Metadata describing this representation
+    # -----------------------------
+    meta: Dict = {
+        "name": name,
+        "file": f"{name}.dat",
+        "dtype": "float16",
+        "dim": int(dim),
+        "radius": int(radius),           # kept only for API compatibility
+        "packed_bits": False,
+        "packed_dim": None,
+        "n_ligands": int(n),
+        "model_id": model_id,
+        "pooling": "mean_attention_mask",
+    }
+    meta_path = reps_dir / f"{name}.meta.json"
+    with meta_path.open("w") as f:
+        json.dump(meta, f, indent=2)
 
 # ---------------------------------------------------------------------------
 # 4. Access representations by chem_comp_id: LigandStore & Representation
