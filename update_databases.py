@@ -16,12 +16,6 @@ from generate_databases.uniprot_db import (
     update_target_sequences_pickle,
     uniprot_dict_to_fasta,
 )
-from compound_processing.compound_helpers import (
-    unify_pdb_chembl,
-    build_ligand_index,
-    build_morgan_representation,
-    LigandStore,
-)
 
 from generate_databases.merge_pdb_chembl import merge_databases
 
@@ -63,6 +57,13 @@ def parse_args():
         type=float,
         default=0.35,
         help="Tanimoto threshold for curating 'possible' ChEMBL ligands when merging PDB–ChEMBL.",
+    )
+
+    parser.add_argument(
+        "--skip-chemberta-rep",
+        action="store_true",
+        default=False,
+        help="Skip the generation (or update) of the ChemBERTa compound embeddings database."
     )
 
     return parser.parse_args()
@@ -368,6 +369,11 @@ def main():
     # Assumption: merge_databases() expects a directory that contains
     # subfolders "pdb" and "chembl" with the processed data.
     # This step also generates the vector database of compounds from PDB and ChEMBL.
+    
+    generate_chemberta = True
+    if args.skip_chemberta_rep == True:
+        generate_chemberta = False
+
     data_dir = output_dir
 
     print("[INFO] Merging PDB and ChEMBL databases...")
@@ -377,6 +383,7 @@ def main():
         uncurated_binding_data,
     ) = merge_databases(
         data_dir,
+        chemberta_rep=generate_chemberta,
         tanimoto_curation_threshold=args.tanimoto_curation_threshold,
     )
 
