@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
+import os
+import multiprocessing as mp
 import json
 import numpy as np
 import pandas as pd
@@ -30,7 +32,8 @@ from transformers import AutoModel, AutoTokenizer
 
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
-
+# Morgan globals
+_MORGAN_WORKER_CFG: Dict[str, int] = {"n_bits": 1024, "radius": 2}
 
 # ---------------------------------------------------------------------------
 # 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
@@ -127,6 +130,27 @@ def unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
         unpacked = unpacked[..., :n_bits]
     return unpacked
 
+def _init_morgan_worker(n_bits: int, radius: int) -> None:
+    _MORGAN_WORKER_CFG["n_bits"] = int(n_bits)
+    _MORGAN_WORKER_CFG["radius"] = int(radius)
+
+def _morgan_fp_bits_or_zero(smiles: str) -> np.ndarray:
+    """
+    Worker: calculate fp bits (n_bits,) uint8, or vector 0 if it fails.
+    Use global config set to _init_morgan_worker.
+    """
+    n_bits = _MORGAN_WORKER_CFG["n_bits"]
+    radius = _MORGAN_WORKER_CFG["radius"]
+
+    arr = morgan_fp_bits(smiles, n_bits=n_bits, radius=radius)
+    if arr is None:
+        return np.zeros((n_bits,), dtype=np.uint8)
+
+    # ensure correct dtype/shape
+    arr = np.asarray(arr, dtype=np.uint8)
+    if arr.shape != (n_bits,):
+        return np.zeros((n_bits,), dtype=np.uint8)
+    return arr
 
 # ---------------------------------------------------------------------------
 # 2. Unify PDB and ChEMBL ligand tables
@@ -311,41 +335,43 @@ def build_morgan_representation(
     radius: int = 2,
     batch_size: int = 10000,
     name: str = "morgan_1024_r2",
+    n_jobs: Optional[int] = None,
+    chunksize: int = 500,
 ) -> None:
     """
     Compute Morgan fingerprints for all ligands in ligands.parquet and
     store them as a packed bit matrix in a memmap on disk.
 
-    Files written under `root`:
-
-      - ligands.parquet (must already exist)
-      - reps/<name>.dat         : memmap with packed bits, shape (N, n_bits/8)
-      - reps/<name>.meta.json   : metadata describing the representation
+    Parallel version:
+      - Uses multiprocessing to compute fingerprints in parallel within each batch.
+      - Writes the memmap slices from the main process only (safe).
 
     Parameters
     ----------
-    root : str or Path
-        Root directory containing ligands.parquet. Results are written
-        under root / 'reps'.
-    n_bits : int
-        Number of bits in the Morgan fingerprint (default: 1024).
-    radius : int
-        Morgan fingerprint radius (default: 2).
-    batch_size : int
-        Number of ligands processed per batch to control RAM usage.
-    name : str
-        Name of the representation (used in file names).
+    n_jobs : int, optional
+        Number of worker processes. Default: min(4, cpu_count()).
+    chunksize : int
+        Chunk size passed to pool.imap for better throughput.
     """
     root = Path(root)
     reps_dir = root / "reps"
     reps_dir.mkdir(exist_ok=True, parents=True)
 
     ligs_path = root / "ligands.parquet"
-    ligs = pd.read_parquet(ligs_path)
+    ligs = pd.read_parquet(ligs_path, columns=["smiles"])
     n = len(ligs)
 
     if n == 0:
         raise ValueError("ligands.parquet is empty, nothing to process.")
+    if n_bits % 8 != 0:
+        raise ValueError("n_bits must be divisible by 8 for packed storage.")
+
+    # Default workers: 4 or max available if fewer
+    cpu_avail = os.cpu_count() or 1
+    if n_jobs is None:
+        n_jobs = min(4, cpu_avail)
+    else:
+        n_jobs = max(1, min(int(n_jobs), cpu_avail))
 
     n_bytes = n_bits // 8
     data_path = reps_dir / f"{name}.dat"
@@ -358,24 +384,27 @@ def build_morgan_representation(
         shape=(n, n_bytes),
     )
 
-    # Process ligands batch by batch
-    for start in range(0, n, batch_size):
-        end = min(start + batch_size, n)
-        batch = ligs.iloc[start:end]
-        smiles_list = batch["smiles"].tolist()
+    # Multiprocessing context: fork is best on Linux (esp. notebook)
+    ctx = mp.get_context("fork")
 
-        fps_bits_list: List[np.ndarray] = []
-        for smi in smiles_list:
-            arr = morgan_fp_bits(smi, n_bits=n_bits, radius=radius)
-            if arr is None:
-                # Do not drop the ligand: if fingerprint fails, use a zero vector
-                arr = np.zeros((n_bits,), dtype=np.uint8)
-            fps_bits_list.append(arr)
+    # Create pool ONCE (important: avoid overhead per batch)
+    with ctx.Pool(
+        processes=n_jobs,
+        initializer=_init_morgan_worker,
+        initargs=(n_bits, radius),
+    ) as pool:
+        # Process ligands batch by batch
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            smiles_list = ligs.iloc[start:end]["smiles"].tolist()
 
-        fps_bits = np.stack(fps_bits_list, axis=0)     # (batch_size, n_bits)
-        fps_packed = pack_bits(fps_bits)               # (batch_size, n_bytes)
+            # Parallel compute: returns arrays (n_bits,) uint8
+            fps_bits_list = list(pool.imap(_morgan_fp_bits_or_zero, smiles_list, chunksize=chunksize))
 
-        mm[start:end, :] = fps_packed
+            fps_bits = np.stack(fps_bits_list, axis=0)  # (B, n_bits)
+            fps_packed = pack_bits(fps_bits)            # (B, n_bytes)
+
+            mm[start:end, :] = fps_packed
 
     mm.flush()
 
@@ -384,49 +413,31 @@ def build_morgan_representation(
         "name": name,
         "file": f"{name}.dat",
         "dtype": "uint8",
-        "dim": n_bits,
-        "radius": radius,
+        "dim": int(n_bits),
+        "radius": int(radius),
         "packed_bits": True,
-        "packed_dim": n_bytes,
+        "packed_dim": int(n_bytes),
         "n_ligands": int(n),
+        "n_jobs": int(n_jobs),  # opcional, pero útil para trazabilidad
     }
     meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
 
+
 def build_chemberta_representation(
     root: str | Path,
     n_bits: int = 768,
     radius: int = 2,
-    batch_size: int = 128,
+    batch_size: int = 14,
     name: str = "chemberta_zinc_base_768",
+    # NEW (optional injected resources)
+    tokenizer=None,
+    model=None,
+    device: Optional[torch.device] = None,
+    model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
+    max_length: Optional[int] = None,
 ) -> None:
-    """
-    Compute ChemBERTa embeddings for all ligands in ligands.parquet and
-    store them as a dense float matrix in a memmap on disk.
-
-    Files written under `root`:
-
-      - ligands.parquet (must already exist)
-      - reps/<name>.dat         : memmap dense float matrix, shape (N, dim)
-      - reps/<name>.meta.json   : metadata describing the representation
-
-    Parameters
-    ----------
-    root : str | Path
-        Root directory containing ligands.parquet. Results are written
-        under root / 'reps'.
-    n_bits : int
-        Embedding dimension expected (default: 768 for ChemBERTa-zinc-base-v1).
-        Kept as `n_bits` to be API-identical to build_morgan_representation.
-    radius : int
-        Kept for API-compatibility (not used for embeddings).
-    batch_size : int
-        Number of ligands processed per batch. NOTE: for transformer embeddings,
-        10000 is usually too large; use something like 64-1024 depending on GPU/CPU.
-    name : str
-        Name of the representation (used in file names).
-    """
     root = Path(root)
     reps_dir = root / "reps"
     reps_dir.mkdir(exist_ok=True, parents=True)
@@ -434,36 +445,37 @@ def build_chemberta_representation(
     ligs_path = root / "ligands.parquet"
     ligs = pd.read_parquet(ligs_path)
     n = len(ligs)
-
     if n == 0:
         raise ValueError("ligands.parquet is empty, nothing to process.")
 
     # -----------------------------
-    # Load ChemBERTa
+    # Load / reuse ChemBERTa
     # -----------------------------
-    model_id = "seyonec/ChemBERTa-zinc-base-v1"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f'Generating ChemBERTa embeddings using {device}')
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+    if model is None:
+        model = AutoModel.from_pretrained(model_id).to(device)
+        model.eval()
+    else:
+        # ensure eval + device
+        model.eval()
+        model = model.to(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    model = AutoModel.from_pretrained(model_id).to(device)
-    model.eval()
-
-    # Validate dimensionality matches the API parameter `n_bits`
     hidden_size = int(getattr(model.config, "hidden_size", 0))
     if hidden_size <= 0:
         raise ValueError("Could not infer hidden_size from model.config.")
     if int(n_bits) != hidden_size:
         raise ValueError(
             f"n_bits={n_bits} does not match ChemBERTa hidden_size={hidden_size}. "
-            f"Use n_bits={hidden_size} (or switch to a model whose hidden size matches)."
+            f"Use n_bits={hidden_size} or switch model."
         )
 
     dim = hidden_size
     data_path = reps_dir / f"{name}.dat"
 
-    # Store as float16 on disk (smaller). Change to float32 if you prefer.
     mm = np.memmap(
         data_path,
         mode="w+",
@@ -477,32 +489,29 @@ def build_chemberta_representation(
     # Embedding helper (mean pooling)
     # -----------------------------
     def _embed_batch(smiles_list: list[str]) -> np.ndarray:
-        """
-        Returns (B, dim) float32 numpy.
-        Uses attention-mask mean pooling on last_hidden_state.
-        """
         enc = tokenizer(
             smiles_list,
             padding=True,
             truncation=True,
             return_tensors="pt",
+            max_length=max_length,
         )
         enc = {k: v.to(device) for k, v in enc.items()}
 
         with torch.inference_mode():
-            out = model(**enc)  # BaseModelOutput
+            out = model(**enc)
             last = out.last_hidden_state  # (B, T, H)
             attn = enc.get("attention_mask", None)
 
             if attn is None:
                 pooled = last.mean(dim=1)
             else:
-                attn_f = attn.unsqueeze(-1).to(last.dtype)          # (B, T, 1)
-                summed = (last * attn_f).sum(dim=1)                 # (B, H)
-                denom = attn_f.sum(dim=1).clamp(min=1.0)            # (B, 1)
-                pooled = summed / denom                             # (B, H)
+                attn_f = attn.unsqueeze(-1).to(last.dtype)
+                summed = (last * attn_f).sum(dim=1)
+                denom = attn_f.sum(dim=1).clamp(min=1.0)
+                pooled = summed / denom
 
-        return pooled.detach().cpu().to(torch.float32).numpy()
+        return pooled.detach().to(torch.float16).cpu().numpy()
 
     # -----------------------------
     # Process ligands batch by batch
@@ -512,10 +521,11 @@ def build_chemberta_representation(
         batch_smiles = smiles_all[start:end]
 
         try:
-            emb = _embed_batch(batch_smiles)  # (B, dim)
+            emb = _embed_batch(batch_smiles)
             if emb.shape != (end - start, dim):
                 raise RuntimeError(f"Unexpected embedding shape {emb.shape} vs {(end-start, dim)}")
         except Exception:
+            # fallback per-smiles (slow but robust)
             emb_rows = []
             for smi in batch_smiles:
                 try:
@@ -529,20 +539,18 @@ def build_chemberta_representation(
 
     mm.flush()
 
-    # -----------------------------
-    # Metadata describing this representation
-    # -----------------------------
     meta: Dict = {
         "name": name,
         "file": f"{name}.dat",
         "dtype": "float16",
         "dim": int(dim),
-        "radius": int(radius),           # kept only for API compatibility
+        "radius": int(radius),
         "packed_bits": False,
         "packed_dim": None,
         "n_ligands": int(n),
         "model_id": model_id,
         "pooling": "mean_attention_mask",
+        "max_length": max_length,
     }
     meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
