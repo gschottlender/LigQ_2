@@ -17,8 +17,7 @@ from compound_processing.compound_helpers import (
 
 from generate_databases.database_curation.curation_helpers import curate_chembl_possible_by_pdb_similarity
 
-# Hacer opcional (en los argumentos si hacer update de ChemBERTa o solo Morgan Fps)
-def merge_databases(data_dir,chemberta_rep=True,tanimoto_curation_threshold=0.35):
+def merge_databases(data_dir,chemberta_rep=False,tanimoto_curation_threshold=0.35):
     pdb_data_dir = f'{data_dir}/pdb/'
     chembl_data_dir = f'{data_dir}/chembl/'
 
@@ -37,7 +36,7 @@ def merge_databases(data_dir,chemberta_rep=True,tanimoto_curation_threshold=0.35
     
     # Build Chemberta representation
     if chemberta_rep == True:
-        build_chemberta_representation(root, n_bits=768, batch_size=128)
+        build_chemberta_representation(root, n_bits=768, batch_size=14)
 
     # Later, anywhere: load and query fingerprints by comp_id
     store = LigandStore(root)
