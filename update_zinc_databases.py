@@ -63,7 +63,7 @@ def download_zinc_uri_file_if_missing(
         Path to the local URL file: zinc_data_dir / filename
     """
     zinc_data_dir.mkdir(parents=True, exist_ok=True)
-    local_path = zinc_data_dir / filename  # <- donde LO QUEREMOS
+    local_path = zinc_data_dir / filename 
 
     if local_path.exists():
         print(f"[INFO] ZINC URL file already present: {local_path}")
@@ -76,7 +76,6 @@ def download_zinc_uri_file_if_missing(
     )
 
     try:
-        # Descarga desde el dataset, respetando el subpath dentro del repo
         repo_file_path = hf_hub_download(
             repo_id=hf_repo_id,
             repo_type="dataset",
@@ -180,6 +179,12 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--chemberta-rep",
+        action="store_true",
+        help="Generate (or update) the ChemBERTa compound embeddings database."
+    )
+
     return parser.parse_args(args)
 
 
@@ -192,6 +197,7 @@ def main() -> None:
 
     output_dir = Path(args.output_dir).resolve()
     temp_data_dir = Path(args.temp_data_dir).resolve()
+    generate_chemberta = args.chemberta_rep
 
     print(f"[INFO] Output directory       : {output_dir}")
     print(f"[INFO] Temporary data directory: {temp_data_dir}")
@@ -240,6 +246,7 @@ def main() -> None:
         radius=2,
         batch_size=10_000,
         rep_name="morgan_1024_r2",
+        chemberta_rep=generate_chemberta
     )
     print("[INFO] ZINC database generation completed.")
 

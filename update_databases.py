@@ -60,10 +60,9 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--skip-chemberta-rep",
+        "--chemberta-rep",
         action="store_true",
-        default=False,
-        help="Skip the generation (or update) of the ChemBERTa compound embeddings database."
+        help="Generate (or update) the ChemBERTa compound embeddings database."
     )
 
     return parser.parse_args()
@@ -370,9 +369,7 @@ def main():
     # subfolders "pdb" and "chembl" with the processed data.
     # This step also generates the vector database of compounds from PDB and ChEMBL.
     
-    generate_chemberta = True
-    if args.skip_chemberta_rep == True:
-        generate_chemberta = False
+    generate_chemberta = args.chemberta_rep
 
     data_dir = output_dir
 
