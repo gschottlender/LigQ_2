@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Sequence, Mapping, Optional, List, Dict, Tuple
+from typing import Sequence, Mapping, Optional, List, Dict, Tuple, Union
 
 import numpy as np
 import pandas as pd
+import torch
 
 from compound_processing.compound_helpers import (
     LigandStore,
@@ -501,6 +502,7 @@ def _search_zinc_chunk(
 
     return hits
 
+# GPU version of zinc search functions
 
 def search_similar_in_zinc(
     query_ids: Sequence[str],
@@ -705,54 +707,612 @@ def search_similar_in_zinc(
 
     return hits_df[["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"]]
 
+# GPU Version of Zinc ligand searches
+
+
+# =============================================================================
+# Bit-unpacking helpers (packed uint8 -> dense 0/1 bits) with a cached LUT
+# =============================================================================
+
+# Cache a per-device lookup table (LUT) used to unpack bits fast on GPU/CPU.
+# Key: torch.device, Value: tensor of shape (256, 8) with uint8 bits (0/1).
+_UNPACK_LUT_CACHE: dict[torch.device, torch.Tensor] = {}
+
+
+def _get_unpack_lut(device: torch.device) -> torch.Tensor:
+    """
+    Return a (256, 8) lookup table mapping each uint8 value [0..255] to its
+    8 bits (MSB -> LSB), stored on the requested device.
+
+    The LUT is cached per device to avoid rebuilding and re-transferring it
+    for every chunk.
+    """
+    lut = _UNPACK_LUT_CACHE.get(device)
+    if lut is not None:
+        return lut
+
+    # vals: 0..255 (int16 to be safe for shifts)
+    vals = torch.arange(256, dtype=torch.int16)
+
+    # shifts: 7..0 so that we extract bits from MSB to LSB
+    shifts = torch.arange(7, -1, -1, dtype=torch.int16)  # MSB -> LSB
+
+    # bits: (256, 8) uint8 with 0/1 values
+    bits = ((vals[:, None] >> shifts[None, :]) & 1).to(torch.uint8)
+
+    # Move LUT to device once, then cache it
+    lut = bits.to(device=device, non_blocking=True)
+    _UNPACK_LUT_CACHE[device] = lut
+    return lut
+
+
+def _unpack_bits_torch_from_packed(
+    packed_u8: np.ndarray,
+    n_bits: int,
+    device: torch.device,
+    force_copy: bool = True,
+) -> torch.Tensor:
+    """
+    Unpack bit-packed fingerprints stored as uint8 bytes into dense 0/1 bits.
+
+    Parameters
+    ----------
+    packed_u8
+        NumPy array with shape (B, packed_dim) and dtype uint8, representing
+        B fingerprints in packed-bit form. Each byte stores 8 bits.
+        This is often a view into an np.memmap slice.
+    n_bits
+        Target number of bits to keep after unpacking (e.g., dim=1024).
+        Safety: we truncate if the unpacked length is larger.
+    device
+        torch.device where the resulting bit matrix will live.
+        Typically CUDA for GPU search.
+    force_copy
+        If True, copy the NumPy input to ensure it is writable and contiguous.
+        This avoids the PyTorch warning:
+          "The given NumPy array is not writable..."
+        which is common for memmap slices.
+
+    Returns
+    -------
+    torch.Tensor
+        A uint8 tensor of shape (B, n_bits) on `device`, containing 0/1 values.
+
+    Notes
+    -----
+    This method expands packed bytes into dense bits, which can increase memory
+    usage by ~8x. It is simple and fast to implement, but may become memory-bound
+    for very large chunks.
+    """
+    # Ensure dtype is uint8, since the LUT expects bytes [0..255]
+    if packed_u8.dtype != np.uint8:
+        packed_u8 = packed_u8.astype(np.uint8, copy=False)
+
+    # IMPORTANT:
+    # np.memmap slices are often read-only. torch.from_numpy(...) will warn
+    # because PyTorch does not support non-writable tensors. Copying removes
+    # the warning and avoids undefined behavior if any accidental write occurs.
+    if force_copy:
+        packed_u8 = np.array(packed_u8, copy=True)  # writable + contiguous
+
+    # Create CPU tensor that shares memory with the NumPy array, then move to GPU
+    t = torch.from_numpy(packed_u8).to(device=device, non_blocking=True)  # uint8
+
+    # LUT-based unpacking: for each byte, we obtain 8 bits (MSB->LSB)
+    lut = _get_unpack_lut(device)
+    bits = lut[t.long()]  # (B, packed_dim, 8), uint8
+
+    # Flatten bytes*8 -> bits dimension
+    bits = bits.reshape(bits.shape[0], bits.shape[1] * 8)  # (B, packed_dim*8)
+
+    # Safety: truncate to exactly n_bits if unpacked length exceeds n_bits
+    if bits.shape[1] > n_bits:
+        bits = bits[:, :n_bits]
+
+    return bits  # uint8 0/1 on GPU
+
+
+def _tanimoto_from_binary_mats_torch(
+    q_bits_u8: torch.Tensor,  # (Q, dim) uint8 0/1 on GPU
+    q_counts: torch.Tensor,   # (Q,) int32 or float32 on GPU
+    b_bits_u8: torch.Tensor,  # (B, dim) uint8 0/1 on GPU
+    b_counts: torch.Tensor,   # (B,) int32 or float32 on GPU
+) -> torch.Tensor:
+    """
+    Compute the Tanimoto similarity matrix between two sets of binary vectors.
+
+    Given:
+      - Q query fingerprints in q_bits_u8 (0/1)
+      - B block fingerprints in b_bits_u8 (0/1)
+
+    Tanimoto is:
+      ti = inter / (|q| + |b| - inter),
+    where inter is the number of shared 1-bits.
+
+    Implementation details
+    ----------------------
+    On CUDA, integer matmul (int32 addmm) is not generally supported. Therefore
+    we compute intersections using float32 matmul, which remains exact for typical
+    fingerprint dimensions (e.g., 1024/2048) because the sums are small integers
+    that float32 can represent exactly.
+
+    Returns
+    -------
+    torch.Tensor
+        Float32 tensor of shape (Q, B) with Tanimoto similarities.
+    """
+    # Convert to float32 for CUDA-friendly matmul.
+    # Intersections remain exact for typical bitvector dimensions.
+    q_f = q_bits_u8.to(torch.float32)
+    b_f = b_bits_u8.to(torch.float32)
+
+    # inter: (Q, B) number of shared bits
+    inter = q_f @ b_f.T
+
+    # Convert bitcounts to float32
+    q_c = q_counts.to(torch.float32)
+    b_c = b_counts.to(torch.float32)
+
+    # denom: (Q, B)
+    denom = q_c[:, None] + b_c[None, :] - inter
+
+    # Avoid division by zero
+    ti = torch.zeros_like(denom, dtype=torch.float32)
+    valid = denom > 0
+    ti[valid] = inter[valid] / denom[valid]
+    return ti
+
+
+# =============================================================================
+# 1) Max pairwise Tanimoto among representatives (GPU, vectorized)
+# =============================================================================
+
+def max_pairwise_tanimoto_from_ids_torch_gpu(
+    representatives: Sequence[str],
+    rep: "Representation",
+    device: Union[str, torch.device] = "cuda",
+) -> float:
+    """
+    Compute the maximum pairwise Tanimoto similarity among the given ligands
+    (representatives) using GPU acceleration.
+
+    This replaces the O(N^2) Python double-loop with a vectorized approach:
+      - Fetch binary 0/1 fingerprints (N, dim) as uint8 on CPU
+      - Transfer to GPU
+      - Compute the full intersection matrix via matrix multiplication
+      - Convert intersections to Tanimoto for all pairs
+      - Return the maximum over the upper triangle (excluding the diagonal)
+
+    Parameters
+    ----------
+    representatives
+        List/sequence of chem_comp_id strings.
+    rep
+        Representation object providing fingerprints via:
+            rep.get_by_ids(ids, as_float=False)
+        Expected output is 0/1 uint8 matrix.
+    device
+        CUDA device (default "cuda"). You can pass "cuda:0", etc.
+
+    Returns
+    -------
+    float
+        Maximum Tanimoto coefficient among all representative pairs.
+    """
+    reps = list(representatives)
+    if len(reps) < 2:
+        return 0.0
+
+    # Fetch fingerprints as 0/1 uint8 on CPU
+    fps = rep.get_by_ids(reps, as_float=False)  # (N, dim)
+    if fps.dtype != np.uint8:
+        fps = fps.astype(np.uint8, copy=False)
+
+    dev = torch.device(device)
+    if dev.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
+
+    # Move to GPU
+    t_u8 = torch.from_numpy(fps).to(dev, non_blocking=True)  # uint8
+    counts = t_u8.sum(dim=1).to(torch.int32)                 # (N,) int32
+
+    # Intersections:
+    # Use float32 matmul to avoid int32 matmul limitations on CUDA.
+    t_f = t_u8.to(torch.float32)
+    inter = t_f @ t_f.T  # (N, N) float32, exact for typical dims
+
+    # Denominator for Tanimoto: |a| + |b| - inter
+    counts_f = counts.to(torch.float32)
+    denom = counts_f[:, None] + counts_f[None, :] - inter
+
+    # Compute Tanimoto safely
+    ti = torch.zeros_like(denom, dtype=torch.float32)
+    valid = denom > 0
+    ti[valid] = inter[valid] / denom[valid]
+
+    # Upper triangle without diagonal contains unique pairs
+    triu = torch.triu(ti, diagonal=1)
+    max_ti = triu.max().item()
+    return float(max_ti)
+
+
+# =============================================================================
+# 2) ZINC chunk search: GPU compute (single-process)
+# =============================================================================
+
+def _search_zinc_chunk_torch_gpu(
+    memmap: np.memmap,
+    chunk_start: int,
+    chunk_end: int,
+    batch_query_ids: Sequence[str],
+    batch_fps_u8: np.ndarray,         # (Q, dim) uint8 0/1 on CPU
+    batch_bitcounts_i32: np.ndarray,  # (Q,) int32 on CPU
+    dim: int,
+    tanimoto_threshold: float,
+    device: Union[str, torch.device] = "cuda",
+    return_topk: Optional[int] = None,
+    force_copy_packed: bool = True,
+) -> List[Tuple[str, int, float]]:
+    """
+    Search a single ZINC chunk against a batch of query fingerprints on GPU.
+
+    Parameters
+    ----------
+    memmap
+        ZINC packed fingerprint memmap of shape (n_ligands, packed_dim), dtype uint8.
+        Each row is a packed-bit fingerprint (packed_dim bytes = dim/8).
+    chunk_start, chunk_end
+        Index range [chunk_start, chunk_end) selecting a contiguous block from ZINC.
+    batch_query_ids
+        Query IDs corresponding to rows in batch_fps_u8 / batch_bitcounts_i32.
+    batch_fps_u8
+        Dense 0/1 query fingerprints, shape (Q, dim), uint8.
+    batch_bitcounts_i32
+        Precomputed bitcounts for each query fingerprint, shape (Q,), int32.
+    dim
+        Number of bits in the dense representation (e.g., 1024).
+    tanimoto_threshold
+        Minimum similarity required to report a hit.
+    device
+        Target device ("cuda" by default).
+    return_topk
+        If None: return all hits >= threshold for this chunk.
+        If int K: return up to top-K hits per query for this chunk (and stop early
+        per query once values drop below threshold).
+    force_copy_packed
+        If True: copy the packed memmap slice before torch.from_numpy to avoid
+        "not writable" warnings.
+
+    Returns
+    -------
+    List[Tuple[str, int, float]]
+        A list of (query_id, lig_idx_global, tanimoto) for hits found in this chunk.
+        lig_idx_global is the ZINC ligand index in the full memmap.
+    """
+    # Read packed block from memmap (CPU)
+    packed_block = memmap[chunk_start:chunk_end]
+    if packed_block.size == 0:
+        return []
+
+    dev = torch.device(device)
+    if dev.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
+
+    # -------------------------------------------------------------------------
+    # 1) Transfer query batch to GPU
+    # -------------------------------------------------------------------------
+    if batch_fps_u8.dtype != np.uint8:
+        batch_fps_u8 = batch_fps_u8.astype(np.uint8, copy=False)
+
+    q_bits = torch.from_numpy(batch_fps_u8).to(dev, non_blocking=True)  # uint8 0/1
+    q_counts = torch.from_numpy(batch_bitcounts_i32).to(dev, non_blocking=True).to(torch.int32)
+
+    # -------------------------------------------------------------------------
+    # 2) Unpack packed ZINC block to dense bits on GPU
+    # -------------------------------------------------------------------------
+    b_bits = _unpack_bits_torch_from_packed(
+        packed_block,
+        n_bits=dim,
+        device=dev,
+        force_copy=force_copy_packed,
+    )
+    b_counts = b_bits.sum(dim=1).to(torch.int32)
+
+    # -------------------------------------------------------------------------
+    # 3) Compute Tanimoto similarities on GPU
+    # -------------------------------------------------------------------------
+    ti = _tanimoto_from_binary_mats_torch(q_bits, q_counts, b_bits, b_counts)  # (Q, B)
+
+    hits: List[Tuple[str, int, float]] = []
+
+    # -------------------------------------------------------------------------
+    # 4) Collect hits: either all above threshold or top-k per query
+    # -------------------------------------------------------------------------
+    if return_topk is None:
+        # Find all entries above threshold
+        mask = ti >= float(tanimoto_threshold)
+        idx = torch.nonzero(mask, as_tuple=False)  # (H, 2) where H is number of hits
+        if idx.numel() == 0:
+            return hits
+
+        # Gather only the hit values (avoid copying full ti back to CPU)
+        vals = ti[idx[:, 0], idx[:, 1]]
+
+        # Move indices and values to CPU for Python-side list building
+        idx_cpu = idx.detach().cpu().numpy()
+        vals_cpu = vals.detach().cpu().numpy()
+
+        for k in range(idx_cpu.shape[0]):
+            qi = int(idx_cpu[k, 0])              # query row index
+            bi = int(idx_cpu[k, 1])              # block row index (within chunk)
+            lig_idx_global = chunk_start + bi    # global ZINC index
+            hits.append((batch_query_ids[qi], lig_idx_global, float(vals_cpu[k])))
+
+        return hits
+
+    # Top-k mode: return up to K best hits per query for this chunk
+    k = int(return_topk)
+    if k <= 0:
+        return hits
+
+    # topv/topi: (Q, k) each row contains the best candidates within the chunk
+    topv, topi = torch.topk(ti, k=min(k, ti.shape[1]), dim=1)
+    topv_cpu = topv.detach().cpu().numpy()
+    topi_cpu = topi.detach().cpu().numpy()
+
+    for qi in range(topv_cpu.shape[0]):
+        qid = batch_query_ids[qi]
+        for kk in range(topv_cpu.shape[1]):
+            val = float(topv_cpu[qi, kk])
+            if val < tanimoto_threshold:
+                # Because topk is sorted desc, we can break early for this query
+                break
+            bi = int(topi_cpu[qi, kk])
+            lig_idx_global = chunk_start + bi
+            hits.append((qid, lig_idx_global, val))
+
+    return hits
+
+
+def search_similar_in_zinc_torch_gpu(
+    query_ids: Sequence[str],
+    store_ref: "LigandStore",
+    rep_ref: "Representation",
+    store_zinc: "LigandStore",
+    rep_zinc: "Representation",
+    tanimoto_threshold: float = 0.5,
+    q_batch_size: int = 200,
+    zinc_chunk_size: int = 200_000,
+    device: Union[str, torch.device] = "cuda",
+    max_hits_per_query: Optional[int] = None,
+    per_chunk_topk_hint: Optional[int] = None,
+    force_copy_packed: bool = True,
+) -> pd.DataFrame:
+    """
+    GPU-based similarity search in ZINC using Tanimoto over binary fingerprints.
+
+    High-level algorithm
+    --------------------
+    1) Fetch query fingerprints from rep_ref as dense 0/1 uint8 matrix.
+    2) Iterate over ZINC fingerprints in chunks from rep_zinc.memmap (packed bytes).
+    3) For each query batch and ZINC chunk:
+         - unpack packed ZINC fingerprints to dense bits on GPU
+         - compute Tanimoto matrix on GPU
+         - extract hits >= threshold (or top-k per query per chunk)
+    4) Map ZINC indices to chem_comp_id and smiles via store_zinc.
+    5) Optionally cap number of hits per query globally.
+
+    Parameters
+    ----------
+    query_ids
+        Ligand identifiers to use as queries (from the reference store/rep).
+    store_ref
+        Reference ligand store (unused here except for symmetry with CPU function).
+    rep_ref
+        Reference representation used to fetch query fingerprints (dense 0/1).
+    store_zinc
+        ZINC ligand store containing at least columns: lig_idx, chem_comp_id, smiles.
+    rep_zinc
+        ZINC representation containing a packed-byte memmap of fingerprints.
+    tanimoto_threshold
+        Minimum Tanimoto similarity to report a hit.
+    q_batch_size
+        Number of query ligands to process per batch.
+    zinc_chunk_size
+        Number of ZINC ligands to process per chunk.
+    device
+        Torch device string or torch.device for GPU compute.
+    max_hits_per_query
+        If not None, keep only the top-N hits per query globally (after merge).
+    per_chunk_topk_hint
+        If not None, limit results to top-K per query *per chunk* (can reduce
+        memory/CPU overhead if threshold generates many hits).
+    force_copy_packed
+        Copy packed memmap chunks to avoid "not writable" warnings.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: query_id, lig_idx_zinc, chem_comp_id, smiles, tanimoto
+    """
+    if not query_ids:
+        return pd.DataFrame(columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"])
+
+    qids = list(query_ids)
+
+    # -------------------------------------------------------------------------
+    # 1) Fetch query fingerprints on CPU (dense 0/1 uint8)
+    # -------------------------------------------------------------------------
+    fps_queries = rep_ref.get_by_ids(qids, as_float=False)  # (Q, dim)
+    if fps_queries.shape[0] != len(qids):
+        raise ValueError("Number of fingerprints does not match number of query_ids.")
+    if fps_queries.dtype != np.uint8:
+        fps_queries = fps_queries.astype(np.uint8, copy=False)
+
+    bitcounts_queries = fps_queries.sum(axis=1).astype(np.int32)
+    dim = rep_ref.dim
+
+    # -------------------------------------------------------------------------
+    # 2) ZINC packed memmap and chunking
+    # -------------------------------------------------------------------------
+    memmap = rep_zinc.memmap
+    n_ligands_zinc = memmap.shape[0]
+
+    chunk_ranges: List[Tuple[int, int]] = []
+    for start in range(0, n_ligands_zinc, zinc_chunk_size):
+        end = min(start + zinc_chunk_size, n_ligands_zinc)
+        chunk_ranges.append((start, end))
+
+    # -------------------------------------------------------------------------
+    # 3) Prepare mapping from ZINC internal index -> chem_comp_id / smiles
+    # -------------------------------------------------------------------------
+    ligs_zinc = store_zinc.ligands.copy()
+    if "lig_idx" not in ligs_zinc.columns:
+        raise ValueError("ZINC ligands parquet must contain column 'lig_idx'.")
+    ligs_zinc_by_idx = ligs_zinc.set_index("lig_idx")
+
+    # -------------------------------------------------------------------------
+    # 4) Main loop: query batches x ZINC chunks
+    # -------------------------------------------------------------------------
+    all_hits: List[Tuple[str, int, float]] = []
+
+    for q_start in range(0, len(qids), q_batch_size):
+        q_end = min(q_start + q_batch_size, len(qids))
+
+        batch_ids = qids[q_start:q_end]
+        batch_fps = fps_queries[q_start:q_end]
+        batch_counts = bitcounts_queries[q_start:q_end]
+
+        for cs, ce in chunk_ranges:
+            hits_chunk = _search_zinc_chunk_torch_gpu(
+                memmap=memmap,
+                chunk_start=cs,
+                chunk_end=ce,
+                batch_query_ids=batch_ids,
+                batch_fps_u8=batch_fps,
+                batch_bitcounts_i32=batch_counts,
+                dim=dim,
+                tanimoto_threshold=tanimoto_threshold,
+                device=device,
+                return_topk=per_chunk_topk_hint,
+                force_copy_packed=force_copy_packed,
+            )
+            if hits_chunk:
+                all_hits.extend(hits_chunk)
+
+    # -------------------------------------------------------------------------
+    # 5) Convert hits to DataFrame + merge annotations
+    # -------------------------------------------------------------------------
+    if not all_hits:
+        return pd.DataFrame(columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"])
+
+    hits_df = pd.DataFrame(all_hits, columns=["query_id", "lig_idx_zinc", "tanimoto"])
+
+    hits_df = hits_df.merge(
+        ligs_zinc_by_idx[["chem_comp_id", "smiles"]],
+        left_on="lig_idx_zinc",
+        right_index=True,
+        how="left",
+    )
+
+    # -------------------------------------------------------------------------
+    # 6) Optionally limit the number of hits per query globally
+    # -------------------------------------------------------------------------
+    if max_hits_per_query is not None:
+        hits_df = (
+            hits_df.sort_values(["query_id", "tanimoto"], ascending=[True, False])
+            .groupby("query_id", as_index=False)
+            .head(max_hits_per_query)
+            .reset_index(drop=True)
+        )
+
+    return hits_df[["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"]]
 
 def get_zinc_ligands(
     prot: str,
     pdb_chembl_binding_data: pd.DataFrame,
-    store_pdb_chembl: LigandStore,
-    rep_pdb_chembl: Representation,
-    store_zinc: LigandStore,
-    rep_zinc: Representation,
+    store_pdb_chembl: "LigandStore",
+    rep_pdb_chembl: "Representation",
+    store_zinc: "LigandStore",
+    rep_zinc: "Representation",
     max_queries: int = 50,
     cluster_threshold: float = 0.8,
     zinc_search_threshold: float = 0.5,
+    # ------------------------------------------------------------------
+    # Backend selection:
+    # - "cuda" / "cuda:0" forces GPU if available (otherwise falls back to CPU)
+    # - "cpu" forces CPU
+    # - None means: use CUDA if available, else CPU
+    # ------------------------------------------------------------------
+    device: Optional[Union[str, torch.device]] = None,
 ) -> pd.DataFrame:
     """
     For a protein (uniprot_id = prot), select a set of representative ligands
     (up to max_queries) and run similarity search in ZINC.
 
-    Strategy
-    --------
-      - Extract chem_comp_id values for `prot` in pdb_chembl_binding_data.
-      - Build a chem_comp_id → pchembl map (maximum pchembl per ligand).
-      - If n_ligands <= max_queries:
-            * cluster_ligands_by_tanimoto with threshold = cluster_threshold,
-              promoting highest-pchembl ligand within each cluster.
-      - If n_ligands > max_queries:
-            * MaxMin selection to max_queries (select_ligands_maxmin_by_tanimoto)
-              using pchembl_map to promote higher pchembl ligands.
-            * Compute max pairwise Tanimoto among selected reps.
-            * If ti_max >= cluster_threshold:
-                  cluster these reps again with cluster_threshold.
-              Else:
-                  keep MaxMin reps directly.
-      - Query ZINC using search_similar_in_zinc with the final representatives.
-      - Post-process ZINC hits:
-            * remove internal index column,
-            * prefix chem_comp_id with "ZINC",
-            * sort by Tanimoto descending,
-            * drop duplicate ZINC compounds.
+    This function is a single entry-point that automatically chooses the search
+    backend:
+      - If CUDA is available (and not forced to CPU), it runs:
+            search_similar_in_zinc_torch_gpu(...)
+        with GPU-friendly defaults:
+            q_batch_size=200, zinc_chunk_size=200_000
+      - Otherwise, it runs:
+            search_similar_in_zinc(...)
+        using the original CPU defaults that were previously optimized.
+
+    IMPORTANT: The representative selection logic and post-processing are
+    unchanged relative to the original CPU-only implementation. Only the ZINC
+    search backend is switched automatically.
+
+    Parameters
+    ----------
+    prot : str
+        Protein identifier (uniprot_id).
+    pdb_chembl_binding_data : pd.DataFrame
+        Binding data including at least columns: uniprot_id, chem_comp_id, pchembl.
+    store_pdb_chembl : LigandStore
+        Reference ligand store (PDB+ChEMBL).
+    rep_pdb_chembl : Representation
+        Representation for reference ligands.
+    store_zinc : LigandStore
+        Ligand store for ZINC.
+    rep_zinc : Representation
+        Representation for ZINC ligands (packed memmap).
+    max_queries : int, default 50
+        Maximum number of representative ligands to query in ZINC.
+    cluster_threshold : float, default 0.8
+        Threshold used for clustering and redundancy checks.
+    zinc_search_threshold : float, default 0.5
+        Tanimoto threshold for reporting ZINC hits.
+    device : Optional[Union[str, torch.device]], default None
+        Backend selection:
+          - None: auto (CUDA if available, else CPU)
+          - "cpu": force CPU backend
+          - "cuda" / "cuda:0": prefer CUDA backend (falls back to CPU if unavailable)
+          - torch.device("cpu") / torch.device("cuda:0") are also accepted
 
     Returns
     -------
     pd.DataFrame
         Columns:
-          - query_id
           - chem_comp_id  (prefixed with "ZINC")
-          - smiles
+          - query_id
           - tanimoto
-        (lig_idx_zinc is removed before returning)
+          - smiles
+        Internal column lig_idx_zinc is removed before returning.
     """
+    # ------------------------------------------------------------------
+    # 0) Resolve device choice (auto / forced)
+    # ------------------------------------------------------------------
+    if device is None:
+        use_cuda = torch.cuda.is_available()
+        resolved_device = torch.device("cuda") if use_cuda else torch.device("cpu")
+    else:
+        resolved_device = torch.device(device)
+        if resolved_device.type == "cuda" and not torch.cuda.is_available():
+            # If the user requested CUDA but it's not available, we fall back to CPU.
+            resolved_device = torch.device("cpu")
+
     # ------------------------------------------------------------------
     # 1) Subset by protein and extract chem_ids + pchembl_map
     # ------------------------------------------------------------------
@@ -769,9 +1329,7 @@ def get_zinc_ligands(
     )
 
     if not chem_ids:
-        return pd.DataFrame(
-            columns=["query_id", "chem_comp_id", "smiles", "tanimoto"]
-        )
+        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", "tanimoto"])
 
     pchembl_map = (
         df_prot
@@ -804,6 +1362,7 @@ def get_zinc_ligands(
         )
 
         # Check redundancy among MaxMin representatives
+        # Keep the original CPU implementation here to preserve behavior.
         ti_max = max_pairwise_tanimoto_from_ids(representatives_mm, rep_pdb_chembl)
 
         if ti_max >= cluster_threshold:
@@ -819,9 +1378,28 @@ def get_zinc_ligands(
             representatives = representatives_mm
 
     # ------------------------------------------------------------------
-    # 3) Search in ZINC
+    # 3) Search in ZINC (AUTO backend)
     # ------------------------------------------------------------------
-    zinc_ligands = search_similar_in_zinc(
+    if resolved_device.type == "cuda":
+        # GPU backend defaults (as requested)
+        zinc_ligands = search_similar_in_zinc_torch_gpu(
+            query_ids=representatives,
+            store_ref=store_pdb_chembl,
+            rep_ref=rep_pdb_chembl,
+            store_zinc=store_zinc,
+            rep_zinc=rep_zinc,
+            tanimoto_threshold=zinc_search_threshold,
+            q_batch_size=200,
+            zinc_chunk_size=200_000,
+            device=resolved_device,
+            max_hits_per_query=None,
+            # Keep "no per-chunk cap" by default to mirror CPU behavior.
+            # You can set per_chunk_topk_hint=200 if you want extra safety.
+            per_chunk_topk_hint=None,
+        )
+    else:
+        # CPU backend (use the original optimized defaults by not overriding them)
+        zinc_ligands = search_similar_in_zinc(
         query_ids=representatives,
         store_ref=store_pdb_chembl,
         rep_ref=rep_pdb_chembl,
@@ -836,9 +1414,7 @@ def get_zinc_ligands(
 
     # If there are no hits, return an empty DataFrame with the expected columns
     if zinc_ligands.empty:
-        return pd.DataFrame(
-            columns=["query_id", "chem_comp_id", "smiles", "tanimoto"]
-        )
+        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", "tanimoto"])
 
     # ------------------------------------------------------------------
     # 4) Remove internal column "lig_idx_zinc"
@@ -849,13 +1425,10 @@ def get_zinc_ligands(
     # ------------------------------------------------------------------
     # 5) Add "ZINC" prefix and remove duplicate ZINC compounds
     # ------------------------------------------------------------------
-    # Prefix ZINC chem_comp_id to clearly distinguish them from PDB/ChEMBL IDs
     zinc_ligands["chem_comp_id"] = "ZINC" + zinc_ligands["chem_comp_id"].astype(str)
 
-    # Sort by Tanimoto descending so we keep the strongest hit per compound
     zinc_ligands = zinc_ligands.sort_values("tanimoto", ascending=False)
 
-    # Drop duplicates by ZINC compound (and smiles for safety), keeping best Tanimoto
     zinc_ligands = zinc_ligands.drop_duplicates(
         subset=["chem_comp_id", "smiles"],
         keep="first",
@@ -865,3 +1438,5 @@ def get_zinc_ligands(
     # 6) Return only the public columns
     # ------------------------------------------------------------------
     return zinc_ligands[["chem_comp_id", "query_id", "tanimoto", "smiles"]]
+
+
