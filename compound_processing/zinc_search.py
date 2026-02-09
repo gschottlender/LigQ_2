@@ -15,6 +15,7 @@ from compound_processing.compound_helpers import (
     build_morgan_representation,
     build_ligand_index,
 )
+from compound_processing import metrics
 
 
 def promote_representatives_by_pchembl(
@@ -1228,6 +1229,216 @@ def search_similar_in_zinc_torch_gpu(
 
     return hits_df[["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"]]
 
+
+def _resolve_search_device(
+    device: Optional[Union[str, torch.device]] = None,
+) -> torch.device:
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    resolved = torch.device(device)
+    if resolved.type == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+    return resolved
+
+
+def _search_similar_in_zinc_generic(
+    query_ids: Sequence[str],
+    store_zinc: LigandStore,
+    rep_ref: Representation,
+    rep_zinc: Representation,
+    *,
+    metric: metrics.MetricName,
+    similarity_threshold: float,
+    q_batch_size: int,
+    zinc_chunk_size: int,
+    device: Union[str, torch.device],
+    max_hits_per_query: Optional[int] = None,
+    assume_normalized: Optional[bool] = None,
+    force_copy_packed_gpu: bool = True,
+) -> pd.DataFrame:
+    if not query_ids:
+        score_col = "tanimoto" if metric == "tanimoto" else "similarity"
+        return pd.DataFrame(
+            columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]
+        )
+
+    metrics.validate_metric(metric, rep_ref.meta, rep_zinc.meta)
+
+    qids = list(query_ids)
+    q_raw = rep_ref.get_raw_by_ids(qids)
+    if q_raw.shape[0] != len(qids):
+        raise ValueError("Number of query vectors does not match number of query_ids.")
+
+    ligs_zinc = store_zinc.ligands.copy()
+    if "lig_idx" not in ligs_zinc.columns:
+        raise ValueError("ZINC ligands parquet must contain column 'lig_idx'.")
+    ligs_zinc_by_idx = ligs_zinc.set_index("lig_idx")
+
+    all_hits: List[Tuple[str, int, float]] = []
+
+    for q_start in range(0, len(qids), q_batch_size):
+        q_end = min(q_start + q_batch_size, len(qids))
+        batch_ids = qids[q_start:q_end]
+        batch_q = q_raw[q_start:q_end]
+
+        for chunk_start, chunk_end, x_raw in rep_zinc.iter_raw_chunks(zinc_chunk_size):
+            if x_raw.size == 0:
+                continue
+
+            scores = metrics.score_block(
+                metric,
+                batch_q,
+                x_raw,
+                q_meta=rep_ref.meta,
+                x_meta=rep_zinc.meta,
+                device=device,
+                assume_normalized=assume_normalized,
+                force_copy_packed_gpu=force_copy_packed_gpu,
+            )
+
+            if scores.size == 0:
+                continue
+
+            mask = scores >= float(similarity_threshold)
+            q_idx, b_idx = np.where(mask)
+            if q_idx.size == 0:
+                continue
+
+            for k in range(len(q_idx)):
+                qi = int(q_idx[k])
+                bi = int(b_idx[k])
+                lig_idx_global = chunk_start + bi
+                all_hits.append((batch_ids[qi], lig_idx_global, float(scores[qi, bi])))
+
+    score_col = "tanimoto" if metric == "tanimoto" else "similarity"
+    if not all_hits:
+        return pd.DataFrame(
+            columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]
+        )
+
+    hits_df = pd.DataFrame(all_hits, columns=["query_id", "lig_idx_zinc", score_col])
+
+    hits_df = hits_df.merge(
+        ligs_zinc_by_idx[["chem_comp_id", "smiles"]],
+        left_on="lig_idx_zinc",
+        right_index=True,
+        how="left",
+    )
+
+    if max_hits_per_query is not None:
+        hits_df = (
+            hits_df.sort_values(["query_id", score_col], ascending=[True, False])
+            .groupby("query_id", as_index=False)
+            .head(max_hits_per_query)
+            .reset_index(drop=True)
+        )
+
+    return hits_df[["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]]
+
+
+def search_similar_in_zinc_custom(
+    query_ids: Sequence[str],
+    store_ref: LigandStore,
+    rep_ref: Representation,
+    store_zinc: LigandStore,
+    rep_zinc: Representation,
+    *,
+    metric: metrics.MetricName = "tanimoto",
+    similarity_threshold: float = 0.5,
+    q_batch_size: int = 200,
+    zinc_chunk_size: int = 200_000,
+    device: Optional[Union[str, torch.device]] = None,
+    n_jobs: int = 4,
+    max_hits_per_query: Optional[int] = None,
+    assume_normalized: Optional[bool] = None,
+    per_chunk_topk_hint: Optional[int] = None,
+    force_copy_packed_gpu: bool = True,
+) -> pd.DataFrame:
+    """
+    Customizable ZINC search that supports multiple representations and metrics.
+
+    This function preserves the optimized Tanimoto pathways for packed fingerprints
+    and falls back to a generic block-scoring loop for other metrics (e.g., cosine).
+
+    Parameters
+    ----------
+    query_ids
+        Ligand identifiers to query.
+    store_ref, rep_ref
+        Reference ligand store and representation.
+    store_zinc, rep_zinc
+        ZINC ligand store and representation.
+    metric
+        Similarity metric to use ("tanimoto" or "cosine").
+    similarity_threshold
+        Minimum similarity score to report a hit.
+    q_batch_size
+        Query batch size.
+    zinc_chunk_size
+        ZINC chunk size.
+    device
+        "cpu" or "cuda" (auto if None).
+    n_jobs
+        Number of CPU workers for the packed Tanimoto CPU backend.
+    max_hits_per_query
+        Cap results per query globally.
+    assume_normalized
+        For cosine similarity, whether vectors are already normalized.
+    per_chunk_topk_hint
+        Optional per-chunk top-k hint for the GPU Tanimoto backend.
+    force_copy_packed_gpu
+        Copy packed memmap chunks on GPU to avoid non-writable warnings.
+    """
+    metrics.validate_metric(metric, rep_ref.meta, rep_zinc.meta)
+    resolved_device = _resolve_search_device(device)
+    device_str = "cuda" if resolved_device.type == "cuda" else "cpu"
+
+    if metric == "tanimoto" and rep_ref.packed_bits and rep_zinc.packed_bits:
+        if resolved_device.type == "cuda":
+            return search_similar_in_zinc_torch_gpu(
+                query_ids=query_ids,
+                store_ref=store_ref,
+                rep_ref=rep_ref,
+                store_zinc=store_zinc,
+                rep_zinc=rep_zinc,
+                tanimoto_threshold=similarity_threshold,
+                q_batch_size=q_batch_size,
+                zinc_chunk_size=zinc_chunk_size,
+                device=resolved_device,
+                max_hits_per_query=max_hits_per_query,
+                per_chunk_topk_hint=per_chunk_topk_hint,
+                force_copy_packed=force_copy_packed_gpu,
+            )
+
+        return search_similar_in_zinc(
+            query_ids=query_ids,
+            store_ref=store_ref,
+            rep_ref=rep_ref,
+            store_zinc=store_zinc,
+            rep_zinc=rep_zinc,
+            tanimoto_threshold=similarity_threshold,
+            q_batch_size=q_batch_size,
+            zinc_chunk_size=zinc_chunk_size,
+            n_jobs=n_jobs,
+            max_hits_per_query=max_hits_per_query,
+        )
+
+    return _search_similar_in_zinc_generic(
+        query_ids=query_ids,
+        store_zinc=store_zinc,
+        rep_ref=rep_ref,
+        rep_zinc=rep_zinc,
+        metric=metric,
+        similarity_threshold=similarity_threshold,
+        q_batch_size=q_batch_size,
+        zinc_chunk_size=zinc_chunk_size,
+        device=device_str,
+        max_hits_per_query=max_hits_per_query,
+        assume_normalized=assume_normalized,
+        force_copy_packed_gpu=force_copy_packed_gpu,
+    )
+
 def get_zinc_ligands(
     prot: str,
     pdb_chembl_binding_data: pd.DataFrame,
@@ -1239,26 +1450,29 @@ def get_zinc_ligands(
     cluster_threshold: float = 0.8,
     zinc_search_threshold: float = 0.5,
     # ------------------------------------------------------------------
-    # Backend selection:
-    # - "cuda" / "cuda:0" forces GPU if available (otherwise falls back to CPU)
-    # - "cpu" forces CPU
-    # - None means: use CUDA if available, else CPU
+    # Search customization:
+    # - search_rep_ref/search_rep_zinc: representation to use for ZINC search
+    # - search_metric: "tanimoto" or "cosine" (see compound_processing.metrics)
+    # - search_device: "cpu" / "cuda" / None (auto)
     # ------------------------------------------------------------------
-    device: Optional[Union[str, torch.device]] = None,
+    search_rep_ref: Optional["Representation"] = None,
+    search_rep_zinc: Optional["Representation"] = None,
+    search_metric: metrics.MetricName = "tanimoto",
+    search_device: Optional[Union[str, torch.device]] = None,
+    search_q_batch_size: Optional[int] = None,
+    search_zinc_chunk_size: Optional[int] = None,
+    search_n_jobs: int = 4,
+    search_assume_normalized: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     For a protein (uniprot_id = prot), select a set of representative ligands
     (up to max_queries) and run similarity search in ZINC.
 
-    This function is a single entry-point that automatically chooses the search
-    backend:
-      - If CUDA is available (and not forced to CPU), it runs:
-            search_similar_in_zinc_torch_gpu(...)
-        with GPU-friendly defaults:
-            q_batch_size=200, zinc_chunk_size=200_000
-      - Otherwise, it runs:
-            search_similar_in_zinc(...)
-        using the original CPU defaults that were previously optimized.
+    This function is a single entry-point that supports configurable ZINC
+    searches across multiple representations and metrics. For packed Tanimoto
+    fingerprints, it preserves the existing optimized CPU/GPU backends; for
+    other metrics (e.g., cosine over embeddings), it falls back to a generic
+    block-scoring loop that still honors chunking and batching.
 
     IMPORTANT: The representative selection logic and post-processing are
     unchanged relative to the original CPU-only implementation. Only the ZINC
@@ -1283,13 +1497,24 @@ def get_zinc_ligands(
     cluster_threshold : float, default 0.8
         Threshold used for clustering and redundancy checks.
     zinc_search_threshold : float, default 0.5
-        Tanimoto threshold for reporting ZINC hits.
-    device : Optional[Union[str, torch.device]], default None
-        Backend selection:
+        Similarity threshold for reporting ZINC hits.
+    search_rep_ref, search_rep_zinc : Optional[Representation]
+        Representations used for the ZINC search. Defaults to rep_pdb_chembl and rep_zinc.
+    search_metric : {"tanimoto", "cosine"}
+        Similarity metric for ZINC search.
+    search_device : Optional[Union[str, torch.device]], default None
+        Backend selection for ZINC search:
           - None: auto (CUDA if available, else CPU)
           - "cpu": force CPU backend
           - "cuda" / "cuda:0": prefer CUDA backend (falls back to CPU if unavailable)
-          - torch.device("cpu") / torch.device("cuda:0") are also accepted
+    search_q_batch_size : Optional[int]
+        Batch size for ZINC search (auto-tuned defaults if None).
+    search_zinc_chunk_size : Optional[int]
+        ZINC chunk size for search (auto-tuned defaults if None).
+    search_n_jobs : int, default 4
+        CPU worker count for the packed Tanimoto backend.
+    search_assume_normalized : Optional[bool]
+        For cosine similarity, whether vectors are already normalized.
 
     Returns
     -------
@@ -1297,21 +1522,29 @@ def get_zinc_ligands(
         Columns:
           - chem_comp_id  (prefixed with "ZINC")
           - query_id
-          - tanimoto
+          - similarity score column ("tanimoto" or "similarity")
           - smiles
         Internal column lig_idx_zinc is removed before returning.
     """
     # ------------------------------------------------------------------
-    # 0) Resolve device choice (auto / forced)
+    # 0) Resolve device choice (auto / forced) for ZINC search
     # ------------------------------------------------------------------
-    if device is None:
-        use_cuda = torch.cuda.is_available()
-        resolved_device = torch.device("cuda") if use_cuda else torch.device("cpu")
-    else:
-        resolved_device = torch.device(device)
-        if resolved_device.type == "cuda" and not torch.cuda.is_available():
-            # If the user requested CUDA but it's not available, we fall back to CPU.
-            resolved_device = torch.device("cpu")
+    resolved_device = _resolve_search_device(search_device)
+    search_rep_ref = rep_pdb_chembl if search_rep_ref is None else search_rep_ref
+    search_rep_zinc = rep_zinc if search_rep_zinc is None else search_rep_zinc
+    score_col = "tanimoto" if search_metric == "tanimoto" else "similarity"
+
+    if search_q_batch_size is None or search_zinc_chunk_size is None:
+        if search_metric == "tanimoto" and search_rep_ref.packed_bits and search_rep_zinc.packed_bits:
+            if resolved_device.type == "cuda":
+                search_q_batch_size = 200 if search_q_batch_size is None else search_q_batch_size
+                search_zinc_chunk_size = 200_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
+            else:
+                search_q_batch_size = 100 if search_q_batch_size is None else search_q_batch_size
+                search_zinc_chunk_size = 50_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
+        else:
+            search_q_batch_size = 200 if search_q_batch_size is None else search_q_batch_size
+            search_zinc_chunk_size = 200_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
 
     # ------------------------------------------------------------------
     # 1) Subset by protein and extract chem_ids + pchembl_map
@@ -1329,7 +1562,7 @@ def get_zinc_ligands(
     )
 
     if not chem_ids:
-        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", "tanimoto"])
+        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", score_col])
 
     pchembl_map = (
         df_prot
@@ -1378,43 +1611,28 @@ def get_zinc_ligands(
             representatives = representatives_mm
 
     # ------------------------------------------------------------------
-    # 3) Search in ZINC (AUTO backend)
+    # 3) Search in ZINC (customizable backend)
     # ------------------------------------------------------------------
-    if resolved_device.type == "cuda":
-        # GPU backend defaults (as requested)
-        zinc_ligands = search_similar_in_zinc_torch_gpu(
-            query_ids=representatives,
-            store_ref=store_pdb_chembl,
-            rep_ref=rep_pdb_chembl,
-            store_zinc=store_zinc,
-            rep_zinc=rep_zinc,
-            tanimoto_threshold=zinc_search_threshold,
-            q_batch_size=200,
-            zinc_chunk_size=200_000,
-            device=resolved_device,
-            max_hits_per_query=None,
-            # Keep "no per-chunk cap" by default to mirror CPU behavior.
-            # You can set per_chunk_topk_hint=200 if you want extra safety.
-            per_chunk_topk_hint=None,
-        )
-    else:
-        # CPU backend (use the original optimized defaults by not overriding them)
-        zinc_ligands = search_similar_in_zinc(
+    zinc_ligands = search_similar_in_zinc_custom(
         query_ids=representatives,
         store_ref=store_pdb_chembl,
-        rep_ref=rep_pdb_chembl,
+        rep_ref=search_rep_ref,
         store_zinc=store_zinc,
-        rep_zinc=rep_zinc,
-        tanimoto_threshold=zinc_search_threshold,
-        q_batch_size=100,
-        zinc_chunk_size=50_000,
-        n_jobs=4,
+        rep_zinc=search_rep_zinc,
+        metric=search_metric,
+        similarity_threshold=zinc_search_threshold,
+        q_batch_size=search_q_batch_size,
+        zinc_chunk_size=search_zinc_chunk_size,
+        device=resolved_device,
+        n_jobs=search_n_jobs,
         max_hits_per_query=None,
+        assume_normalized=search_assume_normalized,
+        per_chunk_topk_hint=None,
     )
 
     # If there are no hits, return an empty DataFrame with the expected columns
     if zinc_ligands.empty:
-        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", "tanimoto"])
+        return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", score_col])
 
     # ------------------------------------------------------------------
     # 4) Remove internal column "lig_idx_zinc"
@@ -1427,7 +1645,7 @@ def get_zinc_ligands(
     # ------------------------------------------------------------------
     zinc_ligands["chem_comp_id"] = "ZINC" + zinc_ligands["chem_comp_id"].astype(str)
 
-    zinc_ligands = zinc_ligands.sort_values("tanimoto", ascending=False)
+    zinc_ligands = zinc_ligands.sort_values(score_col, ascending=False)
 
     zinc_ligands = zinc_ligands.drop_duplicates(
         subset=["chem_comp_id", "smiles"],
@@ -1437,6 +1655,4 @@ def get_zinc_ligands(
     # ------------------------------------------------------------------
     # 6) Return only the public columns
     # ------------------------------------------------------------------
-    return zinc_ligands[["chem_comp_id", "query_id", "tanimoto", "smiles"]]
-
-
+    return zinc_ligands[["chem_comp_id", "query_id", score_col, "smiles"]]
