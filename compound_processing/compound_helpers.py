@@ -564,9 +564,11 @@ class Representation:
     """
     Numerical representation of ligands stored as a memmap on disk.
 
-    This class abstracts over details such as bit packing and allows
-    retrieving vectors by chem_comp_id without loading the full N x D matrix
-    into RAM.
+    Two access patterns:
+    1) get_by_ids(): user/ML-friendly (may unpack bits to 0/1)
+    2) raw access (new): backend-friendly (returns memmap rows as stored on disk)
+       - packed_bits=True  -> returns uint8 packed bytes, shape (N, packed_dim)
+       - packed_bits=False -> returns float16/float32/etc, shape (N, dim)
     """
 
     def __init__(
@@ -581,15 +583,53 @@ class Representation:
         self.meta = meta
         self.id_to_idx = id_to_idx
 
+    # -----------------------------
+    # Contract / metadata helpers
+    # -----------------------------
     @property
     def dim(self) -> int:
-        """Return the dimensionality of the representation (number of features)."""
+        """Logical dimensionality (e.g. n_bits for Morgan, embedding dim for ChemBERTa)."""
         return int(self.meta["dim"])
 
-    def _indices_from_ids(self, comp_ids: List[str]) -> np.ndarray:
+    @property
+    def packed_bits(self) -> bool:
+        """Whether this representation is stored as packed bits on disk."""
+        return bool(self.meta.get("packed_bits", False))
+
+    @property
+    def packed_dim(self) -> Optional[int]:
+        """
+        Physical dimensionality on disk for packed representations (bytes per vector).
+        None for non-packed representations.
+        """
+        pdim = self.meta.get("packed_dim", None)
+        return None if pdim is None else int(pdim)
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Numpy dtype of the underlying memmap."""
+        return np.dtype(self.meta["dtype"])
+
+    @property
+    def n_ligands(self) -> int:
+        """Number of ligands (rows) in the memmap."""
+        return int(self.meta["n_ligands"])
+
+    @property
+    def raw_dim(self) -> int:
+        """
+        Physical last-dimension size in the memmap:
+        - packed: packed_dim
+        - non-packed: dim
+        """
+        return int(self.packed_dim) if self.packed_bits else int(self.dim)
+
+    # -----------------------------
+    # ID <-> index mapping
+    # -----------------------------
+    def indices_from_ids(self, comp_ids: List[str]) -> np.ndarray:
         """
         Convert a list of chem_comp_id strings into an array of integer indices (lig_idx).
-
         Raises KeyError if any chem_comp_id is not found.
         """
         idxs = []
@@ -600,6 +640,60 @@ class Representation:
                 raise KeyError(f"chem_comp_id '{cid}' not found in ligand index.")
         return np.array(idxs, dtype=np.int64)
 
+    def _indices_from_ids(self, comp_ids: List[str]) -> np.ndarray:
+        # Backward compatibility: keep internal name used by existing code
+        return self.indices_from_ids(comp_ids)
+
+    # -----------------------------
+    # RAW access (new)
+    # -----------------------------
+    def get_raw_by_indices(self, idxs: np.ndarray) -> np.ndarray:
+        """
+        Return rows exactly as stored on disk (no unpacking, no dtype conversion).
+        Shape:
+          - packed: (N, packed_dim) uint8
+          - non-packed: (N, dim) float16/float32/...
+        """
+        idxs = np.asarray(idxs, dtype=np.int64)
+        if idxs.size == 0:
+            return np.zeros((0, self.raw_dim), dtype=self.dtype)
+        return self.memmap[idxs]
+
+    def get_raw_by_ids(self, comp_ids: List[str]) -> np.ndarray:
+        """Same as get_raw_by_indices, but maps chem_comp_id -> lig_idx first."""
+        if len(comp_ids) == 0:
+            return np.zeros((0, self.raw_dim), dtype=self.dtype)
+        idxs = self.indices_from_ids(comp_ids)
+        return self.get_raw_by_indices(idxs)
+
+    def iter_raw_chunks(
+        self,
+        chunk_size: int,
+        start: int = 0,
+        end: Optional[int] = None,
+    ):
+        """
+        Iterate over the memmap in contiguous chunks, yielding:
+            (start_idx, end_idx, raw_block)
+
+        raw_block is a memmap slice with shape:
+          - packed: (B, packed_dim)
+          - non-packed: (B, dim)
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        n = self.n_ligands
+        s = max(0, int(start))
+        e = n if end is None else min(n, int(end))
+        if s >= e:
+            return
+        for i in range(s, e, chunk_size):
+            j = min(i + chunk_size, e)
+            yield i, j, self.memmap[i:j]
+
+    # -----------------------------
+    # Existing high-level access (unchanged behavior)
+    # -----------------------------
     def get_by_ids(
         self,
         comp_ids: List[str],
@@ -631,7 +725,7 @@ class Representation:
         idxs = self._indices_from_ids(comp_ids)
         raw = self.memmap[idxs]  # (n_ids, dim_packed) or (n_ids, dim)
 
-        if self.meta.get("packed_bits", False):
+        if self.packed_bits:
             arr = unpack_bits(raw, self.dim)  # (n_ids, dim)
         else:
             arr = np.asarray(raw)
