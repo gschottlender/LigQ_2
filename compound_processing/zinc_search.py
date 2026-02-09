@@ -15,7 +15,7 @@ from compound_processing.compound_helpers import (
     build_morgan_representation,
     build_ligand_index,
 )
-from compound_processing import metrics
+from compound_processing import backend, metrics
 
 
 def promote_representatives_by_pchembl(
@@ -1242,217 +1242,6 @@ def _resolve_search_device(
     return resolved
 
 
-class _ThresholdAccumulator:
-    def __init__(self, batch_ids: Sequence[str], threshold: float):
-        self.batch_ids = np.asarray(batch_ids, dtype=object)
-        self.threshold = float(threshold)
-        self._query_ids: List[np.ndarray] = []
-        self._lig_indices: List[np.ndarray] = []
-        self._scores: List[np.ndarray] = []
-
-    def update(self, scores: np.ndarray, chunk_start: int) -> None:
-        mask = scores >= self.threshold
-        q_idx, b_idx = np.where(mask)
-        if q_idx.size == 0:
-            return
-        self._query_ids.append(self.batch_ids[q_idx])
-        self._lig_indices.append(chunk_start + b_idx)
-        self._scores.append(scores[q_idx, b_idx])
-
-    def finalize(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if not self._query_ids:
-            return (
-                np.array([], dtype=object),
-                np.array([], dtype=np.int64),
-                np.array([], dtype=np.float32),
-            )
-        return (
-            np.concatenate(self._query_ids),
-            np.concatenate(self._lig_indices).astype(np.int64, copy=False),
-            np.concatenate(self._scores).astype(np.float32, copy=False),
-        )
-
-
-class _TopKAccumulator:
-    def __init__(self, batch_ids: Sequence[str], k: int, threshold: float):
-        if k <= 0:
-            raise ValueError("topk must be > 0")
-        self.batch_ids = list(batch_ids)
-        self.k = int(k)
-        self.threshold = float(threshold)
-        self._scores = np.full((len(self.batch_ids), self.k), -np.inf, dtype=np.float32)
-        self._indices = np.full((len(self.batch_ids), self.k), -1, dtype=np.int64)
-
-    def update(self, scores: np.ndarray, chunk_start: int) -> None:
-        if scores.size == 0:
-            return
-        for qi in range(scores.shape[0]):
-            row = scores[qi]
-            if row.size == 0:
-                continue
-            if self.k >= row.size:
-                top_idx = np.argsort(row)[::-1]
-            else:
-                top_idx = np.argpartition(row, -self.k)[-self.k:]
-                top_idx = top_idx[np.argsort(row[top_idx])[::-1]]
-            vals = row[top_idx]
-            if vals.size == 0:
-                continue
-            if self.threshold is not None:
-                keep = vals >= self.threshold
-                if not np.any(keep):
-                    continue
-                top_idx = top_idx[keep]
-                vals = vals[keep]
-            if vals.size == 0:
-                continue
-            merged_scores = np.concatenate([self._scores[qi], vals])
-            merged_indices = np.concatenate([self._indices[qi], chunk_start + top_idx])
-            if merged_scores.size <= self.k:
-                order = np.argsort(merged_scores)[::-1]
-            else:
-                best = np.argpartition(merged_scores, -self.k)[-self.k:]
-                order = best[np.argsort(merged_scores[best])[::-1]]
-            self._scores[qi] = merged_scores[order][: self.k]
-            self._indices[qi] = merged_indices[order][: self.k]
-
-    def finalize(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        query_ids: List[np.ndarray] = []
-        lig_indices: List[np.ndarray] = []
-        scores: List[np.ndarray] = []
-        for qi, qid in enumerate(self.batch_ids):
-            valid = self._indices[qi] >= 0
-            if not np.any(valid):
-                continue
-            vals = self._scores[qi][valid]
-            idxs = self._indices[qi][valid]
-            if vals.size == 0:
-                continue
-            query_ids.append(np.repeat(qid, vals.size))
-            lig_indices.append(idxs)
-            scores.append(vals)
-        if not query_ids:
-            return (
-                np.array([], dtype=object),
-                np.array([], dtype=np.int64),
-                np.array([], dtype=np.float32),
-            )
-        return (
-            np.concatenate(query_ids),
-            np.concatenate(lig_indices).astype(np.int64, copy=False),
-            np.concatenate(scores).astype(np.float32, copy=False),
-        )
-
-
-def _search_similar_in_zinc_accelerated(
-    query_ids: Sequence[str],
-    store_zinc: LigandStore,
-    rep_ref: Representation,
-    rep_zinc: Representation,
-    *,
-    metric: metrics.MetricName,
-    similarity_threshold: float,
-    q_batch_size: int,
-    zinc_chunk_size: int,
-    device: Union[str, torch.device],
-    topk_per_query: Optional[int] = None,
-    max_hits_per_query: Optional[int] = None,
-    assume_normalized: Optional[bool] = None,
-    force_copy_packed_gpu: bool = True,
-) -> pd.DataFrame:
-    if not query_ids:
-        score_col = "tanimoto" if metric == "tanimoto" else "similarity"
-        return pd.DataFrame(
-            columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]
-        )
-
-    metrics.validate_metric(metric, rep_ref.meta, rep_zinc.meta)
-
-    qids = list(query_ids)
-    q_raw = rep_ref.get_raw_by_ids(qids)
-    if q_raw.shape[0] != len(qids):
-        raise ValueError("Number of query vectors does not match number of query_ids.")
-
-    ligs_zinc = store_zinc.ligands.copy()
-    if "lig_idx" not in ligs_zinc.columns:
-        raise ValueError("ZINC ligands parquet must contain column 'lig_idx'.")
-    ligs_zinc_by_idx = ligs_zinc.set_index("lig_idx")
-
-    score_col = "tanimoto" if metric == "tanimoto" else "similarity"
-    query_arrays: List[np.ndarray] = []
-    lig_arrays: List[np.ndarray] = []
-    score_arrays: List[np.ndarray] = []
-
-    for q_start in range(0, len(qids), q_batch_size):
-        q_end = min(q_start + q_batch_size, len(qids))
-        batch_ids = qids[q_start:q_end]
-        batch_q = q_raw[q_start:q_end]
-
-        if topk_per_query is None:
-            accumulator: Union[_ThresholdAccumulator, _TopKAccumulator] = _ThresholdAccumulator(
-                batch_ids, similarity_threshold
-            )
-        else:
-            accumulator = _TopKAccumulator(batch_ids, topk_per_query, similarity_threshold)
-
-        for chunk_start, _chunk_end, x_raw in rep_zinc.iter_raw_chunks(zinc_chunk_size):
-            if x_raw.size == 0:
-                continue
-
-            scores = metrics.score_block(
-                metric,
-                batch_q,
-                x_raw,
-                q_meta=rep_ref.meta,
-                x_meta=rep_zinc.meta,
-                device=device,
-                assume_normalized=assume_normalized,
-                force_copy_packed_gpu=force_copy_packed_gpu,
-            )
-
-            if scores.size == 0:
-                continue
-
-            accumulator.update(scores, chunk_start)
-
-        q_arr, lig_arr, score_arr = accumulator.finalize()
-        if q_arr.size == 0:
-            continue
-        query_arrays.append(q_arr)
-        lig_arrays.append(lig_arr)
-        score_arrays.append(score_arr)
-
-    if not query_arrays:
-        return pd.DataFrame(
-            columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]
-        )
-
-    hits_df = pd.DataFrame(
-        {
-            "query_id": np.concatenate(query_arrays),
-            "lig_idx_zinc": np.concatenate(lig_arrays),
-            score_col: np.concatenate(score_arrays),
-        }
-    )
-
-    hits_df = hits_df.merge(
-        ligs_zinc_by_idx[["chem_comp_id", "smiles"]],
-        left_on="lig_idx_zinc",
-        right_index=True,
-        how="left",
-    )
-
-    if max_hits_per_query is not None:
-        hits_df = (
-            hits_df.sort_values(["query_id", score_col], ascending=[True, False])
-            .groupby("query_id", as_index=False)
-            .head(max_hits_per_query)
-            .reset_index(drop=True)
-        )
-
-    return hits_df[["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", score_col]]
-
-
 def search_similar_in_zinc_custom(
     query_ids: Sequence[str],
     store_ref: LigandStore,
@@ -1461,12 +1250,13 @@ def search_similar_in_zinc_custom(
     rep_zinc: Representation,
     *,
     metric: metrics.MetricName = "tanimoto",
-    similarity_threshold: float = 0.5,
+    mode: str = "threshold",
+    threshold: Optional[float] = 0.5,
+    topk: Optional[int] = None,
     q_batch_size: int = 200,
     zinc_chunk_size: int = 200_000,
     device: Optional[Union[str, torch.device]] = "auto",
     n_jobs: int = 4,
-    topk_per_query: Optional[int] = None,
     max_hits_per_query: Optional[int] = None,
     assume_normalized: Optional[bool] = None,
     per_chunk_topk_hint: Optional[int] = None,
@@ -1488,16 +1278,19 @@ def search_similar_in_zinc_custom(
         ZINC ligand store and representation.
     metric
         Similarity metric to use ("tanimoto" or "cosine").
-    similarity_threshold
-        Minimum similarity score to report a hit.
+    mode
+        "threshold" to return all hits >= threshold, or "topk" to return top-K per query.
+    threshold
+        Minimum similarity score to report a hit (required for mode="threshold").
+        When mode="topk", acts as an optional floor to filter low scores.
+    topk
+        Required when mode="topk".
     q_batch_size
         Query batch size.
     zinc_chunk_size
         ZINC chunk size.
     device
         "cpu", "cuda", or "auto" (default auto).
-    topk_per_query
-        If set, return only the top-K hits per query (threshold still applies).
     n_jobs
         Number of CPU workers for the packed Tanimoto CPU backend.
     max_hits_per_query
@@ -1509,12 +1302,19 @@ def search_similar_in_zinc_custom(
     force_copy_packed_gpu
         Copy packed memmap chunks on GPU to avoid non-writable warnings.
     """
+    if mode not in ("threshold", "topk"):
+        raise ValueError("mode must be 'threshold' or 'topk'.")
+    if mode == "threshold" and threshold is None:
+        raise ValueError("threshold must be provided for mode='threshold'.")
+    if mode == "topk" and (topk is None or topk <= 0):
+        raise ValueError("topk must be provided and > 0 for mode='topk'.")
+
     metrics.validate_metric(metric, rep_ref.meta, rep_zinc.meta)
     resolved_device = _resolve_search_device(device)
     device_str = "cuda" if resolved_device.type == "cuda" else "cpu"
 
     if (
-        topk_per_query is None
+        mode == "threshold"
         and metric == "tanimoto"
         and rep_ref.packed_bits
         and rep_zinc.packed_bits
@@ -1526,7 +1326,7 @@ def search_similar_in_zinc_custom(
                 rep_ref=rep_ref,
                 store_zinc=store_zinc,
                 rep_zinc=rep_zinc,
-                tanimoto_threshold=similarity_threshold,
+                tanimoto_threshold=float(threshold),
                 q_batch_size=q_batch_size,
                 zinc_chunk_size=zinc_chunk_size,
                 device=resolved_device,
@@ -1541,28 +1341,35 @@ def search_similar_in_zinc_custom(
             rep_ref=rep_ref,
             store_zinc=store_zinc,
             rep_zinc=rep_zinc,
-            tanimoto_threshold=similarity_threshold,
+            tanimoto_threshold=float(threshold),
             q_batch_size=q_batch_size,
             zinc_chunk_size=zinc_chunk_size,
             n_jobs=n_jobs,
             max_hits_per_query=max_hits_per_query,
         )
 
-    return _search_similar_in_zinc_accelerated(
+    request = backend.SearchRequest(
         query_ids=query_ids,
-        store_zinc=store_zinc,
+        store_ref=store_ref,
         rep_ref=rep_ref,
-        rep_zinc=rep_zinc,
+        store_target=store_zinc,
+        rep_target=rep_zinc,
         metric=metric,
-        similarity_threshold=similarity_threshold,
+        mode=mode,
+        threshold=threshold,
+        topk=topk,
+        device=resolved_device,
         q_batch_size=q_batch_size,
-        zinc_chunk_size=zinc_chunk_size,
-        device=device_str,
-        topk_per_query=topk_per_query,
+        target_chunk_size=zinc_chunk_size,
         max_hits_per_query=max_hits_per_query,
         assume_normalized=assume_normalized,
-        force_copy_packed_gpu=force_copy_packed_gpu,
+        return_fields=("chem_comp_id", "smiles"),
+        id_field="chem_comp_id",
     )
+    hits_df = backend.search(request)
+    if "target_idx" in hits_df.columns:
+        hits_df = hits_df.rename(columns={"target_idx": "lig_idx_zinc"})
+    return hits_df
 
 def get_zinc_ligands(
     prot: str,
@@ -1583,12 +1390,13 @@ def get_zinc_ligands(
     search_rep_ref: Optional["Representation"] = None,
     search_rep_zinc: Optional["Representation"] = None,
     search_metric: metrics.MetricName = "tanimoto",
+    search_mode: str = "threshold",
     search_device: Optional[Union[str, torch.device]] = "auto",
     search_q_batch_size: Optional[int] = None,
     search_zinc_chunk_size: Optional[int] = None,
     search_n_jobs: int = 4,
     search_assume_normalized: Optional[bool] = None,
-    search_topk_per_query: Optional[int] = None,
+    search_topk: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     For a protein (uniprot_id = prot), select a set of representative ligands
@@ -1628,6 +1436,8 @@ def get_zinc_ligands(
         Representations used for the ZINC search. Defaults to rep_pdb_chembl and rep_zinc.
     search_metric : {"tanimoto", "cosine"}
         Similarity metric for ZINC search.
+    search_mode : {"threshold", "topk"}
+        Mode for ZINC search (threshold or top-K).
     search_device : Optional[Union[str, torch.device]], default "auto"
         Backend selection for ZINC search:
           - None: auto (CUDA if available, else CPU)
@@ -1642,8 +1452,8 @@ def get_zinc_ligands(
         CPU worker count for the packed Tanimoto backend.
     search_assume_normalized : Optional[bool]
         For cosine similarity, whether vectors are already normalized.
-    search_topk_per_query : Optional[int]
-        If set, return only the top-K hits per query (threshold still applies).
+    search_topk : Optional[int]
+        If set and search_mode="topk", return only the top-K hits per query.
 
     Returns
     -------
@@ -1749,12 +1559,13 @@ def get_zinc_ligands(
         store_zinc=store_zinc,
         rep_zinc=search_rep_zinc,
         metric=search_metric,
-        similarity_threshold=zinc_search_threshold,
+        mode=search_mode,
+        threshold=zinc_search_threshold,
+        topk=search_topk,
         q_batch_size=search_q_batch_size,
         zinc_chunk_size=search_zinc_chunk_size,
         device=resolved_device,
         n_jobs=search_n_jobs,
-        topk_per_query=search_topk_per_query,
         max_hits_per_query=None,
         assume_normalized=search_assume_normalized,
         per_chunk_topk_hint=None,

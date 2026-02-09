@@ -386,6 +386,26 @@ def tanimoto_packed_torch(
     return ti.detach().cpu().numpy().astype(np.float32, copy=False)
 
 
+def tanimoto_packed_torch_tensor(
+    q_packed: np.ndarray,
+    x_packed: np.ndarray,
+    *,
+    n_bits: int,
+    device: Union[str, "torch.device"] = "cuda",
+    force_copy: bool = True,
+) -> "torch.Tensor":
+    """
+    GPU Tanimoto for packed fingerprints, returning a torch.Tensor on device.
+    """
+    _require_torch()
+    dev = torch.device(device)
+    q_bits = unpack_bits_torch_from_packed(q_packed, n_bits=n_bits, device=dev, force_copy=force_copy)
+    x_bits = unpack_bits_torch_from_packed(x_packed, n_bits=n_bits, device=dev, force_copy=force_copy)
+    q_counts = q_bits.sum(dim=1).to(torch.int32)
+    x_counts = x_bits.sum(dim=1).to(torch.int32)
+    return tanimoto_dense_torch(q_bits, x_bits, q_counts, x_counts)
+
+
 def cosine_torch(
     q: np.ndarray,
     x: np.ndarray,
@@ -415,6 +435,31 @@ def cosine_torch(
     return sim.detach().cpu().numpy().astype(np.float32, copy=False)
 
 
+def cosine_torch_tensor(
+    q: np.ndarray,
+    x: np.ndarray,
+    *,
+    device: Union[str, "torch.device"] = "cuda",
+    assume_normalized: Optional[bool] = None,
+    eps: float = 1e-12,
+) -> "torch.Tensor":
+    """
+    GPU cosine similarity using torch matmul. Returns torch.Tensor on device.
+    """
+    _require_torch()
+    dev = torch.device(device)
+    qt = torch.as_tensor(q, device=dev).to(torch.float32)
+    xt = torch.as_tensor(x, device=dev).to(torch.float32)
+
+    if assume_normalized is False or assume_normalized is None:
+        qn = torch.linalg.norm(qt, dim=1, keepdim=True).clamp_min(eps)
+        xn = torch.linalg.norm(xt, dim=1, keepdim=True).clamp_min(eps)
+        qt = qt / qn
+        xt = xt / xn
+
+    return torch.matmul(qt, xt.T).to(torch.float32)
+
+
 # -----------------------------------------------------------------------------
 # Public entrypoint
 # -----------------------------------------------------------------------------
@@ -429,6 +474,7 @@ def score_block(
     device: Union[str, "torch.device"] = "cpu",
     assume_normalized: Optional[bool] = None,
     force_copy_packed_gpu: bool = True,
+    return_torch: bool = False,
 ) -> np.ndarray:
     """
     Compute a score matrix between a query block Q and target block X.
@@ -486,6 +532,10 @@ def score_block(
         if n_bits is None:
             raise ValueError("GPU tanimoto requires q_meta['dim'] to be provided (number of bits).")
         if packed:
+            if return_torch:
+                return tanimoto_packed_torch_tensor(
+                    Q, X, n_bits=n_bits, device=device, force_copy=force_copy_packed_gpu
+                )
             return tanimoto_packed_torch(Q, X, n_bits=n_bits, device=device, force_copy=force_copy_packed_gpu)
 
         # Dense bits on GPU: accept numpy and move to torch inside
@@ -495,6 +545,8 @@ def score_block(
         q_counts = q_bits.sum(dim=1).to(torch.int32)
         x_counts = x_bits.sum(dim=1).to(torch.int32)
         ti = tanimoto_dense_torch(q_bits, x_bits, q_counts, x_counts)
+        if return_torch:
+            return ti
         return ti.detach().cpu().numpy().astype(np.float32, copy=False)
 
     # cosine
@@ -505,4 +557,76 @@ def score_block(
         return cosine_cpu(Q, X, assume_normalized=assume_normalized)
 
     _require_torch()
+    if return_torch:
+        return cosine_torch_tensor(Q, X, device=device, assume_normalized=assume_normalized)
     return cosine_torch(Q, X, device=device, assume_normalized=assume_normalized)
+
+
+def select_hits(
+    scores: Union[np.ndarray, "torch.Tensor"],
+    *,
+    mode: Literal["threshold", "topk"],
+    threshold: Optional[float] = None,
+    topk: Optional[int] = None,
+) -> Tuple[Union[np.ndarray, "torch.Tensor"], Union[np.ndarray, "torch.Tensor"], Union[np.ndarray, "torch.Tensor"]]:
+    """
+    Select hits from a score matrix using either thresholding or top-k per query.
+    Returns (q_idx, x_idx, vals) on the same device/type as scores.
+    """
+    if mode not in ("threshold", "topk"):
+        raise ValueError(f"Unknown mode '{mode}'.")
+
+    if isinstance(scores, np.ndarray):
+        if mode == "threshold":
+            if threshold is None:
+                raise ValueError("threshold must be provided for mode='threshold'.")
+            mask = scores >= float(threshold)
+            q_idx, x_idx = np.where(mask)
+            return q_idx, x_idx, scores[q_idx, x_idx]
+
+        if topk is None or topk <= 0:
+            raise ValueError("topk must be provided and > 0 for mode='topk'.")
+        if scores.size == 0:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.int64), np.array([], dtype=np.float32)
+        k = min(topk, scores.shape[1])
+        idx = np.argpartition(scores, -k, axis=1)[:, -k:]
+        row_scores = np.take_along_axis(scores, idx, axis=1)
+        order = np.argsort(row_scores, axis=1)[:, ::-1]
+        idx = np.take_along_axis(idx, order, axis=1)
+        row_scores = np.take_along_axis(row_scores, order, axis=1)
+        if threshold is not None:
+            keep = row_scores >= float(threshold)
+            q_idx, k_idx = np.where(keep)
+            return q_idx, idx[q_idx, k_idx], row_scores[q_idx, k_idx]
+        q_idx, k_idx = np.where(np.ones_like(row_scores, dtype=bool))
+        return q_idx, idx[q_idx, k_idx], row_scores[q_idx, k_idx]
+
+    # torch tensor
+    _require_torch()
+    if mode == "threshold":
+        if threshold is None:
+            raise ValueError("threshold must be provided for mode='threshold'.")
+        mask = scores >= float(threshold)
+        idx = torch.nonzero(mask, as_tuple=False)
+        if idx.numel() == 0:
+            empty = scores.new_empty((0,), dtype=torch.int64)
+            return empty, empty, scores.new_empty((0,), dtype=scores.dtype)
+        vals = scores[idx[:, 0], idx[:, 1]]
+        return idx[:, 0], idx[:, 1], vals
+
+    if topk is None or topk <= 0:
+        raise ValueError("topk must be provided and > 0 for mode='topk'.")
+    k = min(topk, scores.shape[1])
+    topv, topi = torch.topk(scores, k=k, dim=1)
+    if threshold is not None:
+        keep = topv >= float(threshold)
+        idx = torch.nonzero(keep, as_tuple=False)
+        if idx.numel() == 0:
+            empty = scores.new_empty((0,), dtype=torch.int64)
+            return empty, empty, scores.new_empty((0,), dtype=scores.dtype)
+        vals = topv[idx[:, 0], idx[:, 1]]
+        return idx[:, 0], topi[idx[:, 0], idx[:, 1]], vals
+    q_idx = torch.arange(scores.shape[0], device=scores.device).unsqueeze(1).expand_as(topi).reshape(-1)
+    x_idx = topi.reshape(-1)
+    vals = topv.reshape(-1)
+    return q_idx, x_idx, vals
