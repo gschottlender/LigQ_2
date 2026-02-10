@@ -18,6 +18,29 @@ from compound_processing.compound_helpers import (
 from compound_processing import backend, metrics
 
 
+def _validate_packed_tanimoto_representations(rep_ref: Representation, rep_zinc: Representation) -> None:
+    """Validate representation compatibility for packed Tanimoto ZINC search paths."""
+    if rep_zinc is None or rep_ref is None:
+        raise ValueError("rep_ref and rep_zinc must be provided.")
+
+    if rep_zinc.dim != rep_ref.dim:
+        raise ValueError(
+            f"Tanimoto search requires same fingerprint dim for ref and ZINC. "
+            f"Got rep_ref.dim={rep_ref.dim}, rep_zinc.dim={rep_zinc.dim}."
+        )
+
+    if not rep_zinc.packed_bits:
+        raise ValueError(
+            "Packed Tanimoto ZINC search requires rep_zinc.packed_bits=True. "
+            "Use the generic backend search for non-packed targets."
+        )
+
+    if str(rep_zinc.dtype) != "uint8":
+        raise ValueError(
+            f"Packed ZINC representation must use dtype uint8, got {rep_zinc.dtype}."
+        )
+
+
 def promote_representatives_by_pchembl(
     representatives: List[str],
     clusters: Dict[str, List[str]],
@@ -557,6 +580,8 @@ def search_similar_in_zinc(
           - smiles
           - tanimoto
     """
+    _validate_packed_tanimoto_representations(rep_ref, rep_zinc)
+
     if not query_ids:
         return pd.DataFrame(
             columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"]
@@ -582,12 +607,24 @@ def search_similar_in_zinc(
     bitcounts_queries = _bitcount_packed_rows(q_packed)
     dim = rep_ref.dim
 
+    expected_packed_dim = (dim + 7) // 8
+    if q_packed.shape[1] != expected_packed_dim:
+        raise ValueError(
+            f"Unexpected query packed dim {q_packed.shape[1]} for dim={dim}; "
+            f"expected {expected_packed_dim}."
+        )
+
     # ------------------------------------------------------------------
     # 2) Memmap info for ZINC (to pass into workers)
     # ------------------------------------------------------------------
     memmap = rep_zinc.memmap
     n_ligands_zinc = memmap.shape[0]
     packed_dim = memmap.shape[1]
+    if packed_dim != expected_packed_dim:
+        raise ValueError(
+            f"rep_zinc packed_dim mismatch for dim={dim}: got {packed_dim}, expected {expected_packed_dim}."
+        )
+
     dtype_str = str(memmap.dtype)
     memmap_path = memmap.filename  # path to underlying file
     if memmap_path is None:
@@ -1150,6 +1187,8 @@ def search_similar_in_zinc_torch_gpu(
     pd.DataFrame
         Columns: query_id, lig_idx_zinc, chem_comp_id, smiles, tanimoto
     """
+    _validate_packed_tanimoto_representations(rep_ref, rep_zinc)
+
     if not query_ids:
         return pd.DataFrame(columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"])
 
@@ -1168,11 +1207,23 @@ def search_similar_in_zinc_torch_gpu(
     q_packed_queries = np.packbits(fps_queries, axis=1)
     dim = rep_ref.dim
 
+    expected_packed_dim = (dim + 7) // 8
+    if q_packed_queries.shape[1] != expected_packed_dim:
+        raise ValueError(
+            f"Unexpected query packed dim {q_packed_queries.shape[1]} for dim={dim}; "
+            f"expected {expected_packed_dim}."
+        )
+
     # -------------------------------------------------------------------------
     # 2) ZINC packed memmap and chunking
     # -------------------------------------------------------------------------
     memmap = rep_zinc.memmap
     n_ligands_zinc = memmap.shape[0]
+    packed_dim = memmap.shape[1]
+    if packed_dim != expected_packed_dim:
+        raise ValueError(
+            f"rep_zinc packed_dim mismatch for dim={dim}: got {packed_dim}, expected {expected_packed_dim}."
+        )
 
     chunk_ranges: List[Tuple[int, int]] = []
     for start in range(0, n_ligands_zinc, zinc_chunk_size):
