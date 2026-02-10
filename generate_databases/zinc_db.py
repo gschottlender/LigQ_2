@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 from compound_processing.compound_helpers import (
     build_ligand_index,
     build_morgan_representation,
-    build_chemberta_representation
+    build_huggingface_representation
 )
 
 
@@ -338,7 +338,7 @@ def build_zinc_chemberta_compound_database(
     # ------------------------------------------------------------------
     # 1) Build ChemBERTa representation as a memmap
     # ------------------------------------------------------------------
-    build_chemberta_representation(
+    build_huggingface_representation(
         root=root,
         n_bits=768,         # o el nombre real del parámetro dim/size en tu función
         batch_size=batch_size,
@@ -369,7 +369,7 @@ def generate_zinc_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
-    chemberta_rep: bool = True,
+    chemberta_rep: bool = False,
 ) -> Dict[str, Path]:
     """
     High-level helper to generate the full ZINC compound database in one call.
@@ -380,7 +380,7 @@ def generate_zinc_database(
       3) Build the ZINC compound database under `compound_root`:
            - ligands.parquet
            - Morgan fingerprints memmap (rep_name.dat + rep_name.meta.json)
-      4) Optionally build ChemBERTa embeddings memmap under the same root.
+      4) Optionally build ChemBERTa embeddings memmap under the same root (disabled by default).
 
     Returns
     -------
