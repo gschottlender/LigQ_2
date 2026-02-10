@@ -489,9 +489,9 @@ def _search_zinc_chunk(
         if not np.any(keep):
             continue
 
-        hit_idx = np.where(keep)[0]
-        for bi in hit_idx:
-            hits.append((qid, int(chunk_start + int(bi)), float(ti[bi])))
+        hit_idx = np.where(keep)[0].astype(np.int64, copy=False)
+        scores = ti[hit_idx].astype(np.float32, copy=False)
+        hits.extend(list(zip([qid] * hit_idx.shape[0], (hit_idx + int(chunk_start)).tolist(), scores.tolist())))
 
     return hits
 
@@ -717,6 +717,7 @@ def search_similar_in_zinc(
 # Cache a per-device lookup table (LUT) used to unpack bits fast on GPU/CPU.
 # Key: torch.device, Value: tensor of shape (256, 8) with uint8 bits (0/1).
 _UNPACK_LUT_CACHE: dict[torch.device, torch.Tensor] = {}
+_POPCOUNT_LUT_TORCH_CACHE: dict[torch.device, torch.Tensor] = {}
 
 
 def _get_unpack_lut(device: torch.device) -> torch.Tensor:
@@ -743,6 +744,18 @@ def _get_unpack_lut(device: torch.device) -> torch.Tensor:
     # Move LUT to device once, then cache it
     lut = bits.to(device=device, non_blocking=True)
     _UNPACK_LUT_CACHE[device] = lut
+    return lut
+
+
+def _get_popcount_lut_torch(device: torch.device) -> torch.Tensor:
+    """Return a (256,) LUT with byte popcounts on the requested device."""
+    lut = _POPCOUNT_LUT_TORCH_CACHE.get(device)
+    if lut is not None:
+        return lut
+
+    lut_np = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(axis=1).astype(np.uint8)
+    lut = torch.from_numpy(lut_np).to(device=device, non_blocking=True)
+    _POPCOUNT_LUT_TORCH_CACHE[device] = lut
     return lut
 
 
@@ -952,44 +965,17 @@ def _search_zinc_chunk_torch_gpu(
     device: Union[str, torch.device] = "cuda",
     return_topk: Optional[int] = None,
     force_copy_packed: bool = True,
+    batch_q_packed_u8: Optional[np.ndarray] = None,
+    strategy: str = "auto",
 ) -> List[Tuple[str, int, float]]:
     """
     Search a single ZINC chunk against a batch of query fingerprints on GPU.
 
-    Parameters
-    ----------
-    memmap
-        ZINC packed fingerprint memmap of shape (n_ligands, packed_dim), dtype uint8.
-        Each row is a packed-bit fingerprint (packed_dim bytes = dim/8).
-    chunk_start, chunk_end
-        Index range [chunk_start, chunk_end) selecting a contiguous block from ZINC.
-    batch_query_ids
-        Query IDs corresponding to rows in batch_fps_u8 / batch_bitcounts_i32.
-    batch_fps_u8
-        Dense 0/1 query fingerprints, shape (Q, dim), uint8.
-    batch_bitcounts_i32
-        Precomputed bitcounts for each query fingerprint, shape (Q,), int32.
-    dim
-        Number of bits in the dense representation (e.g., 1024).
-    tanimoto_threshold
-        Minimum similarity required to report a hit.
-    device
-        Target device ("cuda" by default).
-    return_topk
-        If None: return all hits >= threshold for this chunk.
-        If int K: return up to top-K hits per query for this chunk (and stop early
-        per query once values drop below threshold).
-    force_copy_packed
-        If True: copy the packed memmap slice before torch.from_numpy to avoid
-        "not writable" warnings.
-
-    Returns
-    -------
-    List[Tuple[str, int, float]]
-        A list of (query_id, lig_idx_global, tanimoto) for hits found in this chunk.
-        lig_idx_global is the ZINC ligand index in the full memmap.
+    strategy:
+      - "unpack_matmul": legacy path (unpack packed block to dense bits + matmul)
+      - "packed_popcount": packed byte path with bitwise-and + byte-popcount LUT
+      - "auto": choose packed_popcount for lower memory; fallback to unpack_matmul
     """
-    # Read packed block from memmap (CPU)
     packed_block = memmap[chunk_start:chunk_end]
     if packed_block.size == 0:
         return []
@@ -998,78 +984,106 @@ def _search_zinc_chunk_torch_gpu(
     if dev.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is False.")
 
-    # -------------------------------------------------------------------------
-    # 1) Transfer query batch to GPU
-    # -------------------------------------------------------------------------
     if batch_fps_u8.dtype != np.uint8:
         batch_fps_u8 = batch_fps_u8.astype(np.uint8, copy=False)
 
-    q_bits = torch.from_numpy(batch_fps_u8).to(dev, non_blocking=True)  # uint8 0/1
-    q_counts = torch.from_numpy(batch_bitcounts_i32).to(dev, non_blocking=True).to(torch.int32)
-
-    # -------------------------------------------------------------------------
-    # 2) Unpack packed ZINC block to dense bits on GPU
-    # -------------------------------------------------------------------------
-    b_bits = _unpack_bits_torch_from_packed(
-        packed_block,
-        n_bits=dim,
-        device=dev,
-        force_copy=force_copy_packed,
-    )
-    b_counts = b_bits.sum(dim=1).to(torch.int32)
-
-    # -------------------------------------------------------------------------
-    # 3) Compute Tanimoto similarities on GPU
-    # -------------------------------------------------------------------------
-    ti = _tanimoto_from_binary_mats_torch(q_bits, q_counts, b_bits, b_counts)  # (Q, B)
+    # Heuristic: avoid dense unpack when it would allocate too much temporary memory.
+    if strategy == "auto":
+        chunk_len = int(chunk_end - chunk_start)
+        unpack_bytes = chunk_len * int(dim)  # uint8 dense matrix size
+        strategy = "packed_popcount" if unpack_bytes >= 128_000_000 else "unpack_matmul"
 
     hits: List[Tuple[str, int, float]] = []
 
-    # -------------------------------------------------------------------------
-    # 4) Collect hits: either all above threshold or top-k per query
-    # -------------------------------------------------------------------------
-    if return_topk is None:
-        # Find all entries above threshold
-        mask = ti >= float(tanimoto_threshold)
-        idx = torch.nonzero(mask, as_tuple=False)  # (H, 2) where H is number of hits
-        if idx.numel() == 0:
+    if strategy == "unpack_matmul":
+        q_bits = torch.from_numpy(batch_fps_u8).to(dev, non_blocking=True)
+        q_counts = torch.from_numpy(batch_bitcounts_i32).to(dev, non_blocking=True).to(torch.int32)
+
+        b_bits = _unpack_bits_torch_from_packed(
+            packed_block,
+            n_bits=dim,
+            device=dev,
+            force_copy=force_copy_packed,
+        )
+        b_counts = b_bits.sum(dim=1).to(torch.int32)
+        ti = _tanimoto_from_binary_mats_torch(q_bits, q_counts, b_bits, b_counts)
+
+        if return_topk is None:
+            mask = ti >= float(tanimoto_threshold)
+            idx = torch.nonzero(mask, as_tuple=False)
+            if idx.numel() == 0:
+                return hits
+            vals = ti[idx[:, 0], idx[:, 1]]
+            idx_cpu = idx.detach().cpu().numpy()
+            vals_cpu = vals.detach().cpu().numpy()
+            q_arr = np.asarray(batch_query_ids, dtype=object)
+            q_ids = q_arr[idx_cpu[:, 0]].tolist()
+            lig_idx = (idx_cpu[:, 1].astype(np.int64) + int(chunk_start)).tolist()
+            scores = vals_cpu.astype(np.float32, copy=False).tolist()
+            hits.extend(list(zip(q_ids, lig_idx, scores)))
             return hits
 
-        # Gather only the hit values (avoid copying full ti back to CPU)
-        vals = ti[idx[:, 0], idx[:, 1]]
-
-        # Move indices and values to CPU for Python-side list building
-        idx_cpu = idx.detach().cpu().numpy()
-        vals_cpu = vals.detach().cpu().numpy()
-
-        for k in range(idx_cpu.shape[0]):
-            qi = int(idx_cpu[k, 0])              # query row index
-            bi = int(idx_cpu[k, 1])              # block row index (within chunk)
-            lig_idx_global = chunk_start + bi    # global ZINC index
-            hits.append((batch_query_ids[qi], lig_idx_global, float(vals_cpu[k])))
-
+        k = int(return_topk)
+        if k <= 0:
+            return hits
+        topv, topi = torch.topk(ti, k=min(k, ti.shape[1]), dim=1)
+        topv_cpu = topv.detach().cpu().numpy()
+        topi_cpu = topi.detach().cpu().numpy()
+        for qi in range(topv_cpu.shape[0]):
+            qid = batch_query_ids[qi]
+            row_vals = topv_cpu[qi]
+            row_idx = topi_cpu[qi]
+            valid = row_vals >= tanimoto_threshold
+            if not np.any(valid):
+                continue
+            ridx = row_idx[valid].astype(np.int64) + int(chunk_start)
+            rvals = row_vals[valid].astype(np.float32, copy=False)
+            hits.extend(list(zip([qid] * len(ridx), ridx.tolist(), rvals.tolist())))
         return hits
 
-    # Top-k mode: return up to K best hits per query for this chunk
-    k = int(return_topk)
-    if k <= 0:
-        return hits
+    # packed_popcount path (lower RAM): keep packed bytes and avoid dense unpack.
+    if batch_q_packed_u8 is None:
+        batch_q_packed_u8 = np.packbits(batch_fps_u8.astype(np.uint8, copy=False), axis=1)
+    if batch_q_packed_u8.dtype != np.uint8:
+        batch_q_packed_u8 = batch_q_packed_u8.astype(np.uint8, copy=False)
 
-    # topv/topi: (Q, k) each row contains the best candidates within the chunk
-    topv, topi = torch.topk(ti, k=min(k, ti.shape[1]), dim=1)
-    topv_cpu = topv.detach().cpu().numpy()
-    topi_cpu = topi.detach().cpu().numpy()
+    x_np = np.array(packed_block, copy=force_copy_packed, order="C") if force_copy_packed else np.asarray(packed_block, dtype=np.uint8)
+    x_t = torch.from_numpy(x_np).to(dev, non_blocking=True)
+    q_t = torch.from_numpy(np.ascontiguousarray(batch_q_packed_u8)).to(dev, non_blocking=True)
+    q_counts = torch.from_numpy(batch_bitcounts_i32.astype(np.int32, copy=False)).to(dev, non_blocking=True)
 
-    for qi in range(topv_cpu.shape[0]):
-        qid = batch_query_ids[qi]
-        for kk in range(topv_cpu.shape[1]):
-            val = float(topv_cpu[qi, kk])
-            if val < tanimoto_threshold:
-                # Because topk is sorted desc, we can break early for this query
-                break
-            bi = int(topi_cpu[qi, kk])
-            lig_idx_global = chunk_start + bi
-            hits.append((qid, lig_idx_global, val))
+    pop_lut = _get_popcount_lut_torch(dev)
+    x_counts = pop_lut[x_t.long()].sum(dim=1).to(torch.int32)
+
+    k = None if return_topk is None else int(return_topk)
+    for qi, qid in enumerate(batch_query_ids):
+        q_row = q_t[qi]
+        inter = pop_lut[torch.bitwise_and(x_t, q_row).long()].sum(dim=1).to(torch.int32)
+        denom = q_counts[qi] + x_counts - inter
+        ti = torch.zeros_like(denom, dtype=torch.float32)
+        valid = denom > 0
+        ti[valid] = inter[valid].to(torch.float32) / denom[valid].to(torch.float32)
+
+        if k is None:
+            keep = ti >= float(tanimoto_threshold)
+            idx = torch.nonzero(keep, as_tuple=False).squeeze(1)
+            if idx.numel() == 0:
+                continue
+            vals = ti[idx]
+            idx_cpu = idx.detach().cpu().numpy().astype(np.int64, copy=False)
+            vals_cpu = vals.detach().cpu().numpy().astype(np.float32, copy=False)
+            hits.extend(list(zip([qid] * idx_cpu.shape[0], (idx_cpu + int(chunk_start)).tolist(), vals_cpu.tolist())))
+            continue
+
+        if k <= 0:
+            continue
+        topv, topi = torch.topk(ti, k=min(k, ti.shape[0]), dim=0)
+        keep = topv >= float(tanimoto_threshold)
+        if not torch.any(keep):
+            continue
+        vals = topv[keep].detach().cpu().numpy().astype(np.float32, copy=False)
+        idx = topi[keep].detach().cpu().numpy().astype(np.int64, copy=False)
+        hits.extend(list(zip([qid] * idx.shape[0], (idx + int(chunk_start)).tolist(), vals.tolist())))
 
     return hits
 
@@ -1081,12 +1095,13 @@ def search_similar_in_zinc_torch_gpu(
     store_zinc: "LigandStore",
     rep_zinc: "Representation",
     tanimoto_threshold: float = 0.5,
-    q_batch_size: int = 200,
-    zinc_chunk_size: int = 200_000,
+    q_batch_size: Optional[int] = None,
+    zinc_chunk_size: Optional[int] = None,
     device: Union[str, torch.device] = "cuda",
     max_hits_per_query: Optional[int] = None,
     per_chunk_topk_hint: Optional[int] = None,
     force_copy_packed: bool = True,
+    strategy: str = "auto",
 ) -> pd.DataFrame:
     """
     GPU-based similarity search in ZINC using Tanimoto over binary fingerprints.
@@ -1150,6 +1165,7 @@ def search_similar_in_zinc_torch_gpu(
         fps_queries = fps_queries.astype(np.uint8, copy=False)
 
     bitcounts_queries = fps_queries.sum(axis=1).astype(np.int32)
+    q_packed_queries = np.packbits(fps_queries, axis=1)
     dim = rep_ref.dim
 
     # -------------------------------------------------------------------------
@@ -1181,6 +1197,7 @@ def search_similar_in_zinc_torch_gpu(
 
         batch_ids = qids[q_start:q_end]
         batch_fps = fps_queries[q_start:q_end]
+        batch_q_packed = q_packed_queries[q_start:q_end]
         batch_counts = bitcounts_queries[q_start:q_end]
 
         for cs, ce in chunk_ranges:
@@ -1196,6 +1213,8 @@ def search_similar_in_zinc_torch_gpu(
                 device=device,
                 return_topk=per_chunk_topk_hint,
                 force_copy_packed=force_copy_packed,
+                batch_q_packed_u8=batch_q_packed,
+                strategy=strategy,
             )
             if hits_chunk:
                 all_hits.extend(hits_chunk)
@@ -1241,6 +1260,61 @@ def _resolve_search_device(
     return resolved
 
 
+def _autotune_search_params(
+    *,
+    metric: metrics.MetricName,
+    rep_ref: "Representation",
+    rep_zinc: "Representation",
+    resolved_device: torch.device,
+    q_batch_size: Optional[int],
+    zinc_chunk_size: Optional[int],
+) -> Tuple[int, int]:
+    """Heuristic auto-tuning of query/chunk sizes based on metric + device."""
+    qbs = q_batch_size
+    zcs = zinc_chunk_size
+
+    if resolved_device.type == "cuda":
+        if metric == "tanimoto" and rep_ref.packed_bits and rep_zinc.packed_bits:
+            # Packed strategy is memory-light; allow larger chunks.
+            if zcs is None:
+                try:
+                    props = torch.cuda.get_device_properties(resolved_device)
+                    budget = int(props.total_memory * 0.35)
+                    packed_dim = int(rep_zinc.packed_dim)
+                    # Approx bytes per row for packed_popcount path: packed_dim (u8) + 4 (score)
+                    est = max(1, packed_dim + 4)
+                    zcs = int(max(100_000, min(1_000_000, budget // est)))
+                except Exception:
+                    zcs = 300_000
+            if qbs is None:
+                qbs = 256
+        else:
+            # Cosine / generic matmul: QxB score matrix dominates memory.
+            if qbs is None:
+                qbs = 128
+            if zcs is None:
+                try:
+                    props = torch.cuda.get_device_properties(resolved_device)
+                    budget = int(props.total_memory * 0.25)
+                    bytes_per_score = 4
+                    zcs = int(max(25_000, min(300_000, budget // max(1, qbs * bytes_per_score))))
+                except Exception:
+                    zcs = 100_000
+    else:
+        if qbs is None:
+            if metric == "tanimoto" and rep_ref.packed_bits and rep_zinc.packed_bits:
+                qbs = 100
+            else:
+                qbs = 200
+        if zcs is None:
+            if metric == "tanimoto" and rep_ref.packed_bits and rep_zinc.packed_bits:
+                zcs = 50_000
+            else:
+                zcs = 200_000
+
+    return int(qbs), int(zcs)
+
+
 def search_similar_in_zinc_custom(
     query_ids: Sequence[str],
     store_ref: LigandStore,
@@ -1252,14 +1326,15 @@ def search_similar_in_zinc_custom(
     mode: str = "threshold",
     threshold: Optional[float] = 0.5,
     topk: Optional[int] = None,
-    q_batch_size: int = 200,
-    zinc_chunk_size: int = 200_000,
+    q_batch_size: Optional[int] = None,
+    zinc_chunk_size: Optional[int] = None,
     device: Optional[Union[str, torch.device]] = "auto",
     n_jobs: int = 4,
     max_hits_per_query: Optional[int] = None,
     assume_normalized: Optional[bool] = None,
     per_chunk_topk_hint: Optional[int] = None,
     force_copy_packed_gpu: bool = True,
+    gpu_tanimoto_strategy: str = "auto",
 ) -> pd.DataFrame:
     """
     Customizable ZINC search that supports multiple representations and metrics.
@@ -1311,6 +1386,14 @@ def search_similar_in_zinc_custom(
     metrics.validate_metric(metric, rep_ref.meta, rep_zinc.meta)
     resolved_device = _resolve_search_device(device)
     device_str = "cuda" if resolved_device.type == "cuda" else "cpu"
+    q_batch_size, zinc_chunk_size = _autotune_search_params(
+        metric=metric,
+        rep_ref=rep_ref,
+        rep_zinc=rep_zinc,
+        resolved_device=resolved_device,
+        q_batch_size=q_batch_size,
+        zinc_chunk_size=zinc_chunk_size,
+    )
 
     if (
         mode == "threshold"
@@ -1332,6 +1415,7 @@ def search_similar_in_zinc_custom(
                 max_hits_per_query=max_hits_per_query,
                 per_chunk_topk_hint=per_chunk_topk_hint,
                 force_copy_packed=force_copy_packed_gpu,
+                strategy=gpu_tanimoto_strategy,
             )
 
         return search_similar_in_zinc(
@@ -1472,17 +1556,8 @@ def get_zinc_ligands(
     search_rep_zinc = rep_zinc if search_rep_zinc is None else search_rep_zinc
     score_col = "tanimoto" if search_metric == "tanimoto" else "similarity"
 
-    if search_q_batch_size is None or search_zinc_chunk_size is None:
-        if search_metric == "tanimoto" and search_rep_ref.packed_bits and search_rep_zinc.packed_bits:
-            if resolved_device.type == "cuda":
-                search_q_batch_size = 200 if search_q_batch_size is None else search_q_batch_size
-                search_zinc_chunk_size = 200_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
-            else:
-                search_q_batch_size = 100 if search_q_batch_size is None else search_q_batch_size
-                search_zinc_chunk_size = 50_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
-        else:
-            search_q_batch_size = 200 if search_q_batch_size is None else search_q_batch_size
-            search_zinc_chunk_size = 200_000 if search_zinc_chunk_size is None else search_zinc_chunk_size
+    # Leave batch/chunk params as None by default; search_similar_in_zinc_custom
+    # will auto-tune using metric + representation + device information.
 
     # ------------------------------------------------------------------
     # 1) Subset by protein and extract chem_ids + pchembl_map
@@ -1568,6 +1643,7 @@ def get_zinc_ligands(
         max_hits_per_query=None,
         assume_normalized=search_assume_normalized,
         per_chunk_topk_hint=None,
+        gpu_tanimoto_strategy="auto",
     )
 
     # If there are no hits, return an empty DataFrame with the expected columns
