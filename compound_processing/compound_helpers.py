@@ -560,6 +560,31 @@ def build_huggingface_representation(
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
 
+
+def build_chemberta_representation(
+    root: str | Path,
+    n_bits: Optional[int] = 768,
+    batch_size: int = 14,
+    name: str = "chemberta_zinc_base_768",
+    tokenizer=None,
+    model=None,
+    device: Optional[torch.device] = None,
+    model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
+    max_length: Optional[int] = None,
+) -> None:
+    """Backward-compatible wrapper for the old API name."""
+    build_huggingface_representation(
+        root=root,
+        n_bits=n_bits,
+        batch_size=batch_size,
+        name=name,
+        tokenizer=tokenizer,
+        model=model,
+        device=device,
+        model_id=model_id,
+        max_length=max_length,
+    )
+
 # ---------------------------------------------------------------------------
 # 4. Access representations by chem_comp_id: LigandStore & Representation
 # ---------------------------------------------------------------------------
