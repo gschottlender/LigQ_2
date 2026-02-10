@@ -369,7 +369,7 @@ def generate_zinc_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
-    chemberta_rep: bool = True,
+    chemberta_rep: bool = False,
 ) -> Dict[str, Path]:
     """
     High-level helper to generate the full ZINC compound database in one call.
@@ -380,7 +380,7 @@ def generate_zinc_database(
       3) Build the ZINC compound database under `compound_root`:
            - ligands.parquet
            - Morgan fingerprints memmap (rep_name.dat + rep_name.meta.json)
-      4) Optionally build ChemBERTa embeddings memmap under the same root.
+      4) Optionally build ChemBERTa embeddings memmap under the same root (disabled by default).
 
     Returns
     -------
