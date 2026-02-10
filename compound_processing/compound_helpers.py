@@ -21,6 +21,8 @@ from typing import Optional, Dict, List, Tuple
 import os
 import multiprocessing as mp
 import json
+import time
+from contextlib import nullcontext
 import numpy as np
 import pandas as pd
 
@@ -33,7 +35,7 @@ from transformers import AutoModel, AutoTokenizer
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
 # Morgan globals
-_MORGAN_WORKER_CFG: Dict[str, int] = {"n_bits": 1024, "radius": 2}
+_MORGAN_WORKER_CFG: Dict[str, int] = {"n_bits": 1024, "radius": 2, "n_bytes": 128}
 
 # ---------------------------------------------------------------------------
 # 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
@@ -133,6 +135,7 @@ def unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
 def _init_morgan_worker(n_bits: int, radius: int) -> None:
     _MORGAN_WORKER_CFG["n_bits"] = int(n_bits)
     _MORGAN_WORKER_CFG["radius"] = int(radius)
+    _MORGAN_WORKER_CFG["n_bytes"] = int(n_bits) // 8
 
 def _morgan_fp_bits_or_zero(smiles: str) -> np.ndarray:
     """
@@ -151,6 +154,31 @@ def _morgan_fp_bits_or_zero(smiles: str) -> np.ndarray:
     if arr.shape != (n_bits,):
         return np.zeros((n_bits,), dtype=np.uint8)
     return arr
+
+
+def _morgan_fp_packed_or_zero(smiles: str) -> Tuple[np.ndarray, bool]:
+    """
+    Worker: calculate packed fp bytes (n_bits/8,) uint8 and a success flag.
+
+    Returning packed bytes from workers reduces IPC payload significantly versus
+    sending full bit vectors.
+    """
+    n_bits = _MORGAN_WORKER_CFG["n_bits"]
+    n_bytes = _MORGAN_WORKER_CFG["n_bytes"]
+    radius = _MORGAN_WORKER_CFG["radius"]
+
+    arr = morgan_fp_bits(smiles, n_bits=n_bits, radius=radius)
+    if arr is None:
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    arr = np.asarray(arr, dtype=np.uint8)
+    if arr.shape != (n_bits,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    packed = np.packbits(arr)
+    if packed.shape != (n_bytes,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+    return packed, True
 
 # ---------------------------------------------------------------------------
 # 2. Unify PDB and ChEMBL ligand tables
@@ -349,7 +377,7 @@ def build_morgan_representation(
     Parameters
     ----------
     n_jobs : int, optional
-        Number of worker processes. Default: min(4, cpu_count()).
+        Number of worker processes. Default: cpu_count().
     chunksize : int
         Chunk size passed to pool.imap for better throughput.
     """
@@ -366,10 +394,10 @@ def build_morgan_representation(
     if n_bits % 8 != 0:
         raise ValueError("n_bits must be divisible by 8 for packed storage.")
 
-    # Default workers: 4 or max available if fewer
+    # Default workers: use all available CPUs unless user overrides.
     cpu_avail = os.cpu_count() or 1
     if n_jobs is None:
-        n_jobs = min(4, cpu_avail)
+        n_jobs = cpu_avail
     else:
         n_jobs = max(1, min(int(n_jobs), cpu_avail))
 
@@ -386,6 +414,8 @@ def build_morgan_representation(
 
     # Multiprocessing context: fork is best on Linux (esp. notebook)
     ctx = mp.get_context("fork")
+    t0 = time.perf_counter()
+    failed_smiles = 0
 
     # Create pool ONCE (important: avoid overhead per batch)
     with ctx.Pool(
@@ -398,15 +428,19 @@ def build_morgan_representation(
             end = min(start + batch_size, n)
             smiles_list = ligs.iloc[start:end]["smiles"].tolist()
 
-            # Parallel compute: returns arrays (n_bits,) uint8
-            fps_bits_list = list(pool.imap(_morgan_fp_bits_or_zero, smiles_list, chunksize=chunksize))
+            # Parallel compute: workers return packed bytes directly to reduce IPC overhead.
+            packed_and_status = list(pool.imap(_morgan_fp_packed_or_zero, smiles_list, chunksize=chunksize))
+            fps_packed = np.stack([x[0] for x in packed_and_status], axis=0)  # (B, n_bytes)
 
-            fps_bits = np.stack(fps_bits_list, axis=0)  # (B, n_bits)
-            fps_packed = pack_bits(fps_bits)            # (B, n_bytes)
+            # Count true parser/fingerprint failures (avoid inferring from all-zero rows).
+            failed_smiles += int(sum(0 if ok else 1 for _, ok in packed_and_status))
 
             mm[start:end, :] = fps_packed
 
     mm.flush()
+
+    elapsed_s = float(time.perf_counter() - t0)
+    ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
 
     # Metadata describing this representation
     meta = {
@@ -419,6 +453,10 @@ def build_morgan_representation(
         "packed_dim": int(n_bytes),
         "n_ligands": int(n),
         "n_jobs": int(n_jobs),  # opcional, pero útil para trazabilidad
+        "elapsed_seconds": elapsed_s,
+        "ligands_per_second": ligands_per_s,
+        "failed_smiles": int(failed_smiles),
+        "failed_smiles_fraction": float(failed_smiles / n),
     }
     meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
@@ -442,7 +480,7 @@ def build_huggingface_representation(
     reps_dir.mkdir(exist_ok=True, parents=True)
 
     ligs_path = root / "ligands.parquet"
-    ligs = pd.read_parquet(ligs_path)
+    ligs = pd.read_parquet(ligs_path, columns=["smiles"])
     n = len(ligs)
     if n == 0:
         raise ValueError("ligands.parquet is empty, nothing to process.")
@@ -482,7 +520,10 @@ def build_huggingface_representation(
         shape=(n, dim),
     )
 
-    smiles_all = ligs["smiles"].astype(str).tolist()
+    smiles_all = ligs["smiles"].tolist()
+    t0 = time.perf_counter()
+    invalid_smiles = 0
+    embed_failures = 0
 
     # -----------------------------
     # Embedding helper (mean pooling)
@@ -497,7 +538,13 @@ def build_huggingface_representation(
         )
         enc = {k: v.to(device) for k, v in enc.items()}
 
-        with torch.inference_mode():
+        amp_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if device.type == "cuda"
+            else nullcontext()
+        )
+
+        with torch.inference_mode(), amp_ctx:
             out = model(**enc)
             last = out.last_hidden_state  # (B, T, H)
             attn = enc.get("attention_mask", None)
@@ -524,25 +571,45 @@ def build_huggingface_representation(
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
         batch_smiles = smiles_all[start:end]
+        batch_n = end - start
+
+        emb_out = np.zeros((batch_n, dim), dtype=np.float16)
+        valid_idx = []
+        valid_smiles = []
+
+        for idx, smi in enumerate(batch_smiles):
+            if pd.isna(smi):
+                invalid_smiles += 1
+                continue
+            smi_str = str(smi).strip()
+            if not smi_str:
+                invalid_smiles += 1
+                continue
+            valid_idx.append(idx)
+            valid_smiles.append(smi_str)
+
+        if not valid_smiles:
+            mm[start:end, :] = emb_out
+            continue
 
         try:
-            emb = _embed_batch(batch_smiles)
-            if emb.shape != (end - start, dim):
-                raise RuntimeError(f"Unexpected embedding shape {emb.shape} vs {(end-start, dim)}")
+            emb = _embed_batch(valid_smiles)
+            if emb.shape != (len(valid_smiles), dim):
+                raise RuntimeError(f"Unexpected embedding shape {emb.shape} vs {(len(valid_smiles), dim)}")
+            emb_out[np.asarray(valid_idx)] = emb.astype(np.float16, copy=False)
         except Exception:
             # fallback per-smiles (slow but robust)
-            emb_rows = []
-            for smi in batch_smiles:
+            for idx, smi in zip(valid_idx, valid_smiles):
                 try:
-                    e = _embed_batch([smi])[0]
+                    emb_out[idx] = _embed_batch([smi])[0].astype(np.float16, copy=False)
                 except Exception:
-                    e = np.zeros((dim,), dtype=np.float32)
-                emb_rows.append(e)
-            emb = np.stack(emb_rows, axis=0)
+                    embed_failures += 1
 
-        mm[start:end, :] = emb.astype(np.float16, copy=False)
+        mm[start:end, :] = emb_out
 
     mm.flush()
+    elapsed_s = float(time.perf_counter() - t0)
+    ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
 
     meta: Dict = {
         "name": name,
@@ -555,6 +622,11 @@ def build_huggingface_representation(
         "model_id": model_id,
         "pooling": pooling,
         "max_length": max_length,
+        "elapsed_seconds": elapsed_s,
+        "ligands_per_second": ligands_per_s,
+        "invalid_smiles": int(invalid_smiles),
+        "invalid_smiles_fraction": float(invalid_smiles / n),
+        "embed_failures": int(embed_failures),
     }
     meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
