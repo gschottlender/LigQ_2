@@ -349,6 +349,9 @@ def build_predicted_zinc_binding_data(
     rep_pdb_chembl,
     store_zinc: LigandStore,
     rep_zinc,
+    search_rep_ref=None,
+    search_rep_zinc=None,
+    search_metric: str = "tanimoto",
     results_dir: str | Path = "results",
     resume: bool = True,
     max_proteins: Optional[int] = None,
@@ -383,6 +386,14 @@ def build_predicted_zinc_binding_data(
         Ligand store for ZINC ligands.
     rep_zinc : Representation
         Fingerprint/embedding representation for ZINC ligands.
+    search_rep_ref : Representation, optional
+        Optional representation to use specifically for similarity search queries.
+        If None, `rep_pdb_chembl` is used.
+    search_rep_zinc : Representation, optional
+        Optional representation to use specifically for ZINC similarity search.
+        If None, `rep_zinc` is used.
+    search_metric : str, default "tanimoto"
+        Similarity metric for the ZINC search backend ("tanimoto" or "cosine").
     results_dir : str or Path, default "results"
         Directory where 'predicted_zinc_binding_data.parquet' and the progress
         JSON file will be written.
@@ -455,6 +466,9 @@ def build_predicted_zinc_binding_data(
             rep_pdb_chembl=rep_pdb_chembl,
             store_zinc=store_zinc,
             rep_zinc=rep_zinc,
+            search_rep_ref=search_rep_ref,
+            search_rep_zinc=search_rep_zinc,
+            search_metric=search_metric,
         )
 
         # No hits: still mark protein as processed
@@ -554,6 +568,27 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--search-representation",
+        default="morgan_1024_r2",
+        help=(
+            "Representation name to use for ZINC similarity search. "
+            "Default keeps legacy behavior with Morgan fingerprints "
+            "('morgan_1024_r2'). Example for embeddings: "
+            "'chemberta_zinc_base_768'."
+        ),
+    )
+
+    parser.add_argument(
+        "--search-metric",
+        choices=["tanimoto", "cosine"],
+        default="tanimoto",
+        help=(
+            "Similarity metric used for ZINC search. "
+            "Default is 'tanimoto'. For embedding representations, use 'cosine'."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -639,6 +674,24 @@ def main() -> None:
     print("[INFO] Loading 'morgan_1024_r2' representation for ZINC")
     rep_zinc = store_zinc.load_representation("morgan_1024_r2")
 
+    # Optional search representation/metric (defaults preserve legacy behavior)
+    search_rep_name = args.search_representation
+    search_metric = args.search_metric
+
+    if search_rep_name == "morgan_1024_r2":
+        search_rep_ref = rep_pdb_chembl
+        search_rep_zinc = rep_zinc
+    else:
+        print(f"[INFO] Loading '{search_rep_name}' representation for PDB+ChEMBL")
+        search_rep_ref = store_pdb_chembl.load_representation(search_rep_name)
+        print(f"[INFO] Loading '{search_rep_name}' representation for ZINC")
+        search_rep_zinc = store_zinc.load_representation(search_rep_name)
+
+    print(
+        "[INFO] ZINC search configuration -> "
+        f"representation='{search_rep_name}', metric='{search_metric}'"
+    )
+
     # ----------------------------------------------------------------------
     # 3) Build protein-domain mapping table
     # ----------------------------------------------------------------------
@@ -670,6 +723,9 @@ def main() -> None:
         rep_pdb_chembl=rep_pdb_chembl,
         store_zinc=store_zinc,
         rep_zinc=rep_zinc,
+        search_rep_ref=search_rep_ref,
+        search_rep_zinc=search_rep_zinc,
+        search_metric=search_metric,
         results_dir=results_dir,
         resume=resume,  # True = append; False = regenerate from scratch
         max_proteins=args.max_proteins,
