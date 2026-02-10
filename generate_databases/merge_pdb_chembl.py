@@ -11,7 +11,7 @@ from compound_processing.compound_helpers import (
     unify_pdb_chembl,
     build_ligand_index,
     build_morgan_representation,
-    build_chemberta_representation,
+    build_huggingface_representation,
     LigandStore,
 )
 
@@ -36,7 +36,7 @@ def merge_databases(data_dir,chemberta_rep=False,tanimoto_curation_threshold=0.3
     
     # Build Chemberta representation
     if chemberta_rep == True:
-        build_chemberta_representation(root, n_bits=768, batch_size=14)
+        build_huggingface_representation(root, n_bits=768, batch_size=14)
 
     # Later, anywhere: load and query fingerprints by comp_id
     store = LigandStore(root)

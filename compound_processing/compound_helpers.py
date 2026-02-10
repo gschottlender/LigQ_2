@@ -425,18 +425,17 @@ def build_morgan_representation(
         json.dump(meta, f, indent=2)
 
 
-def build_chemberta_representation(
+def build_huggingface_representation(
     root: str | Path,
-    n_bits: int = 768,
-    radius: int = 2,
+    n_bits: Optional[int] = 768,
     batch_size: int = 14,
     name: str = "chemberta_zinc_base_768",
-    # NEW (optional injected resources)
     tokenizer=None,
     model=None,
     device: Optional[torch.device] = None,
     model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
     max_length: Optional[int] = None,
+    pooling: str = "mean_attention_mask",
 ) -> None:
     root = Path(root)
     reps_dir = root / "reps"
@@ -449,7 +448,7 @@ def build_chemberta_representation(
         raise ValueError("ligands.parquet is empty, nothing to process.")
 
     # -----------------------------
-    # Load / reuse ChemBERTa
+    # Load / reuse HuggingFace model
     # -----------------------------
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -467,9 +466,9 @@ def build_chemberta_representation(
     hidden_size = int(getattr(model.config, "hidden_size", 0))
     if hidden_size <= 0:
         raise ValueError("Could not infer hidden_size from model.config.")
-    if int(n_bits) != hidden_size:
+    if n_bits is not None and int(n_bits) != hidden_size:
         raise ValueError(
-            f"n_bits={n_bits} does not match ChemBERTa hidden_size={hidden_size}. "
+            f"n_bits={n_bits} does not match model hidden_size={hidden_size}. "
             f"Use n_bits={hidden_size} or switch model."
         )
 
@@ -503,13 +502,19 @@ def build_chemberta_representation(
             last = out.last_hidden_state  # (B, T, H)
             attn = enc.get("attention_mask", None)
 
-            if attn is None:
+            if pooling == "cls":
+                pooled = last[:, 0, :]
+            elif attn is None:
                 pooled = last.mean(dim=1)
-            else:
+            elif pooling == "mean_attention_mask":
                 attn_f = attn.unsqueeze(-1).to(last.dtype)
                 summed = (last * attn_f).sum(dim=1)
                 denom = attn_f.sum(dim=1).clamp(min=1.0)
                 pooled = summed / denom
+            else:
+                raise ValueError(
+                    "Unsupported pooling strategy. Use 'mean_attention_mask' or 'cls'."
+                )
 
         return pooled.detach().to(torch.float16).cpu().numpy()
 
@@ -544,12 +549,11 @@ def build_chemberta_representation(
         "file": f"{name}.dat",
         "dtype": "float16",
         "dim": int(dim),
-        "radius": int(radius),
         "packed_bits": False,
         "packed_dim": None,
         "n_ligands": int(n),
         "model_id": model_id,
-        "pooling": "mean_attention_mask",
+        "pooling": pooling,
         "max_length": max_length,
     }
     meta_path = reps_dir / f"{name}.meta.json"

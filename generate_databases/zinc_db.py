@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 from compound_processing.compound_helpers import (
     build_ligand_index,
     build_morgan_representation,
-    build_chemberta_representation
+    build_huggingface_representation
 )
 
 
@@ -338,7 +338,7 @@ def build_zinc_chemberta_compound_database(
     # ------------------------------------------------------------------
     # 1) Build ChemBERTa representation as a memmap
     # ------------------------------------------------------------------
-    build_chemberta_representation(
+    build_huggingface_representation(
         root=root,
         n_bits=768,         # o el nombre real del parámetro dim/size en tu función
         batch_size=batch_size,
