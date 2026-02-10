@@ -389,6 +389,9 @@ def max_pairwise_tanimoto_from_ids(
 _ZINC_MEMMAP: Optional[np.memmap] = None
 _ZINC_DIM: Optional[int] = None
 
+# Byte popcount LUT [0..255] -> number of set bits
+_POPCOUNT_LUT = np.unpackbits(np.arange(256, dtype=np.uint8)[:, None], axis=1).sum(axis=1).astype(np.uint8)
+
 
 def _unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
     """
@@ -399,6 +402,13 @@ def _unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
     if arr.shape[1] > n_bits:
         arr = arr[:, :n_bits]
     return arr
+
+
+def _bitcount_packed_rows(packed: np.ndarray) -> np.ndarray:
+    """Row-wise popcount for packed uint8 fingerprints."""
+    if packed.dtype != np.uint8:
+        packed = packed.astype(np.uint8, copy=False)
+    return _POPCOUNT_LUT[packed].sum(axis=1).astype(np.int32)
 
 
 def _ensure_zinc_memmap(
@@ -437,22 +447,18 @@ def _search_zinc_chunk(
     chunk_start: int,
     chunk_end: int,
     batch_query_ids: Sequence[str],
-    batch_fps: np.ndarray,
-    batch_bitcounts: np.ndarray,
+    batch_q_packed: np.ndarray,
+    batch_q_bitcounts: np.ndarray,
     tanimoto_threshold: float,
 ) -> List[Tuple[str, int, float]]:
     """
-    Worker function that:
-      - Ensures the ZINC memmap is initialized in this process.
-      - Reads a range [chunk_start:chunk_end) of ZINC indices.
-      - Unpacks fingerprints for that chunk.
-      - Computes Tanimoto similarity against all query fingerprints in the batch.
-      - Returns a list of (query_id, lig_idx_zinc, tanimoto) for hits above
-        the given threshold.
+    Worker function that computes packed Tanimoto for one target chunk.
+
+    This path avoids unpacking target fingerprints to dense 0/1 bits,
+    which reduces RAM pressure and usually improves CPU throughput.
     """
     global _ZINC_MEMMAP, _ZINC_DIM
 
-    # Lazy initialization of the memmap in this worker process
     _ensure_zinc_memmap(
         memmap_path=memmap_path,
         n_ligands=n_ligands,
@@ -464,42 +470,28 @@ def _search_zinc_chunk(
     if _ZINC_MEMMAP is None or _ZINC_DIM is None:
         raise RuntimeError("ZINC memmap could not be initialized in worker.")
 
-    # 1) Read packed block
     packed_block = _ZINC_MEMMAP[chunk_start:chunk_end]   # (B, packed_dim)
     if packed_block.size == 0:
         return []
 
-    # 2) Unpack to 0/1 bits
-    block_bits = _unpack_bits(packed_block, _ZINC_DIM)   # (B, dim)
-    block_bitcounts = block_bits.sum(axis=1).astype(np.int32)  # (B,)
-
-    # 3) Compute intersections as dot products (bitwise AND implicit with 0/1)
-    # batch_fps: (Q, dim)  with 0/1
-    # block_bits: (B, dim) with 0/1
-    # inter: (Q, B) number of shared bits
-    inter = batch_fps @ block_bits.T   # np.dot with uint8 → intersections
-
-    # 4) Compute Tanimoto denominator
-    denom = batch_bitcounts[:, None] + block_bitcounts[None, :] - inter  # (Q, B)
-
-    # Avoid division by zero
-    valid = denom > 0
-    ti = np.zeros_like(inter, dtype=np.float32)
-    ti[valid] = inter[valid] / denom[valid]
-
-    # 5) Apply threshold
-    mask = ti >= tanimoto_threshold
-    q_idx, b_idx = np.where(mask)
+    x_counts = _bitcount_packed_rows(packed_block)  # (B,)
 
     hits: List[Tuple[str, int, float]] = []
-    if len(q_idx) == 0:
-        return hits
+    for qi, qid in enumerate(batch_query_ids):
+        q_row = np.asarray(batch_q_packed[qi], dtype=np.uint8)
+        inter = _POPCOUNT_LUT[np.bitwise_and(packed_block, q_row)].sum(axis=1).astype(np.int32)
+        denom = int(batch_q_bitcounts[qi]) + x_counts - inter
+        valid = denom > 0
+        ti = np.zeros_like(denom, dtype=np.float32)
+        ti[valid] = inter[valid].astype(np.float32) / denom[valid].astype(np.float32)
 
-    for k in range(len(q_idx)):
-        qi = q_idx[k]
-        bi = b_idx[k]
-        lig_idx_global = chunk_start + bi
-        hits.append((batch_query_ids[qi], int(lig_idx_global), float(ti[qi, bi])))
+        keep = ti >= tanimoto_threshold
+        if not np.any(keep):
+            continue
+
+        hit_idx = np.where(keep)[0]
+        for bi in hit_idx:
+            hits.append((qid, int(chunk_start + int(bi)), float(ti[bi])))
 
     return hits
 
@@ -571,16 +563,23 @@ def search_similar_in_zinc(
         )
 
     # ------------------------------------------------------------------
-    # 1) Pre-compute query fingerprints (0/1)
+    # 1) Pre-compute query fingerprints in packed format
     # ------------------------------------------------------------------
     query_ids = list(query_ids)
-    fps_queries = rep_ref.get_by_ids(query_ids, as_float=False)  # (Q, dim)
-    if fps_queries.shape[0] != len(query_ids):
+    q_raw = rep_ref.get_raw_by_ids(query_ids)
+    if q_raw.shape[0] != len(query_ids):
         raise ValueError(
             "Number of fingerprints does not match number of query_ids."
         )
 
-    bitcounts_queries = fps_queries.sum(axis=1).astype(np.int32)  # (Q,)
+    if rep_ref.packed_bits:
+        q_packed = np.asarray(q_raw, dtype=np.uint8, order="C")
+    else:
+        # Fallback: pack dense 0/1 fingerprints once.
+        q_dense = np.asarray(rep_ref.get_by_ids(query_ids, as_float=False), dtype=np.uint8)
+        q_packed = np.packbits(q_dense, axis=1)
+
+    bitcounts_queries = _bitcount_packed_rows(q_packed)
     dim = rep_ref.dim
 
     # ------------------------------------------------------------------
@@ -623,8 +622,8 @@ def search_similar_in_zinc(
         for q_start in range(0, len(query_ids), q_batch_size):
             q_end = min(q_start + q_batch_size, len(query_ids))
             batch_ids = query_ids[q_start:q_end]
-            batch_fps = fps_queries[q_start:q_end]
-            batch_bitcounts = bitcounts_queries[q_start:q_end]
+            batch_q_packed = q_packed[q_start:q_end]
+            batch_q_bitcounts = bitcounts_queries[q_start:q_end]
 
             for (cs, ce) in chunk_ranges:
                 hits_chunk = _search_zinc_chunk(
@@ -636,8 +635,8 @@ def search_similar_in_zinc(
                     cs,
                     ce,
                     batch_ids,
-                    batch_fps,
-                    batch_bitcounts,
+                    batch_q_packed,
+                    batch_q_bitcounts,
                     tanimoto_threshold,
                 )
                 if hits_chunk:
@@ -651,8 +650,8 @@ def search_similar_in_zinc(
             for q_start in range(0, n_queries, q_batch_size):
                 q_end = min(q_start + q_batch_size, n_queries)
                 batch_ids = query_ids[q_start:q_end]
-                batch_fps = fps_queries[q_start:q_end]              # (Qb, dim)
-                batch_bitcounts = bitcounts_queries[q_start:q_end]  # (Qb,)
+                batch_q_packed = q_packed[q_start:q_end]              # (Qb, packed_dim)
+                batch_q_bitcounts = bitcounts_queries[q_start:q_end]  # (Qb,)
 
                 futures = []
                 for (cs, ce) in chunk_ranges:
@@ -667,8 +666,8 @@ def search_similar_in_zinc(
                             cs,
                             ce,
                             batch_ids,
-                            batch_fps,
-                            batch_bitcounts,
+                            batch_q_packed,
+                            batch_q_bitcounts,
                             tanimoto_threshold,
                         )
                     )
