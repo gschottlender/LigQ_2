@@ -31,6 +31,7 @@ from rdkit.Chem import inchi, AllChem, DataStructs
 from rdkit import RDLogger
 import torch
 from transformers import AutoModel, AutoTokenizer
+from tqdm.auto import tqdm
 
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
@@ -568,7 +569,14 @@ def build_huggingface_representation(
     # -----------------------------
     # Process ligands batch by batch
     # -----------------------------
-    for start in range(0, n, batch_size):
+    total_batches = (n + batch_size - 1) // batch_size
+    progress_desc = f"[{root.name}] Building '{name}'"
+    for start in tqdm(
+        range(0, n, batch_size),
+        total=total_batches,
+        desc=progress_desc,
+        unit="batch",
+    ):
         end = min(start + batch_size, n)
         batch_smiles = smiles_all[start:end]
         batch_n = end - start
