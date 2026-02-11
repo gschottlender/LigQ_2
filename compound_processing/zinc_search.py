@@ -272,47 +272,108 @@ def select_ligands_maxmin_by_tanimoto(
     N = fps.shape[0]
     n_select_eff = min(n_select, N)
 
-    # Initialize with the first ligand
-    selected_idx: List[int] = [0]
-    is_selected = np.zeros(N, dtype=bool)
-    is_selected[0] = True
+    def _maxmin_selected_idx_cpu() -> List[int]:
+        # Initialize with the first ligand
+        selected_idx_cpu: List[int] = [0]
+        is_selected_cpu = np.zeros(N, dtype=bool)
+        is_selected_cpu[0] = True
 
-    fp0 = fps[0]
-    bits0 = bit_counts[0]
+        fp0 = fps[0]
+        bits0 = bit_counts[0]
 
-    inter0 = np.bitwise_and(fps, fp0).sum(axis=1)
-    denom0 = bit_counts + bits0 - inter0
-    valid0 = denom0 > 0
-    ti0 = np.zeros_like(denom0, dtype=float)
-    ti0[valid0] = inter0[valid0] / denom0[valid0]
-    dist0 = 1.0 - ti0
+        inter0 = np.bitwise_and(fps, fp0).sum(axis=1)
+        denom0 = bit_counts + bits0 - inter0
+        valid0 = denom0 > 0
+        ti0 = np.zeros_like(denom0, dtype=float)
+        ti0[valid0] = inter0[valid0] / denom0[valid0]
+        dist0 = 1.0 - ti0
 
-    min_dist = dist0.copy()
-    min_dist[0] = 0.0
+        min_dist_cpu = dist0.copy()
+        min_dist_cpu[0] = 0.0
 
-    # Greedy MaxMin loop
-    while len(selected_idx) < n_select_eff:
-        candidates = np.where(~is_selected)[0]
-        if candidates.size == 0:
-            break
+        # Greedy MaxMin loop
+        while len(selected_idx_cpu) < n_select_eff:
+            candidates = np.where(~is_selected_cpu)[0]
+            if candidates.size == 0:
+                break
 
-        best_local = int(np.argmax(min_dist[candidates]))
-        best_idx = int(candidates[best_local])
+            best_local = int(np.argmax(min_dist_cpu[candidates]))
+            best_idx = int(candidates[best_local])
 
-        selected_idx.append(best_idx)
-        is_selected[best_idx] = True
+            selected_idx_cpu.append(best_idx)
+            is_selected_cpu[best_idx] = True
 
-        fp_j = fps[best_idx]
-        bits_j = bit_counts[best_idx]
+            fp_j = fps[best_idx]
+            bits_j = bit_counts[best_idx]
 
-        inter = np.bitwise_and(fps, fp_j).sum(axis=1)
-        denom = bit_counts + bits_j - inter
-        valid = denom > 0
-        ti_j = np.zeros_like(denom, dtype=float)
-        ti_j[valid] = inter[valid] / denom[valid]
-        dist_j = 1.0 - ti_j
+            inter = np.bitwise_and(fps, fp_j).sum(axis=1)
+            denom = bit_counts + bits_j - inter
+            valid = denom > 0
+            ti_j = np.zeros_like(denom, dtype=float)
+            ti_j[valid] = inter[valid] / denom[valid]
+            dist_j = 1.0 - ti_j
 
-        min_dist = np.minimum(min_dist, dist_j)
+            min_dist_cpu = np.minimum(min_dist_cpu, dist_j)
+
+        return selected_idx_cpu
+
+    def _maxmin_selected_idx_gpu() -> List[int]:
+        # Keep original behavior if CUDA is unavailable.
+        if not torch.cuda.is_available():
+            return _maxmin_selected_idx_cpu()
+
+        dev = torch.device("cuda")
+        fps_gpu = torch.as_tensor(fps.astype(np.uint8, copy=False), device=dev)
+        fps_gpu_f32 = fps_gpu.to(torch.float32)
+        bit_counts_gpu = fps_gpu.sum(dim=1).to(torch.int32)
+
+        selected_idx_gpu: List[int] = [0]
+        is_selected_gpu = torch.zeros(N, dtype=torch.bool, device=dev)
+        is_selected_gpu[0] = True
+
+        fp0_gpu = fps_gpu_f32[0]
+        bits0_gpu = bit_counts_gpu[0]
+
+        inter0 = torch.matmul(fps_gpu_f32, fp0_gpu)
+        denom0 = bit_counts_gpu.to(torch.float32) + bits0_gpu.to(torch.float32) - inter0
+        ti0 = torch.zeros_like(inter0, dtype=torch.float32)
+        valid0 = denom0 > 0
+        ti0[valid0] = inter0[valid0] / denom0[valid0]
+
+        min_dist_gpu = 1.0 - ti0
+        min_dist_gpu[0] = 0.0
+
+        while len(selected_idx_gpu) < n_select_eff:
+            candidates = torch.where(~is_selected_gpu)[0]
+            if candidates.numel() == 0:
+                break
+
+            best_local = torch.argmax(min_dist_gpu[candidates])
+            best_idx = int(candidates[best_local].item())
+
+            selected_idx_gpu.append(best_idx)
+            is_selected_gpu[best_idx] = True
+
+            fp_j_gpu = fps_gpu_f32[best_idx]
+            bits_j_gpu = bit_counts_gpu[best_idx]
+
+            inter = torch.matmul(fps_gpu_f32, fp_j_gpu)
+            denom = bit_counts_gpu.to(torch.float32) + bits_j_gpu.to(torch.float32) - inter
+            ti_j = torch.zeros_like(inter, dtype=torch.float32)
+            valid = denom > 0
+            ti_j[valid] = inter[valid] / denom[valid]
+            dist_j = 1.0 - ti_j
+
+            min_dist_gpu = torch.minimum(min_dist_gpu, dist_j)
+
+        return selected_idx_gpu
+
+    # Prefer GPU MaxMin when CUDA is available; if CUDA fails at runtime,
+    # transparently fall back to the CPU implementation.
+    try:
+        selected_idx = _maxmin_selected_idx_gpu()
+    except RuntimeError:
+        selected_idx = _maxmin_selected_idx_cpu()
 
     representatives_idx = selected_idx
     representatives: List[str] = [unique_ids[i] for i in representatives_idx]
