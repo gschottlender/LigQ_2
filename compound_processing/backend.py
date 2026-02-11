@@ -231,11 +231,28 @@ def search(request: SearchRequest) -> pd.DataFrame:
         batch_x_idx: List[np.ndarray] = []
         batch_scores: List[np.ndarray] = []
 
+        precomputed_q = None
+        if resolved_device.type == "cuda" and request.metric == "cosine":
+            precomputed_q = metrics.prepare_cosine_queries_torch(
+                batch_q,
+                device=resolved_device,
+                assume_normalized=request.assume_normalized,
+                q_meta=request.rep_ref.meta,
+            )
+
         for chunk_start, _chunk_end, x_raw in request.rep_target.iter_raw_chunks(request.target_chunk_size):
             if x_raw.size == 0:
                 continue
 
-            scores = kernel.score_block(batch_q, x_raw, return_torch=(resolved_device.type == "cuda"))
+            if precomputed_q is not None:
+                scores = metrics.cosine_torch_tensor_prepared_q(
+                    precomputed_q,
+                    x_raw,
+                    assume_normalized=request.assume_normalized,
+                    q_meta=request.rep_ref.meta,
+                )
+            else:
+                scores = kernel.score_block(batch_q, x_raw, return_torch=(resolved_device.type == "cuda"))
             q_idx, x_idx, vals = kernel.select_hits(
                 scores,
                 mode=request.mode,
