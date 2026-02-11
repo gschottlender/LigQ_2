@@ -526,11 +526,15 @@ def parse_args() -> argparse.Namespace:
         Root directory containing all input databases.
         Default: 'databases'
 
+    --output-dir / -o : str | None
+        Directory where result tables are written.
+        Default: <data_dir>/results_databases
+
     --regenerate : flag
-        Forces full regeneration of the results directory
-        (<data_dir>/results_databases).
+        Forces full regeneration of the selected results directory
+        (either --output-dir or <data_dir>/results_databases).
         If it already exists, it is moved into a backup folder
-        (<results_databases>_backup, <results_databases>_backup1, ...)
+        (<results_dir>_backup, <results_dir>_backup1, ...)
 
     --max-proteins : int
         If given, process at most this number of proteins in the ZINC search.
@@ -546,6 +550,15 @@ def parse_args() -> argparse.Namespace:
         "-d", "--data-dir",
         default="databases",
         help="Root directory containing input databases (default: %(default)s)",
+    )
+
+    parser.add_argument(
+        "-o", "--output-dir",
+        default=None,
+        help=(
+            "Directory where result tables will be written. "
+            "Default is <data_dir>/results_databases."
+        ),
     )
 
     parser.add_argument(
@@ -622,8 +635,10 @@ def main() -> None:
     args = parse_args()
 
     data_dir = Path(args.data_dir)
-    # NEW: all results go under <data_dir>/results_databases
-    results_dir = data_dir / "results_databases"
+    if args.output_dir is None:
+        results_dir = data_dir / "results_databases"
+    else:
+        results_dir = Path(args.output_dir)
 
     # ----------------------------------------------------------------------
     # 0) Handle --regenerate (backup + clean start)

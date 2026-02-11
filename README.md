@@ -256,6 +256,8 @@ python update_zinc_databases.py
 
 ```bash
 python generate_results_tables.py --regenerate
+# Optional custom output folder:
+# python generate_results_tables.py --regenerate --output-dir chemberta_results
 ```
 
 This step can take ~3 days for a full run and is resume-safe.
