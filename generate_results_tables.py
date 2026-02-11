@@ -352,6 +352,8 @@ def build_predicted_zinc_binding_data(
     search_rep_ref=None,
     search_rep_zinc=None,
     search_metric: str = "tanimoto",
+    zinc_search_threshold: float = 0.5,
+    cluster_threshold: float = 0.8,
     results_dir: str | Path = "results",
     resume: bool = True,
     max_proteins: Optional[int] = None,
@@ -394,6 +396,10 @@ def build_predicted_zinc_binding_data(
         If None, `rep_zinc` is used.
     search_metric : str, default "tanimoto"
         Similarity metric for the ZINC search backend ("tanimoto" or "cosine").
+    zinc_search_threshold : float, default 0.5
+        Similarity threshold used to report ZINC hits.
+    cluster_threshold : float, default 0.8
+        Threshold used for clustering/redundancy filtering of query ligands.
     results_dir : str or Path, default "results"
         Directory where 'predicted_zinc_binding_data.parquet' and the progress
         JSON file will be written.
@@ -469,6 +475,8 @@ def build_predicted_zinc_binding_data(
             search_rep_ref=search_rep_ref,
             search_rep_zinc=search_rep_zinc,
             search_metric=search_metric,
+            zinc_search_threshold=zinc_search_threshold,
+            cluster_threshold=cluster_threshold,
         )
 
         # No hits: still mark protein as processed
@@ -565,7 +573,7 @@ def parse_args() -> argparse.Namespace:
         "--regenerate",
         action="store_true",
         help=(
-            "Rebuild all results from scratch. If <data_dir>/results_databases "
+            "Rebuild all results from scratch. If the selected output directory "
             "already exists, it will be moved into a backup directory "
             "before regenerating."
         ),
@@ -599,6 +607,26 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Similarity metric used for ZINC search. "
             "Default is 'tanimoto'. For embedding representations, use 'cosine'."
+        ),
+    )
+
+    parser.add_argument(
+        "--zinc-search-threshold",
+        type=float,
+        default=0.5,
+        help=(
+            "Similarity threshold for reporting ZINC hits (default: %(default)s). "
+            "For tanimoto/cosine this means score >= threshold."
+        ),
+    )
+
+    parser.add_argument(
+        "--cluster-threshold",
+        type=float,
+        default=0.8,
+        help=(
+            "Threshold used when clustering/reducing redundant query ligands "
+            "before ZINC search (default: %(default)s)."
         ),
     )
 
@@ -692,6 +720,8 @@ def main() -> None:
     # Optional search representation/metric (defaults preserve legacy behavior)
     search_rep_name = args.search_representation
     search_metric = args.search_metric
+    zinc_search_threshold = args.zinc_search_threshold
+    cluster_threshold = args.cluster_threshold
 
     if search_rep_name == "morgan_1024_r2":
         search_rep_ref = rep_pdb_chembl
@@ -704,7 +734,8 @@ def main() -> None:
 
     print(
         "[INFO] ZINC search configuration -> "
-        f"representation='{search_rep_name}', metric='{search_metric}'"
+        f"representation='{search_rep_name}', metric='{search_metric}', "
+        f"zinc_search_threshold={zinc_search_threshold}, cluster_threshold={cluster_threshold}"
     )
 
     # ----------------------------------------------------------------------
@@ -741,6 +772,8 @@ def main() -> None:
         search_rep_ref=search_rep_ref,
         search_rep_zinc=search_rep_zinc,
         search_metric=search_metric,
+        zinc_search_threshold=zinc_search_threshold,
+        cluster_threshold=cluster_threshold,
         results_dir=results_dir,
         resume=resume,  # True = append; False = regenerate from scratch
         max_proteins=args.max_proteins,
