@@ -258,8 +258,6 @@ python update_zinc_databases.py
 python generate_results_tables.py --regenerate
 # Optional custom output folder:
 # python generate_results_tables.py --regenerate --output-dir chemberta_results
-# Optional search thresholds:
-# python generate_results_tables.py --regenerate --zinc-search-threshold 0.65 --cluster-threshold 0.85
 ```
 
 This step can take ~3 days for a full run and is resume-safe.
