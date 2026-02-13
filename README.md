@@ -162,7 +162,7 @@ Method-specific predicted ligand cache is stored under:
 ```
 
 The `manifest.json` captures method configuration and provider database
-fingerprint to ensure cache consistency. Locking avoids concurrent write races.
+fingerprint to ensure cache consistency. Locking avoids concurrent write races. During on-demand computation, a tqdm progress bar reports completed vs pending requested proteins.
 
 ### New useful options in `run_ligq_2.py`
 

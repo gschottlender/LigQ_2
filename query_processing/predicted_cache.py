@@ -86,7 +86,13 @@ def ensure_provider_cache(
             if "uniprot_id" in cached.columns:
                 processed |= set(cached["uniprot_id"].astype(str).unique())
 
+        requested_total = len(set(proteins_needed))
+        already_cached = len(set(proteins_needed) & processed)
         proteins_to_compute = sorted(set(proteins_needed) - processed)
+        print(
+            "[INFO] Requested LigQ proteins: "
+            f"total={requested_total}, cached={already_cached}, pending={len(proteins_to_compute)}"
+        )
 
         if proteins_to_compute:
             known_subset = known_binding[known_binding["uniprot_id"].astype(str).isin(proteins_to_compute)].copy()

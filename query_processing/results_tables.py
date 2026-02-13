@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from tqdm.auto import tqdm
 
 from compound_processing.compound_helpers import LigandStore
 from compound_processing.zinc_search import get_zinc_ligands
@@ -182,33 +183,41 @@ def build_predicted_binding_data_incremental(
         for rg_idx in range(pf.num_row_groups):
             writer.write_table(pf.read_row_group(rg_idx))
 
-    for i, prot in enumerate(proteins_to_process, start=1):
-        print(f"\r[INFO] Processing protein {i}/{len(proteins_to_process)}: {prot}          ", end="", flush=True)
-        if prot in processed_proteins:
-            continue
+    total = len(proteins_to_process)
+    with tqdm(total=total, desc="Predicted proteins", unit="protein") as pbar:
+        for i, prot in enumerate(proteins_to_process, start=1):
+            if prot in processed_proteins:
+                pbar.update(1)
+                pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
+                continue
 
-        ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
-        if ligands is None or ligands.empty:
+            ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
+            if ligands is None or ligands.empty:
+                processed_proteins.add(prot)
+                with open(progress_path, "w") as f:
+                    json.dump(sorted(processed_proteins), f)
+                pbar.update(1)
+                pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
+                continue
+
+            ligands = ligands.copy()
+            ligands.insert(0, "uniprot_id", prot)
+            table = pa.Table.from_pandas(ligands, preserve_index=False)
+
+            if writer is None:
+                writer = pq.ParquetWriter(parquet_path.as_posix(), table.schema)
+            else:
+                schema_names = writer.schema.names
+                if table.schema.names != schema_names:
+                    table = table.select(schema_names)
+
+            writer.write_table(table)
             processed_proteins.add(prot)
             with open(progress_path, "w") as f:
                 json.dump(sorted(processed_proteins), f)
-            continue
 
-        ligands = ligands.copy()
-        ligands.insert(0, "uniprot_id", prot)
-        table = pa.Table.from_pandas(ligands, preserve_index=False)
-
-        if writer is None:
-            writer = pq.ParquetWriter(parquet_path.as_posix(), table.schema)
-        else:
-            schema_names = writer.schema.names
-            if table.schema.names != schema_names:
-                table = table.select(schema_names)
-
-        writer.write_table(table)
-        processed_proteins.add(prot)
-        with open(progress_path, "w") as f:
-            json.dump(sorted(processed_proteins), f)
+            pbar.update(1)
+            pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
 
     if writer is not None:
         writer.close()
