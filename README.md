@@ -153,26 +153,22 @@ This is the primary user-facing entry point.
 Method-specific predicted ligand cache is stored under:
 
 ```
-<data-dir>/results_databases/predicted_bindings/<provider>/
-  search_representation=<...>__search_metric=<...>__.../
-    predicted_binding_data.parquet
-    predicted_binding_progress.json
+<data-dir>/results_databases/predicted_bindings/zinc/
+  rep=<representation>__metric=<metric>/
+    predicted_zinc_binding_data.parquet
+    predicted_zinc_binding_progress.json
     manifest.json
-    .cache.lock
 ```
 
-The `manifest.json` captures method configuration and provider database
-fingerprint to ensure cache consistency. Locking avoids concurrent write races. During on-demand computation, a tqdm progress bar reports completed vs pending requested proteins.
+The `manifest.json` captures method configuration and local ZINC fingerprint
+to ensure cache consistency.
 
 ### New useful options in `run_ligq_2.py`
-
-Default provider is `zinc`, but the pipeline now uses a provider interface (`--ligand-provider`) so additional sources can be added without changing the main workflow.
 
 ```bash
 python run_ligq_2.py \
   --input-fasta queries.fasta \
   --output-dir results \
-  --ligand-provider zinc \
   --search-representation morgan_1024_r2 \
   --search-metric tanimoto \
   --zinc-search-threshold 0.5 \
@@ -182,8 +178,7 @@ python run_ligq_2.py \
 Optional rebuild controls:
 
 - `--force-rebuild-known-binding`
-- `--force-rebuild-protein-domains`
-- `--force-rebuild-predicted-cache`
+- `--force-rebuild-zinc-cache`
 
 ---
 
@@ -304,8 +299,16 @@ python update_zinc_databases.py
 python run_ligq_2.py --input-fasta queries.fasta --output-dir results
 ```
 
-No mandatory global precomputation step is required anymore. Predicted ligands are computed incrementally and cached on demand via provider-specific cache namespaces.
+No mandatory global ZINC precomputation step is required anymore.
+Predicted ligands are computed incrementally and cached on demand.
 
+### 4. (Optional) Full global regeneration
+
+If you still want a full precomputed table (legacy/offline workflows), you can use:
+
+```bash
+python generate_results_tables.py --regenerate
+```
 
 ---
 
