@@ -13,6 +13,13 @@ The pipeline is designed to be:
 - Scalable (multi-core, large datasets)
 - Usable out of the box, with automatic downloads from Hugging Face when required
 
+It now uses an **on-demand predicted-ligand cache**:
+- Candidate proteins are found from BLAST/Pfam for each query FASTA run.
+- Predicted ligands are computed only for missing reference proteins.
+- Cached predictions are reused in subsequent runs.
+- Cache is namespaced by search method (**representation + metric**).
+- Cache is automatically invalidated if the local ZINC database changes.
+
 ---
 
 ## Installation
@@ -131,13 +138,52 @@ This is the primary user-facing entry point.
 
 ### Workflow
 
-1. Ensure base data (sequences and results databases)
+1. Ensure base data (sequences and results_databases)
 2. Prepare complementary databases (Pfam, BLAST)
 3. Run BLAST (sequence-based search)
 4. Run HMMER (domain-based search)
 5. Combine candidate proteins
-6. Retrieve known and predicted ligands
-7. Write per-query results and a global summary
+6. Ensure/refresh known binding table (PDB + ChEMBL)
+7. Run **on-demand** ZINC search for missing candidate proteins only
+8. Reuse local cache for proteins already processed with the same method
+9. Write per-query results and a global summary
+
+### On-demand cache layout
+
+Method-specific predicted ligand cache is stored under:
+
+```
+<data-dir>/results_databases/predicted_bindings/<provider>/
+  search_representation=<...>__search_metric=<...>__.../
+    predicted_binding_data.parquet
+    predicted_binding_progress.json
+    manifest.json
+    .cache.lock
+```
+
+The `manifest.json` captures method configuration and provider database
+fingerprint to ensure cache consistency. Locking avoids concurrent write races.
+
+### New useful options in `run_ligq_2.py`
+
+Default provider is `zinc`, but the pipeline now uses a provider interface (`--ligand-provider`) so additional sources can be added without changing the main workflow.
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results \
+  --ligand-provider zinc \
+  --search-representation morgan_1024_r2 \
+  --search-metric tanimoto \
+  --zinc-search-threshold 0.5 \
+  --cluster-threshold 0.8
+```
+
+Optional rebuild controls:
+
+- `--force-rebuild-known-binding`
+- `--force-rebuild-protein-domains`
+- `--force-rebuild-predicted-cache`
 
 ---
 
@@ -252,17 +298,14 @@ python update_databases.py --chembl-version 36
 python update_zinc_databases.py
 ```
 
-### 3. Generate Result Tables (Long Step), requires generated PDB, ChEMBL and ZINC databases
+### 3. Run queries directly (single-script operational mode)
 
 ```bash
-python generate_results_tables.py --regenerate
-# Optional custom output folder:
-# python generate_results_tables.py --regenerate --output-dir chemberta_results
-# Optional search thresholds:
-# python generate_results_tables.py --regenerate --zinc-search-threshold 0.65 --cluster-threshold 0.85
+python run_ligq_2.py --input-fasta queries.fasta --output-dir results
 ```
 
-This step can take ~3 days for a full run and is resume-safe.
+No mandatory global precomputation step is required anymore. Predicted ligands are computed incrementally and cached on demand via provider-specific cache namespaces.
+
 
 ---
 
