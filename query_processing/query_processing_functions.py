@@ -6,7 +6,6 @@ import shutil as pyshutil
 import subprocess
 import urllib.request
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
@@ -1190,7 +1189,7 @@ def build_query_ligand_results_parallel(
               - df_cand_chunk × known_db_chunk
               - df_cand_chunk × zinc_db_chunk
           * Split per qseqid (groupby).
-          * Process each query (sequentially or via ThreadPoolExecutor)
+          * Process each query sequentially to keep RAM bounded.
             using `_process_single_query`, which:
               - counts candidate proteins,
               - sorts by search_type,
@@ -1199,8 +1198,9 @@ def build_query_ligand_results_parallel(
               - returns one summary row.
 
     Notes:
-      - The `executor` parameter is kept for API compatibility but is
-        currently ignored; when njobs > 1, ThreadPoolExecutor is used.
+      - The `executor` parameter is kept for API compatibility and is ignored.
+      - Queries are processed sequentially to avoid peak-memory spikes from
+        large intermediate merged DataFrames.
       - `drop_duplicates=True` collapses to one row per ligand, giving
         priority to ligands found by sequence search.
     """
@@ -1299,125 +1299,78 @@ def build_query_ligand_results_parallel(
                 df_candidates_all["qseqid"].isin(q_chunk)
             ]
 
-        # Reduce known_db_small and zinc_db_small to proteins in the chunk
-        if df_cand_chunk.empty:
-            known_merge_chunk = pd.DataFrame()
-            zinc_merge_chunk = pd.DataFrame()
-        else:
-            prots_chunk = df_cand_chunk["sseqid"].unique()
-            known_db_chunk = known_db_small[
-                known_db_small["uniprot_id"].isin(prots_chunk)
-            ]
-            if zinc_is_path:
-                prots_chunk_list = [str(p) for p in prots_chunk]
-                if len(prots_chunk_list) == 0:
-                    zinc_db_chunk = pd.DataFrame(columns=zinc_columns)
-                else:
-                    zinc_db_chunk = pd.read_parquet(
-                        zinc_path,
-                        engine="pyarrow",
-                        filters=[("uniprot_id", "in", prots_chunk_list)],
-                    )
-            else:
-                zinc_db_chunk = zinc_db_small[
-                    zinc_db_small["uniprot_id"].isin(prots_chunk)
-                ]
-
-            # Per-chunk merges
-            if known_db_chunk.empty:
-                known_merge_chunk = pd.DataFrame()
-            else:
-                known_merge_chunk = df_cand_chunk.merge(
-                    known_db_chunk,
-                    left_on="sseqid",
-                    right_on="uniprot_id",
-                    how="inner",
-                )
-
-            if zinc_db_chunk.empty:
-                zinc_merge_chunk = pd.DataFrame()
-            else:
-                zinc_merge_chunk = df_cand_chunk.merge(
-                    zinc_db_chunk,
-                    left_on="sseqid",
-                    right_on="uniprot_id",
-                    how="inner",
-                )
-
-        # Build per-query dictionaries
         if df_cand_chunk.empty:
             cand_by_q: dict[str, pd.DataFrame] = {}
+            known_db_chunk = pd.DataFrame(columns=known_db.columns)
         else:
             cand_by_q = {
                 q: subdf for q, subdf in df_cand_chunk.groupby("qseqid", sort=False)
             }
+            prots_chunk = df_cand_chunk["sseqid"].unique()
+            known_db_chunk = known_db_small[
+                known_db_small["uniprot_id"].isin(prots_chunk)
+            ]
 
-        if known_merge_chunk.empty:
-            known_by_q: dict[str, pd.DataFrame] = {}
-        else:
-            known_by_q = {
-                q: subdf for q, subdf in known_merge_chunk.groupby("qseqid", sort=False)
-            }
+        # Process queries in the chunk.
+        # NOTE: we intentionally avoid building chunk-level merged DataFrames
+        # (df_cand_chunk × known_db / zinc_db), because those can explode in RAM.
+        for qseqid in q_chunk:
+            df_cand_q = cand_by_q.get(
+                qseqid,
+                pd.DataFrame(columns=["qseqid", "sseqid", "search_type"]),
+            )
 
-        if zinc_merge_chunk.empty:
-            zinc_by_q: dict[str, pd.DataFrame] = {}
-        else:
-            zinc_by_q = {
-                q: subdf for q, subdf in zinc_merge_chunk.groupby("qseqid", sort=False)
-            }
+            if df_cand_q.empty:
+                known_q = pd.DataFrame()
+                zinc_q = pd.DataFrame()
+            else:
+                prots_q = df_cand_q["sseqid"].unique()
 
-        # Process queries in the chunk (sequential or thread-based)
-        if njobs == 1 or len(q_chunk) == 1:
-            for qseqid in q_chunk:
-                df_cand_q = cand_by_q.get(
-                    qseqid,
-                    pd.DataFrame(columns=["qseqid", "sseqid", "search_type"]),
+                known_q = df_cand_q.merge(
+                    known_db_chunk[known_db_chunk["uniprot_id"].isin(prots_q)],
+                    left_on="sseqid",
+                    right_on="uniprot_id",
+                    how="inner",
                 )
-                known_q = known_by_q.get(qseqid, pd.DataFrame())
-                zinc_q = zinc_by_q.get(qseqid, pd.DataFrame())
 
-                summary_row = _process_single_query(
-                    qseqid=qseqid,
-                    df_cand_q=df_cand_q,
-                    known_q=known_q,
-                    zinc_q=zinc_q,
-                    known_db_cols=known_db_cols,
-                    known_ligand_col=known_ligand_col,
-                    zinc_ligand_col=zinc_ligand_col,
-                    search_results_dir=search_results_dir,
-                    save_per_query=save_per_query,
-                    drop_duplicates=drop_duplicates,
-                )
-                summary_rows.append(summary_row)
-        else:
-            # Thread-based parallelism (executor parameter is ignored).
-            with ThreadPoolExecutor(max_workers=njobs) as ex:
-                futures = {}
-                for qseqid in q_chunk:
-                    df_cand_q = cand_by_q.get(
-                        qseqid,
-                        pd.DataFrame(columns=["qseqid", "sseqid", "search_type"]),
+                if zinc_is_path:
+                    prots_q_list = [str(p) for p in prots_q]
+                    if len(prots_q_list) == 0:
+                        zinc_q = pd.DataFrame()
+                    else:
+                        zinc_db_q = pd.read_parquet(
+                            zinc_path,
+                            engine="pyarrow",
+                            filters=[("uniprot_id", "in", prots_q_list)],
+                        )
+                        zinc_q = df_cand_q.merge(
+                            zinc_db_q,
+                            left_on="sseqid",
+                            right_on="uniprot_id",
+                            how="inner",
+                        )
+                else:
+                    zinc_db_q = zinc_db_small[zinc_db_small["uniprot_id"].isin(prots_q)]
+                    zinc_q = df_cand_q.merge(
+                        zinc_db_q,
+                        left_on="sseqid",
+                        right_on="uniprot_id",
+                        how="inner",
                     )
-                    known_q = known_by_q.get(qseqid, pd.DataFrame())
-                    zinc_q = zinc_by_q.get(qseqid, pd.DataFrame())
 
-                    fut = ex.submit(
-                        _process_single_query,
-                        qseqid,
-                        df_cand_q,
-                        known_q,
-                        zinc_q,
-                        known_db_cols,
-                        known_ligand_col,
-                        zinc_ligand_col,
-                        search_results_dir,
-                        save_per_query,
-                        drop_duplicates,
-                    )
-                    futures[fut] = qseqid
-
-                for fut in as_completed(futures):
-                    summary_rows.append(fut.result())
+            summary_row = _process_single_query(
+                qseqid=qseqid,
+                df_cand_q=df_cand_q,
+                known_q=known_q,
+                zinc_q=zinc_q,
+                known_db_cols=known_db_cols,
+                known_ligand_col=known_ligand_col,
+                zinc_ligand_col=zinc_ligand_col,
+                search_results_dir=search_results_dir,
+                save_per_query=save_per_query,
+                drop_duplicates=drop_duplicates,
+            )
+            summary_rows.append(summary_row)
 
         print(f"[INFO] Block 3: processed queries {start + 1}-{end} / {n_total}")
 
