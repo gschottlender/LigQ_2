@@ -24,6 +24,35 @@ PFAM_A_URL = (
 # Generic utilities
 # ----------------------------------------------------------------------
 
+
+def _read_parquet_rows_for_uniprot_ids(
+    parquet_path: str | Path,
+    uniprot_ids: list[str],
+    batch_size: int = 2000,
+) -> pd.DataFrame:
+    """Read parquet rows filtered by uniprot_id in bounded batches."""
+    if not uniprot_ids:
+        return pd.DataFrame()
+
+    parquet_path = Path(parquet_path)
+    parts: list[pd.DataFrame] = []
+    for start in range(0, len(uniprot_ids), max(batch_size, 1)):
+        batch = uniprot_ids[start : start + max(batch_size, 1)]
+        part = pd.read_parquet(
+            parquet_path,
+            engine="pyarrow",
+            filters=[("uniprot_id", "in", batch)],
+        )
+        if not part.empty:
+            parts.append(part)
+
+    if not parts:
+        return pd.DataFrame()
+    if len(parts) == 1:
+        return parts[0]
+    return pd.concat(parts, ignore_index=True)
+
+
 def run_command(cmd: list[str], cwd: Path | None = None) -> None:
     """
     Run an external command and raise a RuntimeError if it fails.
@@ -1173,6 +1202,7 @@ def build_query_ligand_results_parallel(
     executor: str = "process",  # kept for compatibility, currently ignored
     chunk_size_queries: int | None = 100,
     drop_duplicates: bool = True,
+    zinc_filter_batch_size: int = 2000,
 ) -> pd.DataFrame:
     """
     Parallel Block 3 with query chunking (per-query ligand collapse).
@@ -1302,6 +1332,7 @@ def build_query_ligand_results_parallel(
         if df_cand_chunk.empty:
             cand_by_q: dict[str, pd.DataFrame] = {}
             known_db_chunk = pd.DataFrame(columns=known_db.columns)
+            zinc_db_chunk = pd.DataFrame(columns=zinc_columns)
         else:
             cand_by_q = {
                 q: subdf for q, subdf in df_cand_chunk.groupby("qseqid", sort=False)
@@ -1310,6 +1341,17 @@ def build_query_ligand_results_parallel(
             known_db_chunk = known_db_small[
                 known_db_small["uniprot_id"].isin(prots_chunk)
             ]
+
+            if zinc_is_path:
+                zinc_db_chunk = _read_parquet_rows_for_uniprot_ids(
+                    parquet_path=zinc_path,
+                    uniprot_ids=[str(p) for p in prots_chunk],
+                    batch_size=zinc_filter_batch_size,
+                )
+            else:
+                zinc_db_chunk = zinc_db_small[
+                    zinc_db_small["uniprot_id"].isin(prots_chunk)
+                ]
 
         # Process queries in the chunk.
         # NOTE: we intentionally avoid building chunk-level merged DataFrames
@@ -1333,30 +1375,13 @@ def build_query_ligand_results_parallel(
                     how="inner",
                 )
 
-                if zinc_is_path:
-                    prots_q_list = [str(p) for p in prots_q]
-                    if len(prots_q_list) == 0:
-                        zinc_q = pd.DataFrame()
-                    else:
-                        zinc_db_q = pd.read_parquet(
-                            zinc_path,
-                            engine="pyarrow",
-                            filters=[("uniprot_id", "in", prots_q_list)],
-                        )
-                        zinc_q = df_cand_q.merge(
-                            zinc_db_q,
-                            left_on="sseqid",
-                            right_on="uniprot_id",
-                            how="inner",
-                        )
-                else:
-                    zinc_db_q = zinc_db_small[zinc_db_small["uniprot_id"].isin(prots_q)]
-                    zinc_q = df_cand_q.merge(
-                        zinc_db_q,
-                        left_on="sseqid",
-                        right_on="uniprot_id",
-                        how="inner",
-                    )
+                zinc_db_q = zinc_db_chunk[zinc_db_chunk["uniprot_id"].isin(prots_q)]
+                zinc_q = df_cand_q.merge(
+                    zinc_db_q,
+                    left_on="sseqid",
+                    right_on="uniprot_id",
+                    how="inner",
+                )
 
             summary_row = _process_single_query(
                 qseqid=qseqid,
