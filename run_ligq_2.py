@@ -131,6 +131,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-rebuild-known-binding", action="store_true")
     parser.add_argument("--force-rebuild-protein-domains", action="store_true")
     parser.add_argument("--force-rebuild-predicted-cache", action="store_true")
+    parser.add_argument("--block3-query-chunk-size", type=int, default=100)
+    parser.add_argument("--block3-zinc-filter-batch-size", type=int, default=2000)
     return parser.parse_args()
 
 
@@ -206,6 +208,7 @@ def main() -> None:
         known_binding=known_db,
         proteins_needed=proteins_needed,
         force_rebuild_cache=args.force_rebuild_predicted_cache,
+        load_dataframe=False,
     )
 
     summary_df = build_query_ligand_results_parallel(
@@ -218,8 +221,9 @@ def main() -> None:
         save_per_query=True,
         save_summary=True,
         njobs=args.n_workers,
-        chunk_size_queries=100,
+        chunk_size_queries=args.block3_query_chunk_size,
         drop_duplicates=not args.keep_repeated_ligands,
+        zinc_filter_batch_size=args.block3_zinc_filter_batch_size,
     )
 
     print("[INFO] Pipeline completed successfully.")
