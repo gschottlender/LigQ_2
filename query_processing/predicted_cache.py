@@ -16,6 +16,39 @@ def _cache_namespace(value: str) -> str:
     return value.replace("/", "_").replace(":", "_").replace(" ", "_")
 
 
+def _read_lock_pid(lock_path: Path) -> int | None:
+    try:
+        return int(lock_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _try_read_predicted_parquet(predicted_path: Path) -> tuple[pd.DataFrame | None, bool]:
+    if not predicted_path.exists():
+        return None, False
+
+    try:
+        return pd.read_parquet(predicted_path), False
+    except Exception as exc:
+        print(
+            "[WARN] Predicted cache parquet is unreadable/corrupt. "
+            f"Will rebuild cache from scratch: {predicted_path} ({exc})"
+        )
+        return None, True
+
+
 @contextmanager
 def file_lock(lock_path: Path, timeout_s: int = 900, poll_interval_s: float = 0.2):
     lock_path = Path(lock_path)
@@ -28,8 +61,18 @@ def file_lock(lock_path: Path, timeout_s: int = 900, poll_interval_s: float = 0.
             os.write(fd, str(os.getpid()).encode("utf-8"))
             break
         except FileExistsError:
+            lock_pid = _read_lock_pid(lock_path)
+            if lock_pid is not None and not _process_is_alive(lock_pid):
+                print(f"[WARN] Removing stale cache lock owned by dead PID {lock_pid}: {lock_path}")
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
             if time.time() - start > timeout_s:
-                raise TimeoutError(f"Timeout while waiting lock: {lock_path}")
+                owner = _read_lock_pid(lock_path)
+                owner_msg = f" (owner_pid={owner})" if owner is not None else ""
+                raise TimeoutError(f"Timeout while waiting lock: {lock_path}{owner_msg}")
             time.sleep(poll_interval_s)
     try:
         yield
@@ -75,16 +118,21 @@ def ensure_provider_cache(
                 shutil.rmtree(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
 
-        if progress_path.exists():
+        cached, parquet_corrupted = _try_read_predicted_parquet(predicted_path)
+        if parquet_corrupted:
+            regenerate_cache = True
+            for path in (predicted_path, progress_path, manifest_path):
+                if path.exists():
+                    path.unlink()
+
+        if progress_path.exists() and not regenerate_cache:
             with open(progress_path, "r") as f:
                 processed = set(json.load(f))
         else:
             processed = set()
 
-        if predicted_path.exists():
-            cached = pd.read_parquet(predicted_path)
-            if "uniprot_id" in cached.columns:
-                processed |= set(cached["uniprot_id"].astype(str).unique())
+        if cached is not None and "uniprot_id" in cached.columns:
+            processed |= set(cached["uniprot_id"].astype(str).unique())
 
         requested_total = len(set(proteins_needed))
         already_cached = len(set(proteins_needed) & processed)
@@ -107,7 +155,14 @@ def ensure_provider_cache(
         with open(manifest_path, "w") as f:
             json.dump(expected_manifest, f, indent=2)
 
-        if predicted_path.exists():
-            return pd.read_parquet(predicted_path)
+        refreshed_cached, parquet_corrupted = _try_read_predicted_parquet(predicted_path)
+        if parquet_corrupted:
+            raise RuntimeError(
+                "Predicted cache parquet is corrupt after rebuild attempt. "
+                f"Please remove cache directory and rerun: {cache_dir}"
+            )
+
+        if refreshed_cached is not None:
+            return refreshed_cached
 
         return pd.DataFrame(columns=["uniprot_id"])
