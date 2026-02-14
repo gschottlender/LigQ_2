@@ -206,6 +206,7 @@ def main() -> None:
         known_binding=known_db,
         proteins_needed=proteins_needed,
         force_rebuild_cache=args.force_rebuild_predicted_cache,
+        load_dataframe=False,
     )
 
     summary_df = build_query_ligand_results_parallel(
