@@ -91,7 +91,8 @@ def ensure_provider_cache(
     known_binding: pd.DataFrame,
     proteins_needed: set[str],
     force_rebuild_cache: bool = False,
-) -> pd.DataFrame:
+    load_dataframe: bool = True,
+) -> pd.DataFrame | Path:
     cache_root = Path(data_dir) / "results_databases" / "predicted_bindings"
     method_key = "__".join([f"{k}={_cache_namespace(str(v))}" for k, v in provider.method_signature().items() if k != "provider"])
     cache_dir = cache_root / provider.provider_name / method_key
@@ -154,6 +155,11 @@ def ensure_provider_cache(
 
         with open(manifest_path, "w") as f:
             json.dump(expected_manifest, f, indent=2)
+
+        if not load_dataframe:
+            if predicted_path.exists():
+                return predicted_path
+            return pd.DataFrame(columns=["uniprot_id"])
 
         refreshed_cached, parquet_corrupted = _try_read_predicted_parquet(predicted_path)
         if parquet_corrupted:

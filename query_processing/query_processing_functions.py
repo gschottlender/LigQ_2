@@ -9,6 +9,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 # ----------------------------------------------------------------------
@@ -1164,7 +1165,7 @@ def build_query_ligand_results_parallel(
     df_queries: pd.DataFrame,
     df_candidates_all: pd.DataFrame,
     known_db: pd.DataFrame,
-    zinc_db: pd.DataFrame,
+    zinc_db: pd.DataFrame | str | Path,
     output_dir: str | Path = "results",
     search_results_subdir: str = "search_results",
     save_per_query: bool = True,
@@ -1245,9 +1246,19 @@ def build_query_ligand_results_parallel(
 
     # Detect ligand columns
     known_ligand_col = "chem_comp_id" if "chem_comp_id" in known_db.columns else None
-    if "zinc_chem_comp_id" in zinc_db.columns:
+
+    zinc_is_path = isinstance(zinc_db, (str, Path))
+    zinc_path = Path(zinc_db) if zinc_is_path else None
+    if zinc_is_path:
+        if zinc_path is None or not zinc_path.exists():
+            raise ValueError(f"zinc_db parquet path does not exist: {zinc_db}")
+        zinc_columns = pq.ParquetFile(zinc_path).schema_arrow.names
+    else:
+        zinc_columns = list(zinc_db.columns)
+
+    if "zinc_chem_comp_id" in zinc_columns:
         zinc_ligand_col = "zinc_chem_comp_id"
-    elif "chem_comp_id" in zinc_db.columns:
+    elif "chem_comp_id" in zinc_columns:
         zinc_ligand_col = "chem_comp_id"
     else:
         zinc_ligand_col = None
@@ -1262,11 +1273,11 @@ def build_query_ligand_results_parallel(
 
     if "uniprot_id" not in known_db.columns:
         raise ValueError("known_db must contain an 'uniprot_id' column.")
-    if "uniprot_id" not in zinc_db.columns:
+    if "uniprot_id" not in zinc_columns:
         raise ValueError("zinc_db must contain an 'uniprot_id' column.")
 
     known_db_small = known_db[known_db["uniprot_id"].isin(prots_all)].copy()
-    zinc_db_small = zinc_db[zinc_db["uniprot_id"].isin(prots_all)].copy()
+    zinc_db_small = None if zinc_is_path else zinc_db[zinc_db["uniprot_id"].isin(prots_all)].copy()
 
     # Normalize chunk size
     n_total = len(qseqids_all)
@@ -1297,9 +1308,20 @@ def build_query_ligand_results_parallel(
             known_db_chunk = known_db_small[
                 known_db_small["uniprot_id"].isin(prots_chunk)
             ]
-            zinc_db_chunk = zinc_db_small[
-                zinc_db_small["uniprot_id"].isin(prots_chunk)
-            ]
+            if zinc_is_path:
+                prots_chunk_list = [str(p) for p in prots_chunk]
+                if len(prots_chunk_list) == 0:
+                    zinc_db_chunk = pd.DataFrame(columns=zinc_columns)
+                else:
+                    zinc_db_chunk = pd.read_parquet(
+                        zinc_path,
+                        engine="pyarrow",
+                        filters=[("uniprot_id", "in", prots_chunk_list)],
+                    )
+            else:
+                zinc_db_chunk = zinc_db_small[
+                    zinc_db_small["uniprot_id"].isin(prots_chunk)
+                ]
 
             # Per-chunk merges
             if known_db_chunk.empty:
