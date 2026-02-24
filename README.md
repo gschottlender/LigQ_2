@@ -187,6 +187,114 @@ Optional rebuild controls:
 
 ---
 
+## Utility Script: `add_new_representation.py`
+
+This helper script builds an additional compound representation under:
+
+```
+<output-dir>/compound_data/<base>/reps/<rep-name>.dat
+<output-dir>/compound_data/<base>/reps/<rep-name>.meta.json
+```
+
+It also ensures compatibility between spaces by creating the same representation
+in the local `pdb_chembl` base when needed.
+
+### Supported representation families
+
+1. **HuggingFace embeddings** (`--representation-type huggingface`)
+   - Example default: `seyonec/ChemBERTa-zinc-base-v1`
+   - Output vectors stored as dense embeddings (float16 memmap).
+
+2. **RDKit fingerprints** (`--representation-type rdkit`)
+   - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
+   - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
+   - `--rdkit-fp-kind rdkit`: **RDKit/Daylight-like** fingerprint (bit vector).
+   - `--rdkit-fp-kind maccs`: **MACCS keys** fingerprint (fixed 167 bits).
+
+3. **Morgan fingerprints**
+   - Already available in the database build pipeline as `morgan_1024_r2`
+     (used by default for ZINC similarity search in `run_ligq_2.py`).
+
+### Multi-core CPU optimization
+
+For RDKit bit fingerprints, generation is optimized for multi-core CPU in the same
+style as Morgan fingerprints:
+- batched processing,
+- multiprocessing workers,
+- packed bit storage in memmap (`uint8`),
+- metadata with timing and failure statistics.
+
+Parallelism controls:
+- `--n-jobs` (number of workers; default: all CPUs)
+- `--chunksize` (chunk size for worker scheduling)
+
+### Example commands
+
+Build an Atom Pair representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type rdkit \
+  --rdkit-fp-kind ap \
+  --n-bits 1024 \
+  --rep-name atom_pair_1024 \
+  --n-jobs 16 \
+  --chunksize 500
+```
+
+Build a Topological Torsion representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type rdkit \
+  --rdkit-fp-kind topological_torsion \
+  --n-bits 1024 \
+  --rep-name topological_torsion_1024
+```
+
+Build an RDKit/Daylight-like representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type rdkit \
+  --rdkit-fp-kind rdkit \
+  --n-bits 2048 \
+  --rep-name rdkit_daylight_2048
+```
+
+Build a MACCS representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type rdkit \
+  --rdkit-fp-kind maccs \
+  --n-bits 167 \
+  --rep-name maccs_167
+```
+
+Build a HuggingFace representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingface \
+  --rep-name chemberta_zinc_base_768 \
+  --model-id seyonec/ChemBERTa-zinc-base-v1 \
+  --n-bits 768 \
+  --batch-size 14
+```
+
+---
+
 ## Outputs
 
 ### Global Summary
