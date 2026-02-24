@@ -12,7 +12,10 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from compound_processing.compound_helpers import build_huggingface_representation
+from compound_processing.compound_helpers import (
+    build_huggingface_representation,
+    build_rdkit_representation,
+)
 
 
 DEFAULT_LOCAL_ROOT = Path("compound_data/pdb_chembl")
@@ -49,6 +52,20 @@ def parse_args() -> argparse.Namespace:
         help="Representation name (saved under reps/<rep-name>.dat + .meta.json).",
     )
     parser.add_argument(
+        "--representation-type",
+        type=str,
+        default="huggingface",
+        choices=["huggingface", "rdkit"],
+        help="Type of representation to build.",
+    )
+    parser.add_argument(
+        "--rdkit-fp-kind",
+        type=str,
+        default="ap",
+        choices=["ap", "topological_torsion", "rdkit", "maccs"],
+        help="RDKit fingerprint kind when --representation-type=rdkit.",
+    )
+    parser.add_argument(
         "--model-id",
         type=str,
         default="seyonec/ChemBERTa-zinc-base-v1",
@@ -64,7 +81,19 @@ def parse_args() -> argparse.Namespace:
         "--batch-size",
         type=int,
         default=14,
-        help="Batch size for embedding computation.",
+        help="Batch size for representation computation.",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="Number of CPU workers for RDKit fingerprints (default: all CPUs).",
+    )
+    parser.add_argument(
+        "--chunksize",
+        type=int,
+        default=500,
+        help="Chunk size for multiprocessing imap in RDKit fingerprints.",
     )
     parser.add_argument(
         "--max-length",
@@ -106,12 +135,16 @@ def ensure_ligands_exist(root: Path) -> None:
 
 def build_representation_if_needed(
     root: Path,
+    representation_type: str,
     rep_name: str,
     model_id: str,
     n_bits: Optional[int],
     batch_size: int,
     max_length: Optional[int],
     pooling: str,
+    rdkit_fp_kind: str,
+    n_jobs: Optional[int],
+    chunksize: int,
     force: bool,
 ) -> None:
     ensure_ligands_exist(root)
@@ -121,15 +154,30 @@ def build_representation_if_needed(
         return
 
     print(f"[INFO] Building representation '{rep_name}' in: {root}")
-    build_huggingface_representation(
-        root=root,
-        n_bits=n_bits,
-        batch_size=batch_size,
-        name=rep_name,
-        model_id=model_id,
-        max_length=max_length,
-        pooling=pooling,
-    )
+    if representation_type == "huggingface":
+        build_huggingface_representation(
+            root=root,
+            n_bits=n_bits,
+            batch_size=batch_size,
+            name=rep_name,
+            model_id=model_id,
+            max_length=max_length,
+            pooling=pooling,
+        )
+    elif representation_type == "rdkit":
+        if n_bits is None:
+            raise ValueError("--n-bits must be provided for RDKit fingerprints.")
+        build_rdkit_representation(
+            root=root,
+            fp_kind=rdkit_fp_kind,
+            n_bits=int(n_bits),
+            batch_size=batch_size,
+            name=rep_name,
+            n_jobs=n_jobs,
+            chunksize=chunksize,
+        )
+    else:
+        raise ValueError(f"Unsupported representation_type: {representation_type}")
 
 
 def main() -> None:
@@ -144,12 +192,16 @@ def main() -> None:
     # 1) Build on selected base
     build_representation_if_needed(
         root=primary_root,
+        representation_type=args.representation_type,
         rep_name=args.rep_name,
         model_id=args.model_id,
         n_bits=args.n_bits,
         batch_size=args.batch_size,
         max_length=args.max_length,
         pooling=args.pooling,
+        rdkit_fp_kind=args.rdkit_fp_kind,
+        n_jobs=args.n_jobs,
+        chunksize=args.chunksize,
         force=args.force,
     )
 
@@ -157,12 +209,16 @@ def main() -> None:
     if primary_root != local_root:
         build_representation_if_needed(
             root=local_root,
+            representation_type=args.representation_type,
             rep_name=args.rep_name,
             model_id=args.model_id,
             n_bits=args.n_bits,
             batch_size=args.batch_size,
             max_length=args.max_length,
             pooling=args.pooling,
+            rdkit_fp_kind=args.rdkit_fp_kind,
+            n_jobs=args.n_jobs,
+            chunksize=args.chunksize,
             force=False,
         )
 
