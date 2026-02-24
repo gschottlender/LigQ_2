@@ -144,7 +144,7 @@ def unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
 def _init_morgan_worker(n_bits: int, radius: int) -> None:
     _MORGAN_WORKER_CFG["n_bits"] = int(n_bits)
     _MORGAN_WORKER_CFG["radius"] = int(radius)
-    _MORGAN_WORKER_CFG["n_bytes"] = int(n_bits) // 8
+    _MORGAN_WORKER_CFG["n_bytes"] = (int(n_bits) + 7) // 8
 
 def _morgan_fp_bits_or_zero(smiles: str) -> np.ndarray:
     """
@@ -241,7 +241,7 @@ def _init_rdkit_fp_worker(fp_kind: str, n_bits: int, radius: int = 2) -> None:
     _RDKIT_FP_WORKER_CFG["fp_kind"] = fp_kind
     _RDKIT_FP_WORKER_CFG["n_bits"] = int(n_bits)
     _RDKIT_FP_WORKER_CFG["radius"] = int(radius)
-    _RDKIT_FP_WORKER_CFG["n_bytes"] = int(n_bits) // 8
+    _RDKIT_FP_WORKER_CFG["n_bytes"] = (int(n_bits) + 7) // 8
 
 
 def _rdkit_fp_packed_or_zero(smiles: str) -> Tuple[np.ndarray, bool]:
@@ -467,16 +467,13 @@ def _build_packed_bit_representation(
 
     if n == 0:
         raise ValueError("ligands.parquet is empty, nothing to process.")
-    if n_bits % 8 != 0:
-        raise ValueError("n_bits must be divisible by 8 for packed storage.")
-
     cpu_avail = os.cpu_count() or 1
     if n_jobs is None:
         n_jobs = cpu_avail
     else:
         n_jobs = max(1, min(int(n_jobs), cpu_avail))
 
-    n_bytes = n_bits // 8
+    n_bytes = (n_bits + 7) // 8
     data_path = reps_dir / f"{name}.dat"
 
     mm = np.memmap(
