@@ -224,6 +224,11 @@ style as Morgan fingerprints:
 - packed bit storage in memmap (`uint8`),
 - metadata with timing and failure statistics.
 
+Progress display for **all representation builders** (Morgan, RDKit, HuggingFace):
+- single-line tqdm progress bar,
+- percentage complete,
+- elapsed time and **estimated remaining time (ETA)**.
+
 Parallelism controls:
 - `--n-jobs` (number of workers; default: all CPUs)
 - `--chunksize` (chunk size for worker scheduling)

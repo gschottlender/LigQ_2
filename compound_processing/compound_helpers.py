@@ -44,6 +44,8 @@ _RDKIT_FP_WORKER_CFG: Dict[str, int | str] = {
     "n_bytes": 128,
 }
 
+_TQDM_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+
 # ---------------------------------------------------------------------------
 # 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
 # ---------------------------------------------------------------------------
@@ -488,12 +490,22 @@ def _build_packed_bit_representation(
     t0 = time.perf_counter()
     failed_smiles = 0
 
+    total_batches = (n + batch_size - 1) // batch_size
+    progress_desc = f"[{root.name}] Building '{name}'"
+
     with ctx.Pool(
         processes=n_jobs,
         initializer=pool_initializer,
         initargs=pool_initargs,
     ) as pool:
-        for start in range(0, n, batch_size):
+        for start in tqdm(
+            range(0, n, batch_size),
+            total=total_batches,
+            desc=progress_desc,
+            unit="batch",
+            dynamic_ncols=True,
+            bar_format=_TQDM_BAR_FORMAT,
+        ):
             end = min(start + batch_size, n)
             smiles_list = ligs.iloc[start:end]["smiles"].tolist()
 
@@ -713,6 +725,8 @@ def build_huggingface_representation(
         total=total_batches,
         desc=progress_desc,
         unit="batch",
+        dynamic_ncols=True,
+        bar_format=_TQDM_BAR_FORMAT,
     ):
         end = min(start + batch_size, n)
         batch_smiles = smiles_all[start:end]
