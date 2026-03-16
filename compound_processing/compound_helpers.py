@@ -20,6 +20,7 @@ from typing import Optional, Dict, List, Tuple
 
 import os
 import sys
+import site
 import subprocess
 import importlib
 import multiprocessing as mp
@@ -835,6 +836,20 @@ def ensure_huggingmolecules_installed(
             cwd=str(repo_dir),
             check=True,
         )
+
+    # Editable installs typically rely on .pth processing at interpreter startup.
+    # Since we install and import in the same running process, make module resolution
+    # robust by refreshing caches and adding local src path for this process if needed.
+    importlib.invalidate_caches()
+    hm_src = str((repo_dir / "src").resolve())
+    try:
+        importlib.import_module("huggingmolecules")
+    except ModuleNotFoundError:
+        site.addsitedir(hm_src)
+        if hm_src not in sys.path:
+            sys.path.insert(0, hm_src)
+        importlib.invalidate_caches()
+        importlib.import_module("huggingmolecules")
 
 
 def _to_numpy_feature_blocks(batch_encoding: object) -> list[np.ndarray]:
