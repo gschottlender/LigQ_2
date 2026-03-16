@@ -210,7 +210,7 @@ in the local `pdb_chembl` base when needed.
      polluting the main LigQ_2 environment.
    - On first use, `add_new_representation.py` creates a reusable venv under
      `.microenvs/huggingmolecules` (configurable with `--hm-env-dir`) and installs
-     HuggingMolecules directly from GitHub.
+     HuggingMolecules by cloning from GitHub into the micro-environment and installing from the local clone.
    - Subsequent runs reuse the same micro-environment unless
      `--hm-force-install` is used.
 
@@ -319,6 +319,20 @@ python add_new_representation.py \
   --hm-repo-url https://github.com/gmum/huggingmolecules.git \
   --rep-name grover_base \
   --batch-size 32
+```
+
+If the repository root is not directly installable (no `setup.py` / `pyproject.toml`),
+set the install folder explicitly with `--hm-repo-subdir`:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --hm-model-type grover \
+  --hm-model-id grover_base \
+  --hm-repo-subdir <relative/path/inside/repo> \
+  --rep-name grover_base
 ```
 
 Pin a specific HuggingMolecules Git ref and force reinstall once:

@@ -827,6 +827,7 @@ def build_huggingmolecules_representation(
     microenv_dir: str | Path = ".microenvs/huggingmolecules",
     hm_repo_url: str = "https://github.com/gmum/huggingmolecules.git",
     hm_repo_ref: Optional[str] = None,
+    hm_repo_subdir: Optional[str] = None,
     force_install: bool = False,
 ) -> None:
     """
@@ -843,6 +844,7 @@ def build_huggingmolecules_representation(
         microenv_dir=Path(microenv_dir),
         hm_repo_url=hm_repo_url,
         hm_repo_ref=hm_repo_ref,
+        hm_repo_subdir=hm_repo_subdir,
         force_install=force_install,
     )
 

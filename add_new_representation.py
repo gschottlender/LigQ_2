@@ -141,6 +141,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional git ref (branch/tag/commit) appended as @<ref> during installation.",
     )
     parser.add_argument(
+        "--hm-repo-subdir",
+        type=str,
+        default="",
+        help=(
+            "Optional subdirectory inside cloned repo containing setup.py/pyproject.toml. "
+            "Useful when repository root is not directly pip-installable."
+        ),
+    )
+    parser.add_argument(
         "--hm-force-install",
         action="store_true",
         help="Force reinstall dependencies inside the HuggingMolecules micro-environment.",
@@ -184,6 +193,7 @@ def build_representation_if_needed(
     hm_env_dir: str,
     hm_repo_url: str,
     hm_repo_ref: str,
+    hm_repo_subdir: str,
     hm_force_install: bool,
     rdkit_fp_kind: str,
     n_jobs: Optional[int],
@@ -231,6 +241,7 @@ def build_representation_if_needed(
             microenv_dir=Path(hm_env_dir),
             hm_repo_url=hm_repo_url,
             hm_repo_ref=hm_repo_ref or None,
+            hm_repo_subdir=hm_repo_subdir or None,
             force_install=hm_force_install,
         )
     else:
@@ -261,6 +272,7 @@ def main() -> None:
         hm_env_dir=args.hm_env_dir,
         hm_repo_url=args.hm_repo_url,
         hm_repo_ref=args.hm_repo_ref,
+        hm_repo_subdir=args.hm_repo_subdir,
         hm_force_install=args.hm_force_install,
         rdkit_fp_kind=args.rdkit_fp_kind,
         n_jobs=args.n_jobs,
@@ -284,6 +296,7 @@ def main() -> None:
             hm_env_dir=args.hm_env_dir,
             hm_repo_url=args.hm_repo_url,
             hm_repo_ref=args.hm_repo_ref,
+            hm_repo_subdir=args.hm_repo_subdir,
             hm_force_install=False,
             rdkit_fp_kind=args.rdkit_fp_kind,
             n_jobs=args.n_jobs,
