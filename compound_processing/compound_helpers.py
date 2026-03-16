@@ -887,6 +887,16 @@ def _to_numpy_feature_blocks(batch_encoding: object) -> list[np.ndarray]:
     return features
 
 
+def _is_valid_smiles(smiles: str) -> bool:
+    """Return True if RDKit can parse the SMILES into a molecule."""
+    if smiles is None:
+        return False
+    smi = str(smiles).strip()
+    if not smi:
+        return False
+    return Chem.MolFromSmiles(smi) is not None
+
+
 def _build_huggingmolecules_featurizer(model_family: str):
     model_family = model_family.lower().replace("-", "")
 
@@ -1000,11 +1010,23 @@ def build_huggingmolecules_representation(
 
     featurizer = _build_huggingmolecules_featurizer(model_family)
 
-    # Infer output dim from a first valid smiles.
-    sample_smiles = next((s for s in smiles_all if s.strip()), None)
-    if sample_smiles is None:
-        raise ValueError("No valid non-empty smiles found in ligands.parquet.")
-    sample_blocks = _to_numpy_feature_blocks(featurizer([sample_smiles]))
+    # Infer output dim from first parsable+encodable smiles.
+    sample_blocks = None
+    for s in smiles_all:
+        if not _is_valid_smiles(s):
+            continue
+        try:
+            sample_blocks = _to_numpy_feature_blocks(featurizer([s]))
+            break
+        except Exception:
+            continue
+
+    if sample_blocks is None:
+        raise ValueError(
+            "Could not featurize any valid SMILES from ligands.parquet. "
+            "Check input SMILES quality/format for huggingmolecules featurizers."
+        )
+
     inferred_dim = int(sum(block.shape[1] for block in sample_blocks))
     if n_bits is not None and int(n_bits) != inferred_dim:
         raise ValueError(
@@ -1036,7 +1058,7 @@ def build_huggingmolecules_representation(
         batch_smiles = smiles_all[start:end]
         out = np.zeros((end - start, dim), dtype=np.float16)
 
-        valid_idx = [i for i, s in enumerate(batch_smiles) if s.strip()]
+        valid_idx = [i for i, s in enumerate(batch_smiles) if _is_valid_smiles(s)]
         valid_smiles = [batch_smiles[i] for i in valid_idx]
         invalid_smiles += (len(batch_smiles) - len(valid_smiles))
 
