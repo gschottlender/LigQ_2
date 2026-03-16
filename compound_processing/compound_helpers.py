@@ -23,6 +23,7 @@ import sys
 import site
 import subprocess
 import importlib
+import inspect
 import multiprocessing as mp
 import json
 import time
@@ -899,10 +900,64 @@ def _build_huggingmolecules_featurizer(model_family: str):
         raise ValueError("model_family must be one of: grover, rmat")
 
     module = importlib.import_module(module_name)
+
+    def _build_default_config() -> object | None:
+        """Try to construct a default config object for featurizers requiring it."""
+        cfg_module_names = [
+            f"huggingmolecules.configuration.configuration_{'mat' if model_family in {'rmat','r_mat'} else 'grover'}"
+        ]
+        # Some versions expose config classes in the same featurization module.
+        cfg_module_names.append(module_name)
+
+        class_candidates = (
+            ("MatConfig", "RMatConfig")
+            if model_family in {"rmat", "r_mat"}
+            else ("GroverConfig",)
+        )
+
+        for cfg_mod_name in cfg_module_names:
+            try:
+                cfg_mod = importlib.import_module(cfg_mod_name)
+            except Exception:
+                continue
+            for cfg_class_name in class_candidates:
+                cfg_cls = getattr(cfg_mod, cfg_class_name, None)
+                if cfg_cls is None:
+                    continue
+                try:
+                    return cfg_cls()
+                except TypeError:
+                    # Constructor may require args in some versions.
+                    continue
+                except Exception:
+                    continue
+        return None
+
     for class_name in class_candidates:
         cls = getattr(module, class_name, None)
         if cls is not None:
-            return cls()
+            try:
+                return cls()
+            except TypeError as exc:
+                # Some versions require `config` in constructor.
+                sig = inspect.signature(cls)
+                has_required_config = False
+                for pname, p in sig.parameters.items():
+                    if pname == "self":
+                        continue
+                    if pname == "config" and p.default is inspect._empty:
+                        has_required_config = True
+                        break
+                if not has_required_config:
+                    raise
+
+                cfg = _build_default_config()
+                if cfg is None:
+                    raise RuntimeError(
+                        f"{class_name} requires a `config`, but no default config class could "
+                        f"be instantiated for model_family='{model_family}'."
+                    ) from exc
+                return cls(cfg)
 
     available = [name for name in dir(module) if name.endswith("Featurizer")]
     raise AttributeError(
