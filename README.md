@@ -205,6 +205,15 @@ in the local `pdb_chembl` base when needed.
    - Example default: `seyonec/ChemBERTa-zinc-base-v1`
    - Output vectors stored as dense embeddings (float16 memmap).
 
+1.1 **HuggingMolecules embeddings in isolated micro-environment** (`--representation-type huggingmolecules`)
+   - Designed for legacy dependency stacks (e.g., GROVER / R-MAT) without
+     polluting the main LigQ_2 environment.
+   - On first use, `add_new_representation.py` creates a reusable venv under
+     `.microenvs/huggingmolecules` (configurable with `--hm-env-dir`) and installs
+     HuggingMolecules by cloning from GitHub into the micro-environment and installing from the local clone.
+   - Subsequent runs reuse the same micro-environment unless
+     `--hm-force-install` is used.
+
 2. **RDKit fingerprints** (`--representation-type rdkit`)
    - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
@@ -296,6 +305,49 @@ python add_new_representation.py \
   --model-id seyonec/ChemBERTa-zinc-base-v1 \
   --n-bits 768 \
   --batch-size 14
+```
+
+Build a HuggingMolecules GROVER representation (auto-installs isolated micro-env on first run):
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --hm-model-type grover \
+  --hm-model-id grover_base \
+  --hm-repo-url https://github.com/gmum/huggingmolecules.git \
+  --rep-name grover_base \
+  --batch-size 32
+```
+
+If the repository root is not directly installable (no `setup.py` / `pyproject.toml`),
+by default LigQ_2 installs from `src/` (following HuggingMolecules docs).
+If your fork uses a different layout, set `--hm-repo-subdir` explicitly:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --hm-model-type grover \
+  --hm-model-id grover_base \
+  --hm-repo-subdir src \
+  --rep-name grover_base
+```
+
+Pin a specific HuggingMolecules Git ref and force reinstall once:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --hm-model-type rmat \
+  --hm-model-id rmat_4M \
+  --hm-repo-ref <tag-or-commit> \
+  --hm-force-install \
+  --rep-name rmat_4m
 ```
 
 ---
