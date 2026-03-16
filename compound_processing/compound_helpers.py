@@ -33,6 +33,8 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 from tqdm.auto import tqdm
 
+from compound_processing.huggingmolecules_microenv import build_huggingmolecules_with_microenv
+
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
 # Morgan globals
@@ -811,6 +813,39 @@ def build_chemberta_representation(
         device=device,
         model_id=model_id,
         max_length=max_length,
+    )
+
+
+def build_huggingmolecules_representation(
+    root: str | Path,
+    n_bits: Optional[int] = None,
+    batch_size: int = 32,
+    name: str = "grover_base",
+    model_type: str = "grover",
+    model_id: str = "grover_base",
+    max_length: Optional[int] = None,
+    microenv_dir: str | Path = ".microenvs/huggingmolecules",
+    hm_repo_url: str = "https://github.com/gmum/huggingmolecules.git",
+    hm_repo_ref: Optional[str] = None,
+    hm_repo_subdir: Optional[str] = None,
+    force_install: bool = False,
+) -> None:
+    """
+    Build a representation via a reusable HuggingMolecules micro-environment.
+    """
+    build_huggingmolecules_with_microenv(
+        root=Path(root),
+        rep_name=name,
+        n_bits=n_bits,
+        batch_size=batch_size,
+        max_length=max_length,
+        model_type=model_type,
+        model_id=model_id,
+        microenv_dir=Path(microenv_dir),
+        hm_repo_url=hm_repo_url,
+        hm_repo_ref=hm_repo_ref,
+        hm_repo_subdir=hm_repo_subdir,
+        force_install=force_install,
     )
 
 # ---------------------------------------------------------------------------
