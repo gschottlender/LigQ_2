@@ -82,7 +82,15 @@ def parse_args() -> argparse.Namespace:
         "--hm-conda-env",
         type=str,
         default="huggingmolecules",
-        help="Conda environment name used for huggingmolecules installation.",
+        help="Conda environment name used only if --hm-use-conda-env is enabled.",
+    )
+    parser.add_argument(
+        "--hm-use-conda-env",
+        action="store_true",
+        help=(
+            "Install huggingmolecules inside a conda env via `conda activate <env>` "
+            "before pip. By default installation is done in the current Python environment."
+        ),
     )
     parser.add_argument(
         "--rdkit-fp-kind",
@@ -175,6 +183,7 @@ def build_representation_if_needed(
     hm_repo_dir: str,
     hm_repo_url: str,
     hm_conda_env: str,
+    hm_use_conda_env: bool,
     force: bool,
 ) -> None:
     ensure_ligands_exist(root)
@@ -216,6 +225,7 @@ def build_representation_if_needed(
             hm_repo_dir=hm_repo_dir,
             hm_repo_url=hm_repo_url,
             hm_conda_env=hm_conda_env,
+            hm_use_conda_env=hm_use_conda_env,
         )
     else:
         raise ValueError(f"Unsupported representation_type: {representation_type}")
@@ -247,6 +257,7 @@ def main() -> None:
         hm_repo_dir=args.hm_repo_dir,
         hm_repo_url=args.hm_repo_url,
         hm_conda_env=args.hm_conda_env,
+        hm_use_conda_env=args.hm_use_conda_env,
         force=args.force,
     )
 
@@ -268,6 +279,7 @@ def main() -> None:
             hm_repo_dir=args.hm_repo_dir,
             hm_repo_url=args.hm_repo_url,
             hm_conda_env=args.hm_conda_env,
+            hm_use_conda_env=args.hm_use_conda_env,
             force=False,
         )
 

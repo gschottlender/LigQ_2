@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
 import os
+import sys
 import subprocess
 import importlib
 import multiprocessing as mp
@@ -795,8 +796,13 @@ def ensure_huggingmolecules_installed(
     repo_dir: str | Path = ".external/huggingmolecules",
     repo_url: str = "https://github.com/gmum/huggingmolecules",
     conda_env: str = "huggingmolecules",
+    use_conda_env: bool = False,
 ) -> None:
-    """Clone and install huggingmolecules in editable mode if needed."""
+    """Clone and install huggingmolecules in editable mode if needed.
+
+    Default behavior installs into the *current* Python environment.
+    Set use_conda_env=True to force `conda activate <conda_env>` first.
+    """
     repo_dir = Path(repo_dir)
 
     try:
@@ -812,15 +818,23 @@ def ensure_huggingmolecules_installed(
             check=True,
         )
 
-    install_cmd = (
-        "set -e; "
-        "if command -v conda >/dev/null 2>&1; then "
-        "eval \"$(conda shell.bash hook)\"; "
-        f"conda activate {conda_env}; "
-        "fi; "
-        "pip install -e ./src"
-    )
-    subprocess.run(["bash", "-lc", install_cmd], cwd=str(repo_dir), check=True)
+    if use_conda_env:
+        install_cmd = (
+            "set -e; "
+            "if ! command -v conda >/dev/null 2>&1; then "
+            "echo 'conda was not found in PATH.' >&2; exit 1; "
+            "fi; "
+            "eval \"$(conda shell.bash hook)\"; "
+            f"conda activate {conda_env}; "
+            "python -m pip install -e ./src"
+        )
+        subprocess.run(["bash", "-lc", install_cmd], cwd=str(repo_dir), check=True)
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", "./src"],
+            cwd=str(repo_dir),
+            check=True,
+        )
 
 
 def _to_numpy_feature_blocks(batch_encoding: object) -> list[np.ndarray]:
@@ -879,6 +893,7 @@ def build_huggingmolecules_representation(
     hm_repo_dir: str | Path = ".external/huggingmolecules",
     hm_repo_url: str = "https://github.com/gmum/huggingmolecules",
     hm_conda_env: str = "huggingmolecules",
+    hm_use_conda_env: bool = False,
 ) -> None:
     """Build featurizer-based vectors from huggingmolecules and store as float16 memmap."""
     root = Path(root)
@@ -890,6 +905,7 @@ def build_huggingmolecules_representation(
             repo_dir=hm_repo_dir,
             repo_url=hm_repo_url,
             conda_env=hm_conda_env,
+            use_conda_env=hm_use_conda_env,
         )
 
     ligs = pd.read_parquet(root / "ligands.parquet", columns=["smiles"])

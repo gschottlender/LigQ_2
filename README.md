@@ -207,9 +207,9 @@ in the local `pdb_chembl` base when needed.
 
 2. **HuggingMolecules featurizers** (`--representation-type huggingmolecules`)
    - Supports `--huggingmolecules-model-family rmat` and `--huggingmolecules-model-family grover`.
-   - On demand, the script clones and installs `https://github.com/gmum/huggingmolecules` using:
-     - `conda activate huggingmolecules`
-     - `pip install -e ./src`
+   - On demand, the script clones `https://github.com/gmum/huggingmolecules` and installs it in the **current environment** using:
+     - `python -m pip install -e ./src`
+   - If you explicitly want conda activation, use `--hm-use-conda-env --hm-conda-env <env_name>`.
    - Output vectors are stored with the same protocol and format as other dense representations (`.dat` float16 memmap + `.meta.json`).
 
 3. **RDKit fingerprints** (`--representation-type rdkit`)
