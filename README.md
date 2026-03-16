@@ -205,13 +205,20 @@ in the local `pdb_chembl` base when needed.
    - Example default: `seyonec/ChemBERTa-zinc-base-v1`
    - Output vectors stored as dense embeddings (float16 memmap).
 
-2. **RDKit fingerprints** (`--representation-type rdkit`)
+2. **HuggingMolecules featurizers** (`--representation-type huggingmolecules`)
+   - Supports `--huggingmolecules-model-family rmat` and `--huggingmolecules-model-family grover`.
+   - On demand, the script clones and installs `https://github.com/gmum/huggingmolecules` using:
+     - `conda activate huggingmolecules`
+     - `pip install -e ./src`
+   - Output vectors are stored with the same protocol and format as other dense representations (`.dat` float16 memmap + `.meta.json`).
+
+3. **RDKit fingerprints** (`--representation-type rdkit`)
    - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind rdkit`: **RDKit/Daylight-like** fingerprint (bit vector).
    - `--rdkit-fp-kind maccs`: **MACCS keys** fingerprint (fixed 167 bits).
 
-3. **Morgan fingerprints**
+4. **Morgan fingerprints**
    - Already available in the database build pipeline as `morgan_1024_r2`
      (used by default for ZINC similarity search in `run_ligq_2.py`).
 
@@ -234,6 +241,28 @@ Parallelism controls:
 - `--chunksize` (chunk size for worker scheduling)
 
 ### Example commands
+
+Build a HuggingMolecules R-MAT representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --huggingmolecules-model-family rmat \
+  --rep-name huggingmolecules_rmat
+```
+
+Build a HuggingMolecules GROVER representation:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingmolecules \
+  --huggingmolecules-model-family grover \
+  --rep-name huggingmolecules_grover
+```
 
 Build an Atom Pair representation:
 

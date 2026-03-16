@@ -14,6 +14,7 @@ from typing import Optional
 
 from compound_processing.compound_helpers import (
     build_huggingface_representation,
+    build_huggingmolecules_representation,
     build_rdkit_representation,
 )
 
@@ -55,8 +56,33 @@ def parse_args() -> argparse.Namespace:
         "--representation-type",
         type=str,
         default="huggingface",
-        choices=["huggingface", "rdkit"],
+        choices=["huggingface", "rdkit", "huggingmolecules"],
         help="Type of representation to build.",
+    )
+    parser.add_argument(
+        "--huggingmolecules-model-family",
+        type=str,
+        default="rmat",
+        choices=["rmat", "grover"],
+        help="HuggingMolecules featurizer family (for --representation-type=huggingmolecules).",
+    )
+    parser.add_argument(
+        "--hm-repo-dir",
+        type=str,
+        default=".external/huggingmolecules",
+        help="Directory where huggingmolecules repository will be cloned/installed.",
+    )
+    parser.add_argument(
+        "--hm-repo-url",
+        type=str,
+        default="https://github.com/gmum/huggingmolecules",
+        help="Git URL for huggingmolecules repository.",
+    )
+    parser.add_argument(
+        "--hm-conda-env",
+        type=str,
+        default="huggingmolecules",
+        help="Conda environment name used for huggingmolecules installation.",
     )
     parser.add_argument(
         "--rdkit-fp-kind",
@@ -145,6 +171,10 @@ def build_representation_if_needed(
     rdkit_fp_kind: str,
     n_jobs: Optional[int],
     chunksize: int,
+    huggingmolecules_model_family: str,
+    hm_repo_dir: str,
+    hm_repo_url: str,
+    hm_conda_env: str,
     force: bool,
 ) -> None:
     ensure_ligands_exist(root)
@@ -176,6 +206,17 @@ def build_representation_if_needed(
             n_jobs=n_jobs,
             chunksize=chunksize,
         )
+    elif representation_type == "huggingmolecules":
+        build_huggingmolecules_representation(
+            root=root,
+            model_family=huggingmolecules_model_family,
+            name=rep_name,
+            n_bits=n_bits,
+            batch_size=batch_size,
+            hm_repo_dir=hm_repo_dir,
+            hm_repo_url=hm_repo_url,
+            hm_conda_env=hm_conda_env,
+        )
     else:
         raise ValueError(f"Unsupported representation_type: {representation_type}")
 
@@ -202,6 +243,10 @@ def main() -> None:
         rdkit_fp_kind=args.rdkit_fp_kind,
         n_jobs=args.n_jobs,
         chunksize=args.chunksize,
+        huggingmolecules_model_family=args.huggingmolecules_model_family,
+        hm_repo_dir=args.hm_repo_dir,
+        hm_repo_url=args.hm_repo_url,
+        hm_conda_env=args.hm_conda_env,
         force=args.force,
     )
 
@@ -219,6 +264,10 @@ def main() -> None:
             rdkit_fp_kind=args.rdkit_fp_kind,
             n_jobs=args.n_jobs,
             chunksize=args.chunksize,
+            huggingmolecules_model_family=args.huggingmolecules_model_family,
+            hm_repo_dir=args.hm_repo_dir,
+            hm_repo_url=args.hm_repo_url,
+            hm_conda_env=args.hm_conda_env,
             force=False,
         )
 
