@@ -143,10 +143,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hm-repo-subdir",
         type=str,
-        default="",
+        default="src",
         help=(
-            "Optional subdirectory inside cloned repo containing setup.py/pyproject.toml. "
-            "Useful when repository root is not directly pip-installable."
+            "Subdirectory inside cloned repo containing setup.py/pyproject.toml. "
+            "Default: src (as documented by HuggingMolecules)."
         ),
     )
     parser.add_argument(

@@ -62,6 +62,11 @@ def _detect_install_dir(repo_dir: Path, repo_subdir: Optional[str]) -> Path:
     if _is_python_project(repo_dir):
         return repo_dir
 
+    # HuggingMolecules upstream commonly keeps Python package files under ./src
+    src_dir = repo_dir / "src"
+    if src_dir.is_dir() and _is_python_project(src_dir):
+        return src_dir
+
     level1 = [p for p in repo_dir.iterdir() if p.is_dir()]
     for p in level1:
         if _is_python_project(p):
@@ -74,8 +79,19 @@ def _detect_install_dir(repo_dir: Path, repo_subdir: Optional[str]) -> Path:
 
     raise RuntimeError(
         "Could not find an installable Python project in cloned HuggingMolecules repository. "
-        "Pass --hm-repo-subdir pointing to the folder containing setup.py or pyproject.toml."
+        "Pass --hm-repo-subdir (default is 'src') pointing to the folder containing setup.py or pyproject.toml."
     )
+
+
+
+
+def _try_clean_huggingmolecules_cache(py_bin: Path) -> None:
+    """Best-effort cache cleanup to avoid stale config/weights incompatibilities."""
+    try:
+        subprocess.run([str(py_bin), "-m", "src.clean_cache", "--all"], check=False)
+    except Exception:
+        # Intentionally ignore: cache cleaner module may not exist for all refs/layouts.
+        pass
 
 
 def ensure_huggingmolecules_microenv(
@@ -120,6 +136,7 @@ def ensure_huggingmolecules_microenv(
         _clone_repo(hm_repo_url, hm_repo_ref, repo_dir)
         install_dir = _detect_install_dir(repo_dir, hm_repo_subdir)
         _run([str(py), "-m", "pip", "install", str(install_dir)])
+        _try_clean_huggingmolecules_cache(py)
 
         with stamp_path.open("w") as f:
             json.dump(expected, f, indent=2)

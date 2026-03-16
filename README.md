@@ -322,7 +322,8 @@ python add_new_representation.py \
 ```
 
 If the repository root is not directly installable (no `setup.py` / `pyproject.toml`),
-set the install folder explicitly with `--hm-repo-subdir`:
+by default LigQ_2 installs from `src/` (following HuggingMolecules docs).
+If your fork uses a different layout, set `--hm-repo-subdir` explicitly:
 
 ```bash
 python add_new_representation.py \
@@ -331,7 +332,7 @@ python add_new_representation.py \
   --representation-type huggingmolecules \
   --hm-model-type grover \
   --hm-model-id grover_base \
-  --hm-repo-subdir <relative/path/inside/repo> \
+  --hm-repo-subdir src \
   --rep-name grover_base
 ```
 
