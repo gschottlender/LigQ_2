@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 
 import os
+import sys
+import site
+import subprocess
+import importlib
+import inspect
 import multiprocessing as mp
 import json
 import time
@@ -786,6 +791,357 @@ def build_huggingface_representation(
     }
     meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def ensure_huggingmolecules_installed(
+    repo_dir: str | Path = ".external/huggingmolecules",
+    repo_url: str = "https://github.com/gmum/huggingmolecules",
+    conda_env: str = "huggingmolecules",
+    use_conda_env: bool = False,
+) -> None:
+    """Clone and install huggingmolecules in editable mode if needed.
+
+    Default behavior installs into the *current* Python environment.
+    Set use_conda_env=True to force `conda activate <conda_env>` first.
+    """
+    repo_dir = Path(repo_dir)
+
+    try:
+        importlib.import_module("huggingmolecules")
+        return
+    except Exception:
+        pass
+
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    if not repo_dir.exists():
+        subprocess.run(
+            ["git", "clone", repo_url, str(repo_dir)],
+            check=True,
+        )
+
+    if use_conda_env:
+        install_cmd = (
+            "set -e; "
+            "if ! command -v conda >/dev/null 2>&1; then "
+            "echo 'conda was not found in PATH.' >&2; exit 1; "
+            "fi; "
+            "eval \"$(conda shell.bash hook)\"; "
+            f"conda activate {conda_env}; "
+            "python -m pip install -e ./src"
+        )
+        subprocess.run(["bash", "-lc", install_cmd], cwd=str(repo_dir), check=True)
+    else:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", "./src"],
+            cwd=str(repo_dir),
+            check=True,
+        )
+
+    # Editable installs typically rely on .pth processing at interpreter startup.
+    # Since we install and import in the same running process, make module resolution
+    # robust by refreshing caches and adding local src path for this process if needed.
+    importlib.invalidate_caches()
+    hm_src = str((repo_dir / "src").resolve())
+    try:
+        importlib.import_module("huggingmolecules")
+    except ModuleNotFoundError:
+        site.addsitedir(hm_src)
+        if hm_src not in sys.path:
+            sys.path.insert(0, hm_src)
+        importlib.invalidate_caches()
+        importlib.import_module("huggingmolecules")
+
+
+def _to_numpy_feature_blocks(batch_encoding: object) -> list[np.ndarray]:
+    """Extract fixed-size feature blocks with batch as first axis."""
+    features: list[np.ndarray] = []
+
+    items = []
+    if hasattr(batch_encoding, "items"):
+        try:
+            items = list(batch_encoding.items())
+        except Exception:
+            items = []
+    if not items and hasattr(batch_encoding, "__dict__"):
+        items = list(batch_encoding.__dict__.items())
+
+    for _, value in items:
+        if not isinstance(value, torch.Tensor):
+            continue
+        arr = value.detach().cpu().numpy()
+        if arr.ndim == 3:
+            # (B, N, F) -> mean over tokens/atoms
+            features.append(arr.mean(axis=1))
+        elif arr.ndim == 2:
+            features.append(arr)
+        elif arr.ndim == 4 and arr.shape[1] == arr.shape[2]:
+            # (B, N, N, F) -> mean over graph axes
+            features.append(arr.mean(axis=(1, 2)))
+        elif arr.ndim == 3 and arr.shape[1] == arr.shape[2]:
+            # (B, N, N) -> graph statistic
+            features.append(arr.mean(axis=(1, 2), keepdims=True))
+
+    if not features:
+        raise RuntimeError("Could not extract tensor blocks from huggingmolecules featurizer output.")
+    return features
+
+
+def _is_valid_smiles(smiles: str) -> bool:
+    """Return True if RDKit can parse the SMILES into a molecule."""
+    if smiles is None:
+        return False
+    smi = str(smiles).strip()
+    if not smi:
+        return False
+    return Chem.MolFromSmiles(smi) is not None
+
+
+def _compute_valid_smiles_mask(
+    smiles_all: list[str],
+    n_jobs: Optional[int] = None,
+    chunksize: int = 1000,
+) -> np.ndarray:
+    """Compute validity mask once, optionally in parallel."""
+    n = len(smiles_all)
+    if n == 0:
+        return np.zeros((0,), dtype=bool)
+
+    cpu_avail = os.cpu_count() or 1
+    if n_jobs is None:
+        n_jobs = cpu_avail
+    else:
+        n_jobs = max(1, min(int(n_jobs), cpu_avail))
+
+    if n_jobs == 1:
+        return np.array([_is_valid_smiles(s) for s in smiles_all], dtype=bool)
+
+    ctx = mp.get_context("fork")
+    with ctx.Pool(processes=n_jobs) as pool:
+        flags = list(pool.imap(_is_valid_smiles, smiles_all, chunksize=chunksize))
+    return np.asarray(flags, dtype=bool)
+
+
+def _safe_to_float16(arr: np.ndarray) -> np.ndarray:
+    """Safely convert arrays to float16 avoiding overflow warnings.
+
+    HuggingMolecules features may include large sentinel values (e.g. in distance
+    matrices). We clip to float16 representable range and sanitize inf/nan before
+    casting to keep the representation pipeline robust.
+    """
+    arr32 = np.asarray(arr, dtype=np.float32)
+    finfo = np.finfo(np.float16)
+    arr32 = np.nan_to_num(arr32, nan=0.0, posinf=finfo.max, neginf=finfo.min)
+    arr32 = np.clip(arr32, finfo.min, finfo.max)
+    return arr32.astype(np.float16, copy=False)
+
+
+def _build_huggingmolecules_featurizer(model_family: str):
+    model_family = model_family.lower().replace("-", "")
+
+    if model_family in {"rmat", "r_mat"}:
+        module_name = "huggingmolecules.featurization.featurization_mat"
+        class_candidates = ("MatFeaturizer", "RMatFeaturizer")
+    elif model_family == "grover":
+        module_name = "huggingmolecules.featurization.featurization_grover"
+        class_candidates = ("GroverFeaturizer",)
+    else:
+        raise ValueError("model_family must be one of: grover, rmat")
+
+    module = importlib.import_module(module_name)
+
+    def _build_default_config() -> object | None:
+        """Try to construct a default config object for featurizers requiring it."""
+        cfg_module_names = [
+            f"huggingmolecules.configuration.configuration_{'mat' if model_family in {'rmat','r_mat'} else 'grover'}"
+        ]
+        # Some versions expose config classes in the same featurization module.
+        cfg_module_names.append(module_name)
+
+        class_candidates = (
+            ("MatConfig", "RMatConfig")
+            if model_family in {"rmat", "r_mat"}
+            else ("GroverConfig",)
+        )
+
+        for cfg_mod_name in cfg_module_names:
+            try:
+                cfg_mod = importlib.import_module(cfg_mod_name)
+            except Exception:
+                continue
+            for cfg_class_name in class_candidates:
+                cfg_cls = getattr(cfg_mod, cfg_class_name, None)
+                if cfg_cls is None:
+                    continue
+                try:
+                    return cfg_cls()
+                except TypeError:
+                    # Constructor may require args in some versions.
+                    continue
+                except Exception:
+                    continue
+        return None
+
+    for class_name in class_candidates:
+        cls = getattr(module, class_name, None)
+        if cls is not None:
+            try:
+                return cls()
+            except TypeError as exc:
+                # Some versions require `config` in constructor.
+                sig = inspect.signature(cls)
+                has_required_config = False
+                for pname, p in sig.parameters.items():
+                    if pname == "self":
+                        continue
+                    if pname == "config" and p.default is inspect._empty:
+                        has_required_config = True
+                        break
+                if not has_required_config:
+                    raise
+
+                cfg = _build_default_config()
+                if cfg is None:
+                    raise RuntimeError(
+                        f"{class_name} requires a `config`, but no default config class could "
+                        f"be instantiated for model_family='{model_family}'."
+                    ) from exc
+                return cls(cfg)
+
+    available = [name for name in dir(module) if name.endswith("Featurizer")]
+    raise AttributeError(
+        f"No supported featurizer class found in {module_name}. "
+        f"Tried={class_candidates}, available={available}"
+    )
+
+
+def build_huggingmolecules_representation(
+    root: str | Path,
+    *,
+    model_family: str,
+    name: str,
+    n_bits: Optional[int] = None,
+    batch_size: int = 64,
+    ensure_install: bool = True,
+    hm_repo_dir: str | Path = ".external/huggingmolecules",
+    hm_repo_url: str = "https://github.com/gmum/huggingmolecules",
+    hm_conda_env: str = "huggingmolecules",
+    hm_use_conda_env: bool = False,
+    hm_validation_n_jobs: Optional[int] = None,
+) -> None:
+    """Build featurizer-based vectors from huggingmolecules and store as float16 memmap."""
+    root = Path(root)
+    reps_dir = root / "reps"
+    reps_dir.mkdir(exist_ok=True, parents=True)
+
+    if ensure_install:
+        ensure_huggingmolecules_installed(
+            repo_dir=hm_repo_dir,
+            repo_url=hm_repo_url,
+            conda_env=hm_conda_env,
+            use_conda_env=hm_use_conda_env,
+        )
+
+    ligs = pd.read_parquet(root / "ligands.parquet", columns=["smiles"])
+    smiles_all = ligs["smiles"].fillna("").astype(str).tolist()
+    n = len(smiles_all)
+    if n == 0:
+        raise ValueError("ligands.parquet is empty, nothing to process.")
+
+    valid_mask = _compute_valid_smiles_mask(
+        smiles_all,
+        n_jobs=hm_validation_n_jobs,
+        chunksize=1000,
+    )
+    valid_global_indices = np.flatnonzero(valid_mask)
+
+    featurizer = _build_huggingmolecules_featurizer(model_family)
+
+    # Infer output dim from first parsable+encodable smiles.
+    sample_blocks = None
+    for idx in valid_global_indices:
+        s = smiles_all[int(idx)]
+        try:
+            sample_blocks = _to_numpy_feature_blocks(featurizer([s]))
+            break
+        except Exception:
+            continue
+
+    if sample_blocks is None:
+        raise ValueError(
+            "Could not featurize any valid SMILES from ligands.parquet. "
+            "Check input SMILES quality/format for huggingmolecules featurizers."
+        )
+
+    inferred_dim = int(sum(block.shape[1] for block in sample_blocks))
+    if n_bits is not None and int(n_bits) != inferred_dim:
+        raise ValueError(
+            f"n_bits={n_bits} does not match inferred huggingmolecules dim={inferred_dim}."
+        )
+    dim = inferred_dim
+
+    mm = np.memmap(
+        reps_dir / f"{name}.dat",
+        mode="w+",
+        dtype=np.float16,
+        shape=(n, dim),
+    )
+
+    invalid_smiles = int(n - valid_global_indices.size)
+    encode_failures = 0
+    t0 = time.perf_counter()
+
+    total_batches = (n + batch_size - 1) // batch_size
+    for start in tqdm(
+        range(0, n, batch_size),
+        total=total_batches,
+        desc=f"[{root.name}] Building '{name}'",
+        unit="batch",
+        dynamic_ncols=True,
+        bar_format=_TQDM_BAR_FORMAT,
+    ):
+        end = min(start + batch_size, n)
+        out = np.zeros((end - start, dim), dtype=np.float16)
+
+        # Reuse global validity mask to avoid repeated RDKit parsing per batch.
+        local_valid_mask = valid_mask[start:end]
+        valid_idx = np.flatnonzero(local_valid_mask)
+        valid_smiles = [smiles_all[start + int(i)] for i in valid_idx]
+
+        if valid_smiles:
+            try:
+                blocks = _to_numpy_feature_blocks(featurizer(valid_smiles))
+                emb = _safe_to_float16(np.concatenate(blocks, axis=1))
+                out[valid_idx] = emb
+            except Exception:
+                for i, smi in zip(valid_idx, valid_smiles):
+                    try:
+                        one = _to_numpy_feature_blocks(featurizer([smi]))
+                        out[int(i)] = _safe_to_float16(np.concatenate(one, axis=1))[0]
+                    except Exception:
+                        encode_failures += 1
+
+        mm[start:end, :] = out
+
+    mm.flush()
+    elapsed_s = float(time.perf_counter() - t0)
+    meta = {
+        "name": name,
+        "file": f"{name}.dat",
+        "dtype": "float16",
+        "dim": int(dim),
+        "packed_bits": False,
+        "packed_dim": None,
+        "n_ligands": int(n),
+        "feature_source": "huggingmolecules",
+        "hm_model_family": model_family,
+        "elapsed_seconds": elapsed_s,
+        "ligands_per_second": float(n / elapsed_s) if elapsed_s > 0 else 0.0,
+        "invalid_smiles": int(invalid_smiles),
+        "encode_failures": int(encode_failures),
+        "validation_n_jobs": None if hm_validation_n_jobs is None else int(hm_validation_n_jobs),
+    }
+    with (reps_dir / f"{name}.meta.json").open("w") as f:
         json.dump(meta, f, indent=2)
 
 
