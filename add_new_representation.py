@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from compound_processing.compound_helpers import (
+    build_huggingmolecules_representation,
     build_huggingface_representation,
     build_rdkit_representation,
 )
@@ -55,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--representation-type",
         type=str,
         default="huggingface",
-        choices=["huggingface", "rdkit"],
+        choices=["huggingface", "rdkit", "huggingmolecules"],
         help="Type of representation to build.",
     )
     parser.add_argument(
@@ -109,6 +110,42 @@ def parse_args() -> argparse.Namespace:
         help="Pooling strategy for HuggingFace representation.",
     )
     parser.add_argument(
+        "--hm-model-type",
+        type=str,
+        default="grover",
+        choices=["grover", "rmat"],
+        help="HuggingMolecules model family when --representation-type=huggingmolecules.",
+    )
+    parser.add_argument(
+        "--hm-model-id",
+        type=str,
+        default="grover_base",
+        help="HuggingMolecules model identifier/checkpoint.",
+    )
+    parser.add_argument(
+        "--hm-env-dir",
+        type=str,
+        default=".microenvs/huggingmolecules",
+        help="Reusable local micro-environment directory for HuggingMolecules.",
+    )
+    parser.add_argument(
+        "--hm-repo-url",
+        type=str,
+        default="https://github.com/gmum/huggingmolecules.git",
+        help="Git URL used to install HuggingMolecules into the micro-environment.",
+    )
+    parser.add_argument(
+        "--hm-repo-ref",
+        type=str,
+        default="",
+        help="Optional git ref (branch/tag/commit) appended as @<ref> during installation.",
+    )
+    parser.add_argument(
+        "--hm-force-install",
+        action="store_true",
+        help="Force reinstall dependencies inside the HuggingMolecules micro-environment.",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Rebuild even if the representation already exists.",
@@ -142,6 +179,12 @@ def build_representation_if_needed(
     batch_size: int,
     max_length: Optional[int],
     pooling: str,
+    hm_model_type: str,
+    hm_model_id: str,
+    hm_env_dir: str,
+    hm_repo_url: str,
+    hm_repo_ref: str,
+    hm_force_install: bool,
     rdkit_fp_kind: str,
     n_jobs: Optional[int],
     chunksize: int,
@@ -176,6 +219,20 @@ def build_representation_if_needed(
             n_jobs=n_jobs,
             chunksize=chunksize,
         )
+    elif representation_type == "huggingmolecules":
+        build_huggingmolecules_representation(
+            root=root,
+            n_bits=n_bits,
+            batch_size=batch_size,
+            name=rep_name,
+            model_type=hm_model_type,
+            model_id=hm_model_id,
+            max_length=max_length,
+            microenv_dir=Path(hm_env_dir),
+            hm_repo_url=hm_repo_url,
+            hm_repo_ref=hm_repo_ref or None,
+            force_install=hm_force_install,
+        )
     else:
         raise ValueError(f"Unsupported representation_type: {representation_type}")
 
@@ -199,6 +256,12 @@ def main() -> None:
         batch_size=args.batch_size,
         max_length=args.max_length,
         pooling=args.pooling,
+        hm_model_type=args.hm_model_type,
+        hm_model_id=args.hm_model_id,
+        hm_env_dir=args.hm_env_dir,
+        hm_repo_url=args.hm_repo_url,
+        hm_repo_ref=args.hm_repo_ref,
+        hm_force_install=args.hm_force_install,
         rdkit_fp_kind=args.rdkit_fp_kind,
         n_jobs=args.n_jobs,
         chunksize=args.chunksize,
@@ -216,6 +279,12 @@ def main() -> None:
             batch_size=args.batch_size,
             max_length=args.max_length,
             pooling=args.pooling,
+            hm_model_type=args.hm_model_type,
+            hm_model_id=args.hm_model_id,
+            hm_env_dir=args.hm_env_dir,
+            hm_repo_url=args.hm_repo_url,
+            hm_repo_ref=args.hm_repo_ref,
+            hm_force_install=False,
             rdkit_fp_kind=args.rdkit_fp_kind,
             n_jobs=args.n_jobs,
             chunksize=args.chunksize,
