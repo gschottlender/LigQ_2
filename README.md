@@ -211,6 +211,7 @@ in the local `pdb_chembl` base when needed.
      - `python -m pip install -e ./src`
    - If you explicitly want conda activation, use `--hm-use-conda-env --hm-conda-env <env_name>`.
    - Output vectors are stored with the same protocol and format as other dense representations (`.dat` float16 memmap + `.meta.json`).
+   - `--n-bits` is optional; if omitted, dimensionality is inferred from the featurizer output.
 
 3. **RDKit fingerprints** (`--representation-type rdkit`)
    - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).

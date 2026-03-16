@@ -108,8 +108,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-bits",
         type=int,
-        default=768,
-        help="Expected embedding dimension (must match model hidden_size).",
+        default=None,
+        help=(
+            "Optional expected embedding dimension. "
+            "For HuggingFace it must match model hidden_size; for HuggingMolecules "
+            "it must match inferred feature dim. Leave unset to auto-infer/validate."
+        ),
     )
     parser.add_argument(
         "--batch-size",
