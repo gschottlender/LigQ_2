@@ -888,13 +888,27 @@ def _to_numpy_feature_blocks(batch_encoding: object) -> list[np.ndarray]:
 
 def _build_huggingmolecules_featurizer(model_family: str):
     model_family = model_family.lower().replace("-", "")
+
     if model_family in {"rmat", "r_mat"}:
-        module = importlib.import_module("huggingmolecules.featurization.featurization_mat")
-        return getattr(module, "RMatFeaturizer")()
-    if model_family == "grover":
-        module = importlib.import_module("huggingmolecules.featurization.featurization_grover")
-        return getattr(module, "GroverFeaturizer")()
-    raise ValueError("model_family must be one of: grover, rmat")
+        module_name = "huggingmolecules.featurization.featurization_mat"
+        class_candidates = ("MatFeaturizer", "RMatFeaturizer")
+    elif model_family == "grover":
+        module_name = "huggingmolecules.featurization.featurization_grover"
+        class_candidates = ("GroverFeaturizer",)
+    else:
+        raise ValueError("model_family must be one of: grover, rmat")
+
+    module = importlib.import_module(module_name)
+    for class_name in class_candidates:
+        cls = getattr(module, class_name, None)
+        if cls is not None:
+            return cls()
+
+    available = [name for name in dir(module) if name.endswith("Featurizer")]
+    raise AttributeError(
+        f"No supported featurizer class found in {module_name}. "
+        f"Tried={class_candidates}, available={available}"
+    )
 
 
 def build_huggingmolecules_representation(
