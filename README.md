@@ -204,8 +204,10 @@ in the local `pdb_chembl` base when needed.
 1. **HuggingFace embeddings** (`--representation-type huggingface`)
    - Example default: `seyonec/ChemBERTa-zinc-base-v1`
    - Output vectors stored as dense embeddings (float16 memmap).
+   - `--n-bits` is optional; when omitted, the model `hidden_size` is used.
 
 2. **RDKit fingerprints** (`--representation-type rdkit`)
+   - `--n-bits` is required.
    - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind rdkit`: **RDKit/Daylight-like** fingerprint (bit vector).

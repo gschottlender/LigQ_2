@@ -74,8 +74,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-bits",
         type=int,
-        default=768,
-        help="Expected embedding dimension (must match model hidden_size).",
+        default=None,
+        help=(
+            "Expected representation dimension. For HuggingFace, defaults to the "
+            "model hidden_size when omitted; if provided, it must match hidden_size. "
+            "For RDKit fingerprints, this is required."
+        ),
     )
     parser.add_argument(
         "--batch-size",
