@@ -205,6 +205,11 @@ in the local `pdb_chembl` base when needed.
    - Example default: `seyonec/ChemBERTa-zinc-base-v1`
    - Output vectors stored as dense embeddings (float16 memmap).
    - `--n-bits` is optional; when omitted, the model `hidden_size` is used.
+   - Some HuggingFace repositories ship **custom Python code** for the tokenizer,
+     config, or model classes. In those cases you must add
+     `--trust-remote-code` so `transformers` can load the repository correctly.
+   - If you want reproducible loading of a remote-code model, you can also pin
+     a specific repository revision with `--revision <commit-or-tag>`.
 
 2. **RDKit fingerprints** (`--representation-type rdkit`)
    - `--n-bits` is required.
@@ -299,6 +304,25 @@ python add_new_representation.py \
   --n-bits 768 \
   --batch-size 14
 ```
+
+Build a HuggingFace representation from a repository that requires custom code
+(e.g. MoLFormer):
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base zinc \
+  --representation-type huggingface \
+  --rep-name ibm-MolFormer \
+  --model-id ibm-research/MoLFormer-XL-both-10pct \
+  --batch-size 14 \
+  --trust-remote-code
+```
+
+If you see a HuggingFace error saying the repository contains custom code that
+must be executed locally, rerun the command with `--trust-remote-code`. For
+extra reproducibility, add `--revision <commit-or-tag>` to pin the exact model
+revision being loaded.
 
 ---
 
