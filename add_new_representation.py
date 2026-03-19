@@ -113,6 +113,24 @@ def parse_args() -> argparse.Namespace:
         help="Pooling strategy for HuggingFace representation.",
     )
     parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow HuggingFace to execute custom code from the model repository "
+            "when loading tokenizer/model. Required for some models such as "
+            "ibm-research/MoLFormer-XL-both-10pct."
+        ),
+    )
+    parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        help=(
+            "Optional HuggingFace model revision/commit to pin when loading the "
+            "representation model."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Rebuild even if the representation already exists.",
@@ -150,6 +168,8 @@ def build_representation_if_needed(
     n_jobs: Optional[int],
     chunksize: int,
     force: bool,
+    trust_remote_code: bool,
+    revision: Optional[str],
 ) -> None:
     ensure_ligands_exist(root)
 
@@ -167,6 +187,8 @@ def build_representation_if_needed(
             model_id=model_id,
             max_length=max_length,
             pooling=pooling,
+            trust_remote_code=trust_remote_code,
+            revision=revision,
         )
     elif representation_type == "rdkit":
         if n_bits is None:
@@ -207,6 +229,8 @@ def main() -> None:
         n_jobs=args.n_jobs,
         chunksize=args.chunksize,
         force=args.force,
+        trust_remote_code=args.trust_remote_code,
+        revision=args.revision,
     )
 
     # 2) Ensure same representation exists in local base
@@ -224,6 +248,8 @@ def main() -> None:
             n_jobs=args.n_jobs,
             chunksize=args.chunksize,
             force=False,
+            trust_remote_code=args.trust_remote_code,
+            revision=args.revision,
         )
 
 

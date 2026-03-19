@@ -621,6 +621,8 @@ def build_huggingface_representation(
     model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
     max_length: Optional[int] = None,
     pooling: str = "mean_attention_mask",
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
 ) -> None:
     root = Path(root)
     reps_dir = root / "reps"
@@ -638,10 +640,16 @@ def build_huggingface_representation(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    pretrained_kwargs = {
+        "trust_remote_code": trust_remote_code,
+    }
+    if revision is not None:
+        pretrained_kwargs["revision"] = revision
+
     if tokenizer is None:
-        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **pretrained_kwargs)
     if model is None:
-        model = AutoModel.from_pretrained(model_id).to(device)
+        model = AutoModel.from_pretrained(model_id, **pretrained_kwargs).to(device)
         model.eval()
     else:
         # ensure eval + device
@@ -778,6 +786,8 @@ def build_huggingface_representation(
         "model_id": model_id,
         "pooling": pooling,
         "max_length": max_length,
+        "trust_remote_code": bool(trust_remote_code),
+        "revision": revision,
         "elapsed_seconds": elapsed_s,
         "ligands_per_second": ligands_per_s,
         "invalid_smiles": int(invalid_smiles),
@@ -799,6 +809,8 @@ def build_chemberta_representation(
     device: Optional[torch.device] = None,
     model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
     max_length: Optional[int] = None,
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
 ) -> None:
     """Backward-compatible wrapper for the old API name."""
     build_huggingface_representation(
@@ -811,6 +823,8 @@ def build_chemberta_representation(
         device=device,
         model_id=model_id,
         max_length=max_length,
+        trust_remote_code=trust_remote_code,
+        revision=revision,
     )
 
 # ---------------------------------------------------------------------------
