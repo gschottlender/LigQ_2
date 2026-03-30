@@ -70,6 +70,10 @@ python run_ligq_2.py \
   --output-dir results
 ```
 
+- By default, candidate-protein search uses:
+  - strict `sequence` BLAST matches
+  - `nearest_k` BLAST matches (`K=5`) excluding proteins already found by `sequence`
+- Domain-based search is optional (enable with `--domains`).
 - Ligands are **collapsed per query** (one row per ligand ID).
 - If a ligand is found by both sequence and domain searches, the
   sequence-based hit is prioritized.
@@ -97,7 +101,23 @@ python run_ligq_2.py \
 
 ---
 
-### 3) Increase sequence diversity (lower identity threshold)
+### 3) Search method flags
+
+Control candidate-protein methods explicitly:
+
+- `--sequence`: enable strict sequence-based BLAST method.
+- `--nearest_k`: enable nearest-K BLAST method.
+- `--nearest-k`: set K for nearest-K method (default: `5`).
+- `--domains`: enable Pfam/HMMER domain method.
+
+If no method flags are provided, LigQ_2 defaults to:
+- `--sequence` ON
+- `--nearest_k` ON (`--nearest-k 5`)
+- `--domains` OFF
+
+---
+
+### 4) Increase sequence diversity (lower identity threshold)
 
 Run LigQ_2 with a **lower minimum sequence identity** to retrieve a more
 diverse set of candidate proteins from sequence-based searches:
@@ -115,7 +135,7 @@ python run_ligq_2.py \
 
 ---
 
-### 4) Combine both options
+### 5) Combine both options
 
 Retrieve diverse sequence hits **and** keep all repeated ligands:
 
@@ -140,9 +160,9 @@ This is the primary user-facing entry point.
 
 1. Ensure base data (sequences and results_databases)
 2. Prepare complementary databases (Pfam, BLAST)
-3. Run BLAST (sequence-based search)
-4. Run HMMER (domain-based search)
-5. Combine candidate proteins
+3. Run BLAST (sequence and nearest-K candidate search)
+4. Optionally run HMMER (domain-based search)
+5. Combine candidate proteins (sequence / nearest_k / domain)
 6. Ensure/refresh known binding table (PDB + ChEMBL)
 7. Run **on-demand** ZINC search for missing candidate proteins only
 8. Reuse local cache for proteins already processed with the same method
