@@ -533,7 +533,6 @@ def build_nearest_k_candidates_from_blast(
     temp_results_dir: str | Path = "temp_results",
     df_candidates_seq: pd.DataFrame | None = None,
     nearest_k: int = 5,
-    evalue_max_soft: float | None = 1e-2,
     save_candidates: bool = True,
 ) -> pd.DataFrame:
     """
@@ -542,13 +541,15 @@ def build_nearest_k_candidates_from_blast(
     Rules
     -----
     - Uses `blast_sequence_search.tsv` written by `run_blast_sequence_search`.
+    - Applies nearest-k relevance filters:
+        1) pident >= 30%
+        2) evalue <= 1e-5
+        3) query coverage >= 50%
     - Ranks hits by:
         1) bitscore descending
         2) evalue ascending
     - Excludes (qseqid, sseqid) already present in `df_candidates_seq`.
     - Keeps up to `nearest_k` proteins per query.
-    - Optionally applies a soft e-value filter if `evalue_max_soft` is set.
-      The default is permissive but helps avoid unrelated proteins.
 
     Returns
     -------
@@ -591,16 +592,29 @@ def build_nearest_k_candidates_from_blast(
     if df.empty:
         nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     else:
+        # Apply nearest-k quality filters
+        df["qcov"] = df["length"] / df["qlen"]
+        df["pident_frac"] = df["pident"] / 100.0
+        df = df[
+            (df["pident_frac"] >= 0.30)
+            & (df["evalue"] <= 1e-5)
+            & (df["qcov"] >= 0.50)
+        ].copy()
+
+        if df.empty:
+            nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+            if save_candidates:
+                nearest_path = temp_results_dir / "candidate_proteins_nearest_k.tsv"
+                nearest.to_csv(nearest_path, sep="\t", index=False)
+                print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
+            return nearest
+
         # Keep one best row per (qseqid, sseqid)
         df = (
             df.sort_values(by=["qseqid", "sseqid", "bitscore", "evalue"], ascending=[True, True, False, True])
             .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
             .reset_index(drop=True)
         )
-
-        # Optional very soft e-value filter
-        if evalue_max_soft is not None:
-            df = df[df["evalue"] <= float(evalue_max_soft)].copy()
 
         # Exclude sequence-assigned proteins
         if df_candidates_seq is None:

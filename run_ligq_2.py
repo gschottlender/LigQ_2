@@ -120,15 +120,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-hits", type=int, default=150)
     parser.add_argument("--hmmer-evalue-max", type=float, default=1e-5)
     parser.add_argument("--nearest-k", dest="nearest_k_count", type=int, default=5)
-    parser.add_argument(
-        "--nearest-k-evalue-max-soft",
-        type=float,
-        default=1e-2,
-        help=(
-            "Soft e-value cutoff for nearest_k BLAST hits. "
-            "Lower values enforce stronger evolutionary relatedness."
-        ),
-    )
 
     parser.add_argument("--sequence", dest="use_sequence_flag", action="store_true")
     parser.add_argument("--nearest_k", dest="use_nearest_k_flag", action="store_true")
@@ -212,7 +203,6 @@ def main() -> None:
             temp_results_dir=temp_results_dir,
             df_candidates_seq=df_candidates_seq,
             nearest_k=args.nearest_k_count,
-            evalue_max_soft=args.nearest_k_evalue_max_soft,
             save_candidates=True,
         )
 
