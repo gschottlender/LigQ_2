@@ -533,7 +533,7 @@ def build_nearest_k_candidates_from_blast(
     temp_results_dir: str | Path = "temp_results",
     df_candidates_seq: pd.DataFrame | None = None,
     nearest_k: int = 5,
-    evalue_max_soft: float | None = 10.0,
+    evalue_max_soft: float | None = 1e-2,
     save_candidates: bool = True,
 ) -> pd.DataFrame:
     """
@@ -547,7 +547,8 @@ def build_nearest_k_candidates_from_blast(
         2) evalue ascending
     - Excludes (qseqid, sseqid) already present in `df_candidates_seq`.
     - Keeps up to `nearest_k` proteins per query.
-    - Optionally applies a very soft e-value filter if `evalue_max_soft` is set.
+    - Optionally applies a soft e-value filter if `evalue_max_soft` is set.
+      The default is permissive but helps avoid unrelated proteins.
 
     Returns
     -------

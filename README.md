@@ -108,6 +108,8 @@ Control candidate-protein methods explicitly:
 - `--sequence`: enable strict sequence-based BLAST method.
 - `--nearest_k`: enable nearest-K BLAST method.
 - `--nearest-k`: set K for nearest-K method (default: `5`).
+- `--nearest-k-evalue-max-soft`: soft e-value cutoff for nearest-K BLAST
+  (default: `1e-2`, helps keep biologically related proteins).
 - `--domains`: enable Pfam/HMMER domain method.
 
 If no method flags are provided, LigQ_2 defaults to:
