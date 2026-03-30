@@ -255,6 +255,8 @@ def prepare_blast_db(
 
 def prepare_complementary_databases(
     data_dir: str | Path = "databases",
+    prepare_pfam: bool = True,
+    prepare_blast: bool = True,
 ) -> None:
     """
     High-level wrapper for the first block of the master script.
@@ -275,11 +277,13 @@ def prepare_complementary_databases(
     complementary_dir.mkdir(parents=True, exist_ok=True)
 
     # 1) Pfam-A + hmmpress
-    pfam_dir = complementary_dir / "pfam"
-    download_and_prepare_pfam_a(pfam_dir)
+    if prepare_pfam:
+        pfam_dir = complementary_dir / "pfam"
+        download_and_prepare_pfam_a(pfam_dir)
 
     # 2) BLAST DB from target_sequences.fasta
-    prepare_blast_db(data_dir=data_dir, complementary_dir=complementary_dir)
+    if prepare_blast:
+        prepare_blast_db(data_dir=data_dir, complementary_dir=complementary_dir)
 
     print("[INFO] Complementary databases are ready.")
 
@@ -523,6 +527,114 @@ def run_blast_sequence_search(
     print(f"[INFO] Saved sequence-based candidate mapping to: {mapping_path}")
 
     return mapping
+
+
+def build_nearest_k_candidates_from_blast(
+    temp_results_dir: str | Path = "temp_results",
+    df_candidates_seq: pd.DataFrame | None = None,
+    nearest_k: int = 5,
+    evalue_max_soft: float | None = 1e-2,
+    save_candidates: bool = True,
+) -> pd.DataFrame:
+    """
+    Build nearest-k BLAST candidates per query from raw BLAST output.
+
+    Rules
+    -----
+    - Uses `blast_sequence_search.tsv` written by `run_blast_sequence_search`.
+    - Ranks hits by:
+        1) bitscore descending
+        2) evalue ascending
+    - Excludes (qseqid, sseqid) already present in `df_candidates_seq`.
+    - Keeps up to `nearest_k` proteins per query.
+    - Optionally applies a soft e-value filter if `evalue_max_soft` is set.
+      The default is permissive but helps avoid unrelated proteins.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns:
+          - qseqid
+          - sseqid
+          - search_type ('nearest_k')
+    """
+    temp_results_dir = Path(temp_results_dir)
+    blast_out = temp_results_dir / "blast_sequence_search.tsv"
+
+    if nearest_k <= 0:
+        return pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+
+    if not blast_out.is_file():
+        raise FileNotFoundError(
+            f"Raw BLAST output not found: {blast_out}. "
+            "Run run_blast_sequence_search first."
+        )
+
+    cols = [
+        "qseqid",
+        "sseqid",
+        "pident",
+        "length",
+        "mismatch",
+        "gapopen",
+        "qstart",
+        "qend",
+        "sstart",
+        "send",
+        "evalue",
+        "bitscore",
+        "qlen",
+        "slen",
+    ]
+    df = pd.read_csv(blast_out, sep="\t", header=None, names=cols)
+
+    if df.empty:
+        nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    else:
+        # Keep one best row per (qseqid, sseqid)
+        df = (
+            df.sort_values(by=["qseqid", "sseqid", "bitscore", "evalue"], ascending=[True, True, False, True])
+            .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
+            .reset_index(drop=True)
+        )
+
+        # Optional very soft e-value filter
+        if evalue_max_soft is not None:
+            df = df[df["evalue"] <= float(evalue_max_soft)].copy()
+
+        # Exclude sequence-assigned proteins
+        if df_candidates_seq is None:
+            df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid"])
+
+        seq_pairs = df_candidates_seq[["qseqid", "sseqid"]].drop_duplicates()
+        if not seq_pairs.empty:
+            df = df.merge(
+                seq_pairs,
+                on=["qseqid", "sseqid"],
+                how="left",
+                indicator=True,
+            )
+            df = df[df["_merge"] == "left_only"].drop(columns=["_merge"])
+
+        if df.empty:
+            nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+        else:
+            nearest = (
+                df.sort_values(by=["qseqid", "bitscore", "evalue"], ascending=[True, False, True])
+                .groupby("qseqid", group_keys=False)
+                .head(int(nearest_k))
+                [["qseqid", "sseqid"]]
+                .drop_duplicates()
+                .reset_index(drop=True)
+            )
+            nearest["search_type"] = "nearest_k"
+
+    if save_candidates:
+        nearest_path = temp_results_dir / "candidate_proteins_nearest_k.tsv"
+        nearest.to_csv(nearest_path, sep="\t", index=False)
+        print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
+
+    return nearest
 
 
 # ----------------------------------------------------------------------
@@ -884,7 +996,8 @@ def map_pfam_hits_to_candidate_proteins(
 
 def combine_sequence_and_domain_candidates(
     df_candidates_seq: pd.DataFrame | None,
-    df_candidates_domain: pd.DataFrame | None,
+    df_candidates_nearest_k: pd.DataFrame | None = None,
+    df_candidates_domain: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Combine candidate proteins from sequence- and domain-based searches.
@@ -917,6 +1030,8 @@ def combine_sequence_and_domain_candidates(
     # Normalize None → empty DataFrames
     if df_candidates_seq is None:
         df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid"])
+    if df_candidates_nearest_k is None:
+        df_candidates_nearest_k = pd.DataFrame(columns=["qseqid", "sseqid"])
     if df_candidates_domain is None:
         df_candidates_domain = pd.DataFrame(columns=["qseqid", "sseqid"])
 
@@ -924,41 +1039,35 @@ def combine_sequence_and_domain_candidates(
         df_candidates_seq = df_candidates_seq.copy()
         df_candidates_seq["search_type"] = "sequence"
 
+    if "search_type" not in df_candidates_nearest_k.columns:
+        df_candidates_nearest_k = df_candidates_nearest_k.copy()
+        df_candidates_nearest_k["search_type"] = "nearest_k"
+
     if "search_type" not in df_candidates_domain.columns:
         df_candidates_domain = df_candidates_domain.copy()
         df_candidates_domain["search_type"] = "domain"
 
-    # If there are no sequence-based candidates, keep all domain-based ones
-    if df_candidates_seq.empty:
-        return (
-            df_candidates_domain[["qseqid", "sseqid", "search_type"]]
-            .drop_duplicates()
-            .reset_index(drop=True)
-        )
+    frames = []
+    if not df_candidates_seq.empty:
+        frames.append(df_candidates_seq[["qseqid", "sseqid", "search_type"]].copy())
+    if not df_candidates_nearest_k.empty:
+        frames.append(df_candidates_nearest_k[["qseqid", "sseqid", "search_type"]].copy())
+    if not df_candidates_domain.empty:
+        frames.append(df_candidates_domain[["qseqid", "sseqid", "search_type"]].copy())
 
-    # Pairs found by sequence
-    seq_pairs = df_candidates_seq[["qseqid", "sseqid"]].drop_duplicates()
+    if not frames:
+        return pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
-    # Exclude from domain any (qseqid, sseqid) already found by sequence
-    df_domain_filtered = df_candidates_domain.merge(
-        seq_pairs,
-        on=["qseqid", "sseqid"],
-        how="left",
-        indicator=True,
+    priority = pd.CategoricalDtype(["sequence", "nearest_k", "domain"], ordered=True)
+    df_all = pd.concat(frames, ignore_index=True).drop_duplicates()
+    df_all["search_type"] = df_all["search_type"].astype(priority)
+    df_all = (
+        df_all.sort_values(["qseqid", "sseqid", "search_type"])
+        .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
+        .reset_index(drop=True)
     )
-    df_domain_filtered = df_domain_filtered[df_domain_filtered["_merge"] == "left_only"]
-    df_domain_filtered = df_domain_filtered.drop(columns=["_merge"])
-
-    # Concatenate sequence and filtered domain candidates
-    df_all = pd.concat(
-        [
-            df_candidates_seq[["qseqid", "sseqid", "search_type"]],
-            df_domain_filtered[["qseqid", "sseqid", "search_type"]],
-        ],
-        ignore_index=True,
-    ).drop_duplicates()
-
-    return df_all.reset_index(drop=True)
+    df_all["search_type"] = df_all["search_type"].astype(str)
+    return df_all
 
 
 # ----------------------------------------------------------------------
@@ -997,11 +1106,14 @@ def _process_single_query(
     # -----------------------------
     if df_cand_q is None or df_cand_q.empty:
         n_prot_seq = 0
+        n_prot_nk = 0
         n_prot_dom = 0
     else:
         mask_seq = df_cand_q["search_type"] == "sequence"
+        mask_nk = df_cand_q["search_type"] == "nearest_k"
         mask_dom = df_cand_q["search_type"] == "domain"
         n_prot_seq = df_cand_q.loc[mask_seq, "sseqid"].nunique()
+        n_prot_nk = df_cand_q.loc[mask_nk, "sseqid"].nunique()
         n_prot_dom = df_cand_q.loc[mask_dom, "sseqid"].nunique()
 
     # Ensure DataFrames
@@ -1024,7 +1136,7 @@ def _process_single_query(
         # Prioritize "sequence" over "domain" if search_type is present.
         if "search_type" in df.columns:
             # Use an ordered categorical so sequence < domain.
-            cat = pd.CategoricalDtype(["sequence", "domain"], ordered=True)
+            cat = pd.CategoricalDtype(["sequence", "nearest_k", "domain"], ordered=True)
             df = df.copy()
             df["search_type"] = df["search_type"].astype(cat)
             df = df.sort_values("search_type")
@@ -1120,11 +1232,14 @@ def _process_single_query(
         or known_ligand_col not in known_q_final.columns
     ):
         n_known_seq = 0
+        n_known_nk = 0
         n_known_dom = 0
     else:
         df_known_seq = known_q_final[known_q_final["search_type"] == "sequence"]
         df_known_dom = known_q_final[known_q_final["search_type"] == "domain"]
+        df_known_nk = known_q_final[known_q_final["search_type"] == "nearest_k"]
         n_known_seq = df_known_seq[known_ligand_col].nunique()
+        n_known_nk = df_known_nk[known_ligand_col].nunique()
         n_known_dom = df_known_dom[known_ligand_col].nunique()
 
     # ZINC ligands
@@ -1134,20 +1249,26 @@ def _process_single_query(
         or zinc_ligand_col not in zinc_q_final.columns
     ):
         n_zinc_seq = 0
+        n_zinc_nk = 0
         n_zinc_dom = 0
     else:
         df_zinc_seq = zinc_q_final[zinc_q_final["search_type"] == "sequence"]
         df_zinc_dom = zinc_q_final[zinc_q_final["search_type"] == "domain"]
+        df_zinc_nk = zinc_q_final[zinc_q_final["search_type"] == "nearest_k"]
         n_zinc_seq = df_zinc_seq[zinc_ligand_col].nunique()
+        n_zinc_nk = df_zinc_nk[zinc_ligand_col].nunique()
         n_zinc_dom = df_zinc_dom[zinc_ligand_col].nunique()
 
     return {
         "qseqid": qseqid,
         "n_proteins_sequence": n_prot_seq,
+        "n_proteins_nearest_k": n_prot_nk,
         "n_proteins_domain": n_prot_dom,
         "n_known_ligands_sequence": n_known_seq,
+        "n_known_ligands_nearest_k": n_known_nk,
         "n_known_ligands_domain": n_known_dom,
         "n_zinc_ligands_sequence": n_zinc_seq,
+        "n_zinc_ligands_nearest_k": n_zinc_nk,
         "n_zinc_ligands_domain": n_zinc_dom,
     }
 
@@ -1251,7 +1372,8 @@ def build_query_ligand_results_parallel(
         )
     if "search_type" not in df_candidates_all.columns:
         raise ValueError(
-            "df_candidates_all must contain a 'search_type' column ('sequence'/'domain')."
+            "df_candidates_all must contain a 'search_type' column "
+            "('sequence'/'nearest_k'/'domain')."
         )
 
     qseqids_all = list(df_queries["qseqid"])
@@ -1261,10 +1383,13 @@ def build_query_ligand_results_parallel(
         empty_cols = [
             "qseqid",
             "n_proteins_sequence",
+            "n_proteins_nearest_k",
             "n_proteins_domain",
             "n_known_ligands_sequence",
+            "n_known_ligands_nearest_k",
             "n_known_ligands_domain",
             "n_zinc_ligands_sequence",
+            "n_zinc_ligands_nearest_k",
             "n_zinc_ligands_domain",
         ]
         summary_df = pd.DataFrame(columns=empty_cols)
