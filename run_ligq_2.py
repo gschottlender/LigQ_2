@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover
 from query_processing.query_processing_functions import (
     prepare_complementary_databases,
     run_blast_sequence_search,
+    build_nearest_k_candidates_from_blast,
     run_hmmer_domain_search,
     map_pfam_hits_to_candidate_proteins,
     combine_sequence_and_domain_candidates,
@@ -118,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blast-evalue-max", type=float, default=1e-5)
     parser.add_argument("--max-hits", type=int, default=150)
     parser.add_argument("--hmmer-evalue-max", type=float, default=1e-5)
+    parser.add_argument("--nearest-k", dest="nearest_k_count", type=int, default=5)
+    parser.add_argument("--nearest-k-evalue-max-soft", type=float, default=10.0)
+
+    parser.add_argument("--sequence", dest="use_sequence_flag", action="store_true")
+    parser.add_argument("--nearest_k", dest="use_nearest_k_flag", action="store_true")
+    parser.add_argument("--domains", dest="use_domains_flag", action="store_true")
 
     parser.add_argument("--keep-repeated-ligands", action="store_true")
     parser.add_argument("--hf-repo-id", default="gschottlender/LigQ_2")
@@ -147,11 +154,24 @@ def main() -> None:
     if not input_fasta.is_file():
         raise FileNotFoundError(f"Input FASTA not found: {input_fasta}")
 
-    ensure_base_data_from_hf(data_dir=data_dir, repo_id=args.hf_repo_id)
-    ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
+    # Method selection defaults:
+    # - if no explicit method flags are passed, use sequence + nearest_k
+    # - domains remains optional by default
+    methods_explicit = args.use_sequence_flag or args.use_nearest_k_flag or args.use_domains_flag
+    use_sequence = args.use_sequence_flag or not methods_explicit
+    use_nearest_k = args.use_nearest_k_flag or not methods_explicit
+    use_domains = args.use_domains_flag
 
-    print("[INFO] Preparing complementary databases (Pfam, BLAST, etc.)...")
-    prepare_complementary_databases(data_dir=data_dir)
+    ensure_base_data_from_hf(data_dir=data_dir, repo_id=args.hf_repo_id)
+    if use_domains:
+        ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
+
+    print("[INFO] Preparing complementary databases...")
+    prepare_complementary_databases(
+        data_dir=data_dir,
+        prepare_pfam=use_domains,
+        prepare_blast=(use_sequence or use_nearest_k),
+    )
 
     if temp_results_dir.exists():
         shutil.rmtree(temp_results_dir)
@@ -160,29 +180,47 @@ def main() -> None:
 
     df_queries = parse_query_fasta(input_fasta)
 
-    df_candidates_seq = run_blast_sequence_search(
-        query_fasta=input_fasta,
-        data_dir=data_dir,
-        temp_results_dir=temp_results_dir,
-        min_identity=args.min_identity,
-        min_query_coverage=args.min_query_coverage,
-        min_subject_coverage=args.min_subject_coverage,
-        evalue_max=args.blast_evalue_max,
-        max_hits=args.max_hits,
-        n_workers=args.n_workers,
-    )
+    df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    df_candidates_nearest_k = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    df_candidates_dom = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
-    df_hmmer = run_hmmer_domain_search(
-        query_fasta=input_fasta,
-        data_dir=data_dir,
-        temp_results_dir=temp_results_dir,
-        evalue_max=args.hmmer_evalue_max,
-        n_workers=args.n_workers,
-    )
+    if use_sequence or use_nearest_k:
+        df_candidates_seq = run_blast_sequence_search(
+            query_fasta=input_fasta,
+            data_dir=data_dir,
+            temp_results_dir=temp_results_dir,
+            min_identity=args.min_identity,
+            min_query_coverage=args.min_query_coverage,
+            min_subject_coverage=args.min_subject_coverage,
+            evalue_max=args.blast_evalue_max,
+            max_hits=args.max_hits,
+            n_workers=args.n_workers,
+        )
+        if not use_sequence:
+            df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
-    df_candidates_dom = map_pfam_hits_to_candidate_proteins(df_hmmer=df_hmmer, data_dir=data_dir)
+    if use_nearest_k:
+        df_candidates_nearest_k = build_nearest_k_candidates_from_blast(
+            temp_results_dir=temp_results_dir,
+            df_candidates_seq=df_candidates_seq,
+            nearest_k=args.nearest_k_count,
+            evalue_max_soft=args.nearest_k_evalue_max_soft,
+            save_candidates=True,
+        )
+
+    if use_domains:
+        df_hmmer = run_hmmer_domain_search(
+            query_fasta=input_fasta,
+            data_dir=data_dir,
+            temp_results_dir=temp_results_dir,
+            evalue_max=args.hmmer_evalue_max,
+            n_workers=args.n_workers,
+        )
+        df_candidates_dom = map_pfam_hits_to_candidate_proteins(df_hmmer=df_hmmer, data_dir=data_dir)
+
     df_candidates_all = combine_sequence_and_domain_candidates(
         df_candidates_seq=df_candidates_seq,
+        df_candidates_nearest_k=df_candidates_nearest_k,
         df_candidates_domain=df_candidates_dom,
     )
 
