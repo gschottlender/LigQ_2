@@ -37,13 +37,21 @@ class ZincLigandSearchProvider(LigandSearchProvider):
         search_representation: str = "morgan_1024_r2",
         search_metric: str = "tanimoto",
         zinc_search_threshold: float = 0.5,
+        zinc_search_threshold_max: float | None = None,
         cluster_threshold: float = 0.8,
+        zinc_per_iteration_topk: int = 1000,
+        zinc_global_topk: int = 50000,
     ):
         self.data_dir = Path(data_dir)
         self.search_representation = search_representation
         self.search_metric = search_metric
         self.zinc_search_threshold = float(zinc_search_threshold)
+        self.zinc_search_threshold_max = (
+            float(zinc_search_threshold_max) if zinc_search_threshold_max is not None else None
+        )
         self.cluster_threshold = float(cluster_threshold)
+        self.zinc_per_iteration_topk = int(zinc_per_iteration_topk)
+        self.zinc_global_topk = int(zinc_global_topk)
 
         pdb_chembl_root = self.data_dir / "compound_data" / "pdb_chembl"
         zinc_root = self.data_dir / "compound_data" / "zinc"
@@ -69,7 +77,10 @@ class ZincLigandSearchProvider(LigandSearchProvider):
             search_rep_zinc=search_rep_zinc,
             search_metric=self.search_metric,
             zinc_search_threshold=self.zinc_search_threshold,
+            zinc_search_threshold_max=self.zinc_search_threshold_max,
             cluster_threshold=self.cluster_threshold,
+            zinc_per_iteration_topk=self.zinc_per_iteration_topk,
+            zinc_global_topk=self.zinc_global_topk,
         )
 
     @property
@@ -82,7 +93,10 @@ class ZincLigandSearchProvider(LigandSearchProvider):
             "search_representation": self.search_representation,
             "search_metric": self.search_metric,
             "zinc_search_threshold": self.zinc_search_threshold,
+            "zinc_search_threshold_max": self.zinc_search_threshold_max,
             "cluster_threshold": self.cluster_threshold,
+            "zinc_per_iteration_topk": self.zinc_per_iteration_topk,
+            "zinc_global_topk": self.zinc_global_topk,
         }
 
     def database_fingerprint(self, data_dir: Path) -> str:
@@ -128,7 +142,10 @@ def build_provider(
     search_representation: str,
     search_metric: str,
     zinc_search_threshold: float,
+    zinc_search_threshold_max: float | None,
     cluster_threshold: float,
+    zinc_per_iteration_topk: int,
+    zinc_global_topk: int,
 ) -> LigandSearchProvider:
     if provider_name == "zinc":
         return ZincLigandSearchProvider(
@@ -136,6 +153,9 @@ def build_provider(
             search_representation=search_representation,
             search_metric=search_metric,
             zinc_search_threshold=zinc_search_threshold,
+            zinc_search_threshold_max=zinc_search_threshold_max,
             cluster_threshold=cluster_threshold,
+            zinc_per_iteration_topk=zinc_per_iteration_topk,
+            zinc_global_topk=zinc_global_topk,
         )
     raise ValueError(f"Unknown ligand provider: {provider_name}")

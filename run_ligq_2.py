@@ -132,7 +132,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--search-representation", default="morgan_1024_r2")
     parser.add_argument("--search-metric", choices=["tanimoto", "cosine"], default="tanimoto")
     parser.add_argument("--zinc-search-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--zinc-search-threshold-max",
+        type=float,
+        default=None,
+        help="Optional maximum similarity threshold (inclusive) for ZINC hits.",
+    )
     parser.add_argument("--cluster-threshold", type=float, default=0.8)
+    parser.add_argument(
+        "--zinc-per-iteration-topk",
+        type=int,
+        default=1000,
+        help="Maximum ZINC hits retained per iteration/chunk during search.",
+    )
+    parser.add_argument(
+        "--zinc-global-topk",
+        type=int,
+        default=50000,
+        help="Maximum number of global ZINC hits retained per protein.",
+    )
 
     parser.add_argument("--force-rebuild-known-binding", action="store_true")
     parser.add_argument("--force-rebuild-protein-domains", action="store_true")
@@ -144,6 +162,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    if args.zinc_search_threshold_max is not None and args.zinc_search_threshold_max < args.zinc_search_threshold:
+        raise ValueError(
+            "--zinc-search-threshold-max must be >= --zinc-search-threshold."
+        )
+    if args.zinc_per_iteration_topk <= 0:
+        raise ValueError("--zinc-per-iteration-topk must be > 0.")
+    if args.zinc_global_topk <= 0:
+        raise ValueError("--zinc-global-topk must be > 0.")
 
     input_fasta = Path(args.input_fasta)
     data_dir = Path(args.data_dir)
@@ -235,7 +262,10 @@ def main() -> None:
         search_representation=args.search_representation,
         search_metric=args.search_metric,
         zinc_search_threshold=args.zinc_search_threshold,
+        zinc_search_threshold_max=args.zinc_search_threshold_max,
         cluster_threshold=args.cluster_threshold,
+        zinc_per_iteration_topk=args.zinc_per_iteration_topk,
+        zinc_global_topk=args.zinc_global_topk,
     )
 
     predicted_db = ensure_provider_cache(
