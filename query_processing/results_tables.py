@@ -241,7 +241,10 @@ class ZincProviderAdapter:
         search_rep_zinc=None,
         search_metric: str = "tanimoto",
         zinc_search_threshold: float = 0.5,
+        zinc_search_threshold_max: Optional[float] = None,
         cluster_threshold: float = 0.8,
+        zinc_per_iteration_topk: int = 1000,
+        zinc_global_topk: int = 50000,
     ):
         self.store_pdb_chembl = store_pdb_chembl
         self.rep_pdb_chembl = rep_pdb_chembl
@@ -251,7 +254,10 @@ class ZincProviderAdapter:
         self.search_rep_zinc = search_rep_zinc
         self.search_metric = search_metric
         self.zinc_search_threshold = zinc_search_threshold
+        self.zinc_search_threshold_max = zinc_search_threshold_max
         self.cluster_threshold = cluster_threshold
+        self.zinc_per_iteration_topk = zinc_per_iteration_topk
+        self.zinc_global_topk = zinc_global_topk
 
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:
         return get_zinc_ligands(
@@ -265,5 +271,8 @@ class ZincProviderAdapter:
             search_rep_zinc=self.search_rep_zinc,
             search_metric=self.search_metric,
             zinc_search_threshold=self.zinc_search_threshold,
+            zinc_search_threshold_max=self.zinc_search_threshold_max,
             cluster_threshold=self.cluster_threshold,
+            search_per_iteration_topk=self.zinc_per_iteration_topk,
+            search_global_topk=self.zinc_global_topk,
         )

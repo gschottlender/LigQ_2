@@ -1576,6 +1576,7 @@ def get_zinc_ligands(
     max_queries: int = 50,
     cluster_threshold: float = 0.8,
     zinc_search_threshold: float = 0.5,
+    zinc_search_threshold_max: Optional[float] = None,
     # ------------------------------------------------------------------
     # Search customization:
     # - search_rep_ref/search_rep_zinc: representation to use for ZINC search
@@ -1592,6 +1593,8 @@ def get_zinc_ligands(
     search_n_jobs: int = 4,
     search_assume_normalized: Optional[bool] = None,
     search_topk: Optional[int] = None,
+    search_per_iteration_topk: int = 1000,
+    search_global_topk: int = 50000,
 ) -> pd.DataFrame:
     """
     For a protein (uniprot_id = prot), select a set of representative ligands
@@ -1627,6 +1630,8 @@ def get_zinc_ligands(
         Threshold used for clustering and redundancy checks.
     zinc_search_threshold : float, default 0.5
         Similarity threshold for reporting ZINC hits.
+    zinc_search_threshold_max : Optional[float], default None
+        Optional maximum similarity threshold (inclusive) for reporting ZINC hits.
     search_rep_ref, search_rep_zinc : Optional[Representation]
         Representations used for the ZINC search. Defaults to rep_pdb_chembl and rep_zinc.
     search_metric : {"tanimoto", "cosine"}
@@ -1649,6 +1654,10 @@ def get_zinc_ligands(
         For cosine similarity, whether vectors are already normalized.
     search_topk : Optional[int]
         If set and search_mode="topk", return only the top-K hits per query.
+    search_per_iteration_topk : int, default 1000
+        Maximum number of hits retained per query/chunk iteration in threshold mode.
+    search_global_topk : int, default 50000
+        Maximum number of global hits retained per protein after ranking.
 
     Returns
     -------
@@ -1664,6 +1673,13 @@ def get_zinc_ligands(
     # 0) Resolve device choice (auto / forced) for ZINC search
     # ------------------------------------------------------------------
     resolved_device = _resolve_search_device(search_device)
+    if zinc_search_threshold_max is not None and float(zinc_search_threshold_max) < float(zinc_search_threshold):
+        raise ValueError("zinc_search_threshold_max must be >= zinc_search_threshold.")
+    if search_per_iteration_topk is not None and int(search_per_iteration_topk) <= 0:
+        raise ValueError("search_per_iteration_topk must be > 0.")
+    if search_global_topk is not None and int(search_global_topk) <= 0:
+        raise ValueError("search_global_topk must be > 0.")
+
     search_rep_ref = rep_pdb_chembl if search_rep_ref is None else search_rep_ref
     search_rep_zinc = rep_zinc if search_rep_zinc is None else search_rep_zinc
     score_col = "tanimoto" if search_metric == "tanimoto" else "similarity"
@@ -1754,7 +1770,7 @@ def get_zinc_ligands(
         n_jobs=search_n_jobs,
         max_hits_per_query=None,
         assume_normalized=search_assume_normalized,
-        per_chunk_topk_hint=None,
+        per_chunk_topk_hint=search_per_iteration_topk,
         gpu_tanimoto_strategy="auto",
     )
 
@@ -1768,6 +1784,11 @@ def get_zinc_ligands(
     if "lig_idx_zinc" in zinc_ligands.columns:
         zinc_ligands = zinc_ligands.drop(columns=["lig_idx_zinc"])
 
+    if zinc_search_threshold_max is not None:
+        zinc_ligands = zinc_ligands[zinc_ligands[score_col] <= float(zinc_search_threshold_max)]
+        if zinc_ligands.empty:
+            return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", score_col])
+
     # ------------------------------------------------------------------
     # 5) Add "ZINC" prefix and remove duplicate ZINC compounds
     # ------------------------------------------------------------------
@@ -1779,6 +1800,8 @@ def get_zinc_ligands(
         subset=["chem_comp_id", "smiles"],
         keep="first",
     ).reset_index(drop=True)
+    if search_global_topk is not None:
+        zinc_ligands = zinc_ligands.head(int(search_global_topk)).reset_index(drop=True)
 
     # ------------------------------------------------------------------
     # 6) Return only the public columns
