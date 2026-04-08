@@ -1,4 +1,4 @@
-name: reverse_ligq_1.5
+name: ligq_2
 channels:
   - bioconda
   - schrodinger
@@ -249,4 +249,3 @@ dependencies:
       - transformers==4.57.1
       - triton==3.5.1
       - urllib3==2.5.0
-prefix: /home/gustavo/anaconda3/envs/reverse_ligq_1.5
