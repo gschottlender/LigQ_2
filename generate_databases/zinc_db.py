@@ -229,7 +229,6 @@ def build_zinc_compound_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
-    inchikey_n_jobs: int = 4,
 ) -> Dict[str, Path]:
     """
     End-to-end pipeline to build the ZINC compound database:
@@ -237,8 +236,7 @@ def build_zinc_compound_database(
       1) Read ligands_smiles.parquet (chem_comp_id, smiles).
       2) Build ligands.parquet with:
            - dense integer index: lig_idx
-           - chem_comp_id and SMILES
-           - InChIKey (via build_ligand_index).
+           - chem_comp_id and SMILES.
       3) Build a Morgan fingerprint representation as a memmap
          (rep_name.dat + rep_name.meta.json).
 
@@ -283,7 +281,7 @@ def build_zinc_compound_database(
     print(f"[INFO] ZINC ligands: {n} compounds read from {ligands_smiles_parquet}")
 
     # ------------------------------------------------------------------
-    # 2) Build ligands.parquet with dense index and InChIKey
+    # 2) Build ligands.parquet with dense index and SMILES only
     # ------------------------------------------------------------------
     ligands_path = build_ligand_index(
         final_ligs=df,
@@ -329,7 +327,6 @@ def build_zinc_chemberta_compound_database(
            - lig_idx (índice denso)
            - chem_comp_id
            - smiles
-           - InChIKey
       2) Construye la representación ChemBERTa como memmap
          (rep_name.dat + rep_name.meta.json) usando esos ligandos.
 
@@ -449,7 +446,6 @@ def generate_zinc_database(
         radius=radius,
         batch_size=batch_size,
         rep_name=rep_name,
-        inchikey_n_jobs=inchikey_n_jobs,
     )
 
     # 4) Build ChemBERTa compound database (re-using the same ligands.parquet)
