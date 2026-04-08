@@ -462,6 +462,37 @@ python update_databases.py --chembl-version 36
 python update_zinc_databases.py
 ```
 
+By default, this command now backs up any existing files under:
+
+```bash
+databases/compound_data/zinc/reps/
+```
+
+into a timestamped folder under:
+
+```bash
+databases/compound_data/zinc/old_reps_backup/
+```
+
+before rebuilding the updated ZINC base. After the update finishes,
+`reps/` contains only the newly generated representation associated with the
+fresh ZINC database build (by default, `morgan_1024_r2`).
+
+This avoids mixing old representations computed on a previous ZINC version
+with the new updated base. Additional representations for the updated ZINC
+database should then be regenerated with:
+
+```bash
+python add_new_representation.py --output-dir databases --base zinc ...
+```
+
+If you explicitly want to keep the current contents of `reps/` in place during
+the update, use:
+
+```bash
+python update_zinc_databases.py --keep-existing-reps
+```
+
 ### 3. Run queries directly (single-script operational mode)
 
 ```bash
