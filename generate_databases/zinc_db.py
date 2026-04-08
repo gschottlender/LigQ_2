@@ -229,6 +229,7 @@ def build_zinc_compound_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    inchikey_n_jobs: int = 4,
 ) -> Dict[str, Path]:
     """
     End-to-end pipeline to build the ZINC compound database:
@@ -284,7 +285,11 @@ def build_zinc_compound_database(
     # ------------------------------------------------------------------
     # 2) Build ligands.parquet with dense index and InChIKey
     # ------------------------------------------------------------------
-    ligands_path = build_ligand_index(final_ligs=df, root=root)
+    ligands_path = build_ligand_index(
+        final_ligs=df,
+        root=root,
+        inchikey_n_jobs=inchikey_n_jobs,
+    )
     print(f"[INFO] ligands.parquet written to: {ligands_path}")
 
     # ------------------------------------------------------------------
@@ -393,6 +398,7 @@ def generate_zinc_database(
     download_workers: int = 4,
     download_retries_per_scheme: int = 4,
     download_retry_wait_seconds: float = 2.0,
+    inchikey_n_jobs: int = 4,
     chemberta_rep: bool = False,
 ) -> Dict[str, Path]:
     """
@@ -444,6 +450,7 @@ def generate_zinc_database(
         radius=radius,
         batch_size=batch_size,
         rep_name=rep_name,
+        inchikey_n_jobs=inchikey_n_jobs,
     )
 
     # 4) Build ChemBERTa compound database (re-using the same ligands.parquet)
