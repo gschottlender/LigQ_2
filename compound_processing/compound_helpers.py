@@ -404,6 +404,9 @@ def unify_pdb_chembl(
 def build_ligand_index(
     final_ligs: pd.DataFrame,
     root: str | Path,
+    compute_inchikey: bool = True,
+    inchikey_n_jobs: Optional[int] = 4,
+    inchikey_chunksize: int = 500,
 ) -> Path:
     """
     Build the ligand index table (ligands.parquet) with a dense integer index.
@@ -430,8 +433,58 @@ def build_ligand_index(
     root.mkdir(parents=True, exist_ok=True)
 
     df = final_ligs.copy()
-    if "inchikey" not in df.columns:
-        df["inchikey"] = df["smiles"].map(smiles_to_inchikey)
+
+    def _resolve_inchikey_workers(requested_jobs: Optional[int]) -> int:
+        cpu_avail = os.cpu_count() or 1
+        max_minus_one = max(1, cpu_avail - 1)
+
+        # default requested behavior: use 4 workers when possible
+        if requested_jobs is None:
+            requested_jobs = 4
+
+        requested_jobs = int(requested_jobs)
+        if requested_jobs <= 0:
+            return max_minus_one
+
+        if requested_jobs > cpu_avail:
+            return max_minus_one
+
+        return max(1, requested_jobs)
+
+    if not compute_inchikey:
+        df["inchikey"] = None
+    elif "inchikey" not in df.columns:
+        smiles_values = df["smiles"].tolist()
+        n_jobs = _resolve_inchikey_workers(inchikey_n_jobs)
+        progress_desc = f"[{root.name}] InChIKey from SMILES"
+
+        if n_jobs == 1:
+            inchikeys = [
+                smiles_to_inchikey(smi)
+                for smi in tqdm(
+                    smiles_values,
+                    total=len(smiles_values),
+                    desc=progress_desc,
+                    unit="lig",
+                    dynamic_ncols=True,
+                    bar_format=_TQDM_BAR_FORMAT,
+                )
+            ]
+        else:
+            ctx = mp.get_context("fork")
+            with ctx.Pool(processes=n_jobs) as pool:
+                inchikeys = list(
+                    tqdm(
+                        pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize),
+                        total=len(smiles_values),
+                        desc=progress_desc,
+                        unit="lig",
+                        dynamic_ncols=True,
+                        bar_format=_TQDM_BAR_FORMAT,
+                    )
+                )
+
+        df["inchikey"] = inchikeys
 
     df = df.reset_index(drop=True)
     df["lig_idx"] = np.arange(len(df), dtype=np.int64)
