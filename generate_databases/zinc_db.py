@@ -9,12 +9,14 @@ Utilities to:
 This module is designed to be imported and its functions called from other scripts.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Union, Tuple, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import time
+from datetime import datetime
 
 import pandas as pd
 import pyarrow as pa
@@ -25,6 +27,48 @@ from compound_processing.compound_helpers import (
     build_morgan_representation,
     build_huggingface_representation
 )
+
+
+def backup_and_clear_representations(
+    root: Union[str, Path],
+    backup_dirname: str = "old_reps_backup",
+) -> Optional[Path]:
+    """
+    Move the current contents of ``root/reps`` into a timestamped backup folder
+    under ``root/<backup_dirname>`` and leave ``root/reps`` empty.
+
+    Returns the backup directory used, or ``None`` when there was nothing to move.
+    """
+    root = Path(root)
+    reps_dir = root / "reps"
+
+    if not reps_dir.exists():
+        return None
+
+    existing_entries = sorted(reps_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = root / backup_dirname
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    for entry in existing_entries:
+        shutil.move(str(entry), str(backup_dir / entry.name))
+
+    print(
+        f"[INFO] Moved {len(existing_entries)} existing representation files "
+        f"from {reps_dir} to backup {backup_dir}"
+    )
+    return backup_dir
 
 
 def download_zinc_database(
@@ -229,6 +273,8 @@ def build_zinc_compound_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    backup_old_reps: bool = True,
+    old_reps_backup_dirname: str = "old_reps_backup",
 ) -> Dict[str, Path]:
     """
     End-to-end pipeline to build the ZINC compound database:
@@ -254,6 +300,11 @@ def build_zinc_compound_database(
         Batch size for fingerprint calculation.
     rep_name : str
         Name of the representation (e.g. 'morgan_1024_r2').
+    backup_old_reps : bool
+        If True, move existing files under ``root/reps`` into
+        ``root/old_reps_backup/<timestamp>`` before rebuilding the ZINC base.
+    old_reps_backup_dirname : str
+        Directory name, relative to ``root``, where old representations are backed up.
 
     Returns
     -------
@@ -279,6 +330,12 @@ def build_zinc_compound_database(
         raise ValueError("ligands_smiles.parquet is empty.")
 
     print(f"[INFO] ZINC ligands: {n} compounds read from {ligands_smiles_parquet}")
+
+    if backup_old_reps:
+        backup_and_clear_representations(
+            root=root,
+            backup_dirname=old_reps_backup_dirname,
+        )
 
     # ------------------------------------------------------------------
     # 2) Build ligands.parquet with dense index and SMILES only
@@ -396,6 +453,7 @@ def generate_zinc_database(
     download_retries_per_scheme: int = 4,
     download_retry_wait_seconds: float = 2.0,
     chemberta_rep: bool = False,
+    backup_old_reps: bool = True,
 ) -> Dict[str, Path]:
     """
     High-level helper to generate the full ZINC compound database in one call.
@@ -406,6 +464,8 @@ def generate_zinc_database(
       3) Build the ZINC compound database under `compound_root`:
            - ligands.parquet
            - Morgan fingerprints memmap (rep_name.dat + rep_name.meta.json)
+           - by default, move any previous files from `compound_root/reps`
+             into `compound_root/old_reps_backup/<timestamp>` before rebuilding
       4) Optionally build ChemBERTa embeddings memmap under the same root (disabled by default).
 
     Returns
@@ -446,6 +506,7 @@ def generate_zinc_database(
         radius=radius,
         batch_size=batch_size,
         rep_name=rep_name,
+        backup_old_reps=backup_old_reps,
     )
 
     # 4) Build ChemBERTa compound database (re-using the same ligands.parquet)

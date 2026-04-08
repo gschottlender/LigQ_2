@@ -15,6 +15,8 @@ This script:
      with consistent defaults to:
        - download all ZINC .smi chunks listed in the URL file,
        - build a unified ligands_smiles.parquet,
+       - move previous representation files into
+         compound_data/zinc/old_reps_backup,
        - build the ZINC ligand index and Morgan fingerprints.
 """
 
@@ -186,6 +188,15 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--keep-existing-reps",
+        action="store_true",
+        help=(
+            "Keep the current files under <output-dir>/compound_data/zinc/reps "
+            "instead of moving them to old_reps_backup before rebuilding."
+        ),
+    )
+
+    parser.add_argument(
         "--download-workers",
         type=int,
         default=4,
@@ -229,12 +240,14 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve()
     temp_data_dir = Path(args.temp_data_dir).resolve()
     generate_chemberta = args.chemberta_rep
+    backup_old_reps = not args.keep_existing_reps
 
     print(f"[INFO] Output directory       : {output_dir}")
     print(f"[INFO] Temporary data directory: {temp_data_dir}")
     print(f"[INFO] Download workers        : {args.download_workers}")
     print(f"[INFO] Retries per scheme      : {args.download_retries_per_scheme}")
     print(f"[INFO] Retry base wait (s)     : {args.download_retry_wait_seconds}")
+    print(f"[INFO] Backup old reps         : {backup_old_reps}")
 
     # ------------------------------------------------------------------
     # 1) Ensure ZINC URL file exists under <output_dir>/zinc
@@ -264,6 +277,7 @@ def main() -> None:
     #   - read the URL file from `zinc_data_dir / urls_filename`,
     #   - download the raw .smi chunks into `zinc_temp_dir`,
     #   - build the ligands_smiles parquet,
+    #   - move old reps to compound_root/old_reps_backup,
     #   - build the ligand index + Morgan representation under compound_root.
     # ------------------------------------------------------------------
     zinc_temp_dir = temp_data_dir / "zinc_db"
@@ -283,7 +297,8 @@ def main() -> None:
         download_workers=args.download_workers,
         download_retries_per_scheme=args.download_retries_per_scheme,
         download_retry_wait_seconds=args.download_retry_wait_seconds,
-        chemberta_rep=generate_chemberta
+        chemberta_rep=generate_chemberta,
+        backup_old_reps=backup_old_reps,
     )
     print("[INFO] ZINC database generation completed.")
 
