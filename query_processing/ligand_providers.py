@@ -88,15 +88,17 @@ class ZincLigandSearchProvider(LigandSearchProvider):
         return "zinc"
 
     def method_signature(self) -> dict:
+        # Cache identity is intentionally defined only by the user-facing
+        # search method. Internal ranking/truncation knobs (cluster_threshold,
+        # per-iteration/global top-k, optional max-threshold) do not decide
+        # which proteins are retrieved for a query; they only affect how the
+        # provider computes or trims results once a reference protein has
+        # already been selected by BLAST/HMMER.
         return {
             "provider": self.provider_name,
             "search_representation": self.search_representation,
             "search_metric": self.search_metric,
             "zinc_search_threshold": self.zinc_search_threshold,
-            "zinc_search_threshold_max": self.zinc_search_threshold_max,
-            "cluster_threshold": self.cluster_threshold,
-            "zinc_per_iteration_topk": self.zinc_per_iteration_topk,
-            "zinc_global_topk": self.zinc_global_topk,
         }
 
     def database_fingerprint(self, data_dir: Path) -> str:
