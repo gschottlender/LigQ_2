@@ -229,6 +229,7 @@ def build_zinc_compound_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    inchikey_n_jobs: int = 4,
 ) -> Dict[str, Path]:
     """
     End-to-end pipeline to build the ZINC compound database:
@@ -448,6 +449,7 @@ def generate_zinc_database(
         radius=radius,
         batch_size=batch_size,
         rep_name=rep_name,
+        inchikey_n_jobs=inchikey_n_jobs,
     )
 
     # 4) Build ChemBERTa compound database (re-using the same ligands.parquet)
