@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Union, Tuple, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import time
 
 import pandas as pd
 import pyarrow as pa
@@ -30,6 +31,9 @@ def download_zinc_database(
     data_dir: Union[str, Path] = "databases/zinc",
     temp_data_dir: Union[str, Path] = "temp_data/zinc_db",
     urls_filename: str = "ZINC-downloader-2D-smi.uri",
+    max_workers: int = 4,
+    retries_per_scheme: int = 4,
+    retry_wait_seconds: float = 2.0,
 ) -> None:
     data_dir = Path(data_dir)
     temp_data_dir = Path(temp_data_dir)
@@ -41,7 +45,7 @@ def download_zinc_database(
 
     with urls_path.open("r") as f:
         urls = [
-            line.strip().replace("http://", "https://")
+            line.strip()
             for line in f
             if line.strip() and not line.startswith("#")
         ]
@@ -52,60 +56,77 @@ def download_zinc_database(
 
     total = len(urls)
 
-    def _download_one(url: str) -> Tuple[str, bool]:
-        filename = url.split("/")[-1]
+    def _download_one(url: str) -> Tuple[str, bool, str]:
+        def _candidate_urls(raw_url: str) -> List[str]:
+            if raw_url.startswith("http://"):
+                return [raw_url.replace("http://", "https://", 1), raw_url]
+            if raw_url.startswith("https://"):
+                return [raw_url, raw_url.replace("https://", "http://", 1)]
+            return [raw_url]
+
+        filename = url.split("/")[-1].split("?")[0]
         output_path = temp_data_dir / filename
 
-        wget_cmd = [
-            "wget",
-            "--tries=10",
-            "--retry-connrefused",
-            "--waitretry=5",
-            "--timeout=30",
-            "--read-timeout=30",
-            "--continue",
-            "--no-dns-cache",
-            "--quiet",
-            "-O",
-            str(output_path),
-            url,
-        ]
+        last_error = "unknown error"
+        for candidate_url in _candidate_urls(url):
+            for attempt in range(1, retries_per_scheme + 1):
+                wget_cmd = [
+                    "wget",
+                    "--tries=1",
+                    "--retry-connrefused",
+                    "--timeout=60",
+                    "--read-timeout=60",
+                    "--continue",
+                    "--no-dns-cache",
+                    "-O",
+                    str(output_path),
+                    candidate_url,
+                ]
 
-        result = subprocess.run(
-            wget_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return filename, (result.returncode == 0)
+                result = subprocess.run(
+                    wget_cmd,
+                    capture_output=True,
+                    text=True,
+                )
 
-    # "máximo workers" razonable para I/O:
-    # - si devolvés os.cpu_count() suele estar bien
-    # - pero para descargas, podés ir más alto sin romper nada.
-    # Para no sorpresarte, uso min(32, os.cpu_count()+4) estilo stdlib.
-    max_workers = min(32, (os.cpu_count() or 1) + 4)
+                if result.returncode == 0:
+                    return filename, True, ""
 
-    failed: List[str] = []
+                err_tail = (result.stderr or result.stdout or "").strip().splitlines()
+                if err_tail:
+                    last_error = err_tail[-1]
+                else:
+                    last_error = f"wget exited with code {result.returncode}"
+
+                if attempt < retries_per_scheme:
+                    time.sleep(retry_wait_seconds * attempt)
+
+        return filename, False, last_error
+
+    max_workers = max(1, int(max_workers))
+
+    failed: List[Tuple[str, str]] = []
     done = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_download_one, url) for url in urls]
 
         for fut in as_completed(futures):
-            filename, ok = fut.result()
+            filename, ok, err_msg = fut.result()
             done += 1
 
             # Compact progress (single line)
             print(f"\r[INFO] {done}/{total} Downloading {filename}...", end="", flush=True)
 
             if not ok:
-                failed.append(filename)
+                failed.append((filename, err_msg))
 
     print()
 
     if failed:
         print("[ERROR] The following downloads failed:")
-        for f in failed:
-            print(f"   - {f}")
+        for f, err in failed:
+            print(f"   - {f}: {err}")
     else:
         print("[INFO] All downloads completed successfully.")
 
@@ -263,7 +284,11 @@ def build_zinc_compound_database(
     # ------------------------------------------------------------------
     # 2) Build ligands.parquet with dense index and InChIKey
     # ------------------------------------------------------------------
-    ligands_path = build_ligand_index(final_ligs=df, root=root)
+    ligands_path = build_ligand_index(
+        final_ligs=df,
+        root=root,
+        compute_inchikey=False,
+    )
     print(f"[INFO] ligands.parquet written to: {ligands_path}")
 
     # ------------------------------------------------------------------
@@ -369,6 +394,9 @@ def generate_zinc_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    download_workers: int = 4,
+    download_retries_per_scheme: int = 4,
+    download_retry_wait_seconds: float = 2.0,
     chemberta_rep: bool = False,
 ) -> Dict[str, Path]:
     """
@@ -399,6 +427,9 @@ def generate_zinc_database(
         data_dir=zinc_data_dir,
         temp_data_dir=zinc_temp_dir,
         urls_filename=urls_filename,
+        max_workers=download_workers,
+        retries_per_scheme=download_retries_per_scheme,
+        retry_wait_seconds=download_retry_wait_seconds,
     )
 
     # 2) Build unified ligands_smiles.parquet
@@ -432,4 +463,3 @@ def generate_zinc_database(
         result_paths["chemberta_rep_meta"] = chemberta_paths["rep_meta"]
 
     return result_paths
-
