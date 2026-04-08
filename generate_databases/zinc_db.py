@@ -288,7 +288,7 @@ def build_zinc_compound_database(
     ligands_path = build_ligand_index(
         final_ligs=df,
         root=root,
-        inchikey_n_jobs=inchikey_n_jobs,
+        compute_inchikey=False,
     )
     print(f"[INFO] ligands.parquet written to: {ligands_path}")
 
@@ -398,7 +398,6 @@ def generate_zinc_database(
     download_workers: int = 4,
     download_retries_per_scheme: int = 4,
     download_retry_wait_seconds: float = 2.0,
-    inchikey_n_jobs: int = 4,
     chemberta_rep: bool = False,
 ) -> Dict[str, Path]:
     """

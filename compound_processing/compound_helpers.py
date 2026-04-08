@@ -404,6 +404,7 @@ def unify_pdb_chembl(
 def build_ligand_index(
     final_ligs: pd.DataFrame,
     root: str | Path,
+    compute_inchikey: bool = True,
     inchikey_n_jobs: Optional[int] = 4,
     inchikey_chunksize: int = 500,
 ) -> Path:
@@ -450,7 +451,9 @@ def build_ligand_index(
 
         return max(1, requested_jobs)
 
-    if "inchikey" not in df.columns:
+    if not compute_inchikey:
+        df["inchikey"] = None
+    elif "inchikey" not in df.columns:
         smiles_values = df["smiles"].tolist()
         n_jobs = _resolve_inchikey_workers(inchikey_n_jobs)
         progress_desc = f"[{root.name}] InChIKey from SMILES"

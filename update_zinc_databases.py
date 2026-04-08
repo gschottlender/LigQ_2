@@ -216,17 +216,6 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument(
-        "--inchikey-n-jobs",
-        type=int,
-        default=4,
-        help=(
-            "Parallel workers for InChIKey generation from SMILES. "
-            "Default: %(default)s. If you pass <=0 or more CPUs than available, "
-            "it falls back to (cpu_count - 1), with a minimum of 1."
-        ),
-    )
-
     return parser.parse_args(args)
 
 
@@ -246,7 +235,6 @@ def main() -> None:
     print(f"[INFO] Download workers        : {args.download_workers}")
     print(f"[INFO] Retries per scheme      : {args.download_retries_per_scheme}")
     print(f"[INFO] Retry base wait (s)     : {args.download_retry_wait_seconds}")
-    print(f"[INFO] InChIKey workers        : {args.inchikey_n_jobs}")
 
     # ------------------------------------------------------------------
     # 1) Ensure ZINC URL file exists under <output_dir>/zinc
@@ -295,7 +283,6 @@ def main() -> None:
         download_workers=args.download_workers,
         download_retries_per_scheme=args.download_retries_per_scheme,
         download_retry_wait_seconds=args.download_retry_wait_seconds,
-        inchikey_n_jobs=args.inchikey_n_jobs,
         chemberta_rep=generate_chemberta
     )
     print("[INFO] ZINC database generation completed.")
