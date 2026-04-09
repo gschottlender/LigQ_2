@@ -73,6 +73,7 @@ python run_ligq_2.py \
 - By default, candidate-protein search uses:
   - strict `sequence` BLAST matches
   - `nearest_k` BLAST matches (`K=5`) excluding proteins already found by `sequence`
+    and restricted to proteins sharing at least one Pfam domain with the query
 - Domain-based search is optional (enable with `--domains`).
 - Ligands are **collapsed per query** (one row per ligand ID).
 - If a ligand is found by both sequence and domain searches, the
@@ -110,10 +111,11 @@ Control candidate-protein methods explicitly:
 - `--nearest-k`: set K for nearest-K method (default: `5`).
 - `--domains`: enable Pfam/HMMER domain method.
 
-Nearest-K candidates are additionally filtered by:
-- identity `>= 30%`
-- e-value `<= 1e-5`
-- query coverage `>= 50%`
+Nearest-K candidates are ranked by BLAST proximity and then filtered to
+proteins that share at least one Pfam domain detected in the query.
+The final output returns up to `K` proteins per query after that domain
+filter. If fewer than `K` proteins share query domains, only those
+available proteins are returned.
 
 If no method flags are provided, LigQ_2 defaults to:
 - `--sequence` ON
@@ -165,8 +167,8 @@ This is the primary user-facing entry point.
 
 1. Ensure base data (sequences and results_databases)
 2. Prepare complementary databases (Pfam, BLAST)
-3. Run BLAST (sequence and nearest-K candidate search)
-4. Optionally run HMMER (domain-based search)
+3. Run BLAST (strict sequence hits + ranked nearest-K pool)
+4. Run HMMER when domain results and/or nearest-K domain gating are needed
 5. Combine candidate proteins (sequence / nearest_k / domain)
 6. Ensure/refresh known binding table (PDB + ChEMBL)
 7. Run **on-demand** ZINC search for missing candidate proteins only
