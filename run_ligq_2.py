@@ -19,6 +19,7 @@ from query_processing.query_processing_functions import (
     prepare_complementary_databases,
     run_blast_sequence_search,
     build_nearest_k_candidates_from_blast,
+    filter_nearest_k_candidates_by_query_domains,
     run_hmmer_domain_search,
     map_pfam_hits_to_candidate_proteins,
     combine_sequence_and_domain_candidates,
@@ -189,13 +190,13 @@ def main() -> None:
     use_domains = args.use_domains_flag
 
     ensure_base_data_from_hf(data_dir=data_dir, repo_id=args.hf_repo_id)
-    if use_domains:
+    if use_domains or use_nearest_k:
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
 
     print("[INFO] Preparing complementary databases...")
     prepare_complementary_databases(
         data_dir=data_dir,
-        prepare_pfam=use_domains,
+        prepare_pfam=(use_domains or use_nearest_k),
         prepare_blast=(use_sequence or use_nearest_k),
     )
 
@@ -209,8 +210,12 @@ def main() -> None:
     df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     df_candidates_nearest_k = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     df_candidates_dom = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    df_hmmer = pd.DataFrame()
 
     if use_sequence or use_nearest_k:
+        blast_max_target_seqs = args.max_hits
+        if use_nearest_k:
+            blast_max_target_seqs = max(args.max_hits, args.nearest_k_count * 200, 5000)
         df_candidates_seq = run_blast_sequence_search(
             query_fasta=input_fasta,
             data_dir=data_dir,
@@ -220,20 +225,23 @@ def main() -> None:
             min_subject_coverage=args.min_subject_coverage,
             evalue_max=args.blast_evalue_max,
             max_hits=args.max_hits,
+            blast_max_target_seqs=blast_max_target_seqs,
             n_workers=args.n_workers,
         )
         if not use_sequence:
             df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
     if use_nearest_k:
-        df_candidates_nearest_k = build_nearest_k_candidates_from_blast(
+        df_candidates_nearest_k_ranked = build_nearest_k_candidates_from_blast(
             temp_results_dir=temp_results_dir,
             df_candidates_seq=df_candidates_seq,
-            nearest_k=args.nearest_k_count,
             save_candidates=True,
+            candidates_filename="candidate_proteins_nearest_k_ranked.tsv",
         )
+    else:
+        df_candidates_nearest_k_ranked = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
-    if use_domains:
+    if use_domains or use_nearest_k:
         df_hmmer = run_hmmer_domain_search(
             query_fasta=input_fasta,
             data_dir=data_dir,
@@ -241,6 +249,18 @@ def main() -> None:
             evalue_max=args.hmmer_evalue_max,
             n_workers=args.n_workers,
         )
+
+    if use_nearest_k:
+        df_candidates_nearest_k = filter_nearest_k_candidates_by_query_domains(
+            df_candidates_nearest_k=df_candidates_nearest_k_ranked,
+            df_hmmer=df_hmmer,
+            data_dir=data_dir,
+            nearest_k=args.nearest_k_count,
+            temp_results_dir=temp_results_dir,
+            save_candidates=True,
+        )
+
+    if use_domains:
         df_candidates_dom = map_pfam_hits_to_candidate_proteins(df_hmmer=df_hmmer, data_dir=data_dir)
 
     df_candidates_all = combine_sequence_and_domain_candidates(
