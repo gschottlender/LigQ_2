@@ -348,6 +348,7 @@ def run_blast_sequence_search(
     min_subject_coverage: float = 0.7,
     evalue_max: float = 1e-5,
     max_hits: int = 150,
+    blast_max_target_seqs: int | None = None,
     blast_program: str = "blastp",
     blast_db_name: str = "target_sequences",
     n_workers: int = 4,
@@ -377,6 +378,10 @@ def run_blast_sequence_search(
         Maximum e-value accepted.
     max_hits : int, default 150
         Maximum number of BLAST hits to keep per query.
+    blast_max_target_seqs : int or None, default None
+        Maximum number of raw BLAST hits to request per query. If None,
+        `max_hits` is reused. This can be set larger than `max_hits` to keep
+        a broader raw pool for downstream methods such as nearest-k.
     blast_program : str, default 'blastp'
         BLAST program (blastp, blastx, etc.).
     blast_db_name : str, default 'target_sequences'
@@ -403,6 +408,8 @@ def run_blast_sequence_search(
 
     # Raw BLAST output file
     blast_out = temp_results_dir / "blast_sequence_search.tsv"
+    if blast_max_target_seqs is None:
+        blast_max_target_seqs = max_hits
 
     # Extended tabular BLAST output format, including qlen and slen
     outfmt = (
@@ -422,7 +429,7 @@ def run_blast_sequence_search(
         "-evalue",
         str(evalue_max),
         "-max_target_seqs",
-        str(max_hits),
+        str(blast_max_target_seqs),
         "-num_threads",
         str(n_workers),   # BLAST uses n_workers threads
         "-out",
@@ -532,24 +539,20 @@ def run_blast_sequence_search(
 def build_nearest_k_candidates_from_blast(
     temp_results_dir: str | Path = "temp_results",
     df_candidates_seq: pd.DataFrame | None = None,
-    nearest_k: int = 5,
     save_candidates: bool = True,
+    candidates_filename: str = "candidate_proteins_nearest_k.tsv",
 ) -> pd.DataFrame:
     """
-    Build nearest-k BLAST candidates per query from raw BLAST output.
+    Build ranked nearest-k BLAST candidates per query from raw BLAST output.
 
     Rules
     -----
     - Uses `blast_sequence_search.tsv` written by `run_blast_sequence_search`.
-    - Applies nearest-k relevance filters:
-        1) pident >= 30%
-        2) evalue <= 1e-5
-        3) query coverage >= 50%
     - Ranks hits by:
         1) bitscore descending
         2) evalue ascending
     - Excludes (qseqid, sseqid) already present in `df_candidates_seq`.
-    - Keeps up to `nearest_k` proteins per query.
+    - Does not apply hard quality cutoffs; callers can filter/truncate later.
 
     Returns
     -------
@@ -561,9 +564,6 @@ def build_nearest_k_candidates_from_blast(
     """
     temp_results_dir = Path(temp_results_dir)
     blast_out = temp_results_dir / "blast_sequence_search.tsv"
-
-    if nearest_k <= 0:
-        return pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
     if not blast_out.is_file():
         raise FileNotFoundError(
@@ -592,23 +592,6 @@ def build_nearest_k_candidates_from_blast(
     if df.empty:
         nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     else:
-        # Apply nearest-k quality filters
-        df["qcov"] = df["length"] / df["qlen"]
-        df["pident_frac"] = df["pident"] / 100.0
-        df = df[
-            (df["pident_frac"] >= 0.30)
-            & (df["evalue"] <= 1e-5)
-            & (df["qcov"] >= 0.50)
-        ].copy()
-
-        if df.empty:
-            nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
-            if save_candidates:
-                nearest_path = temp_results_dir / "candidate_proteins_nearest_k.tsv"
-                nearest.to_csv(nearest_path, sep="\t", index=False)
-                print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
-            return nearest
-
         # Keep one best row per (qseqid, sseqid)
         df = (
             df.sort_values(by=["qseqid", "sseqid", "bitscore", "evalue"], ascending=[True, True, False, True])
@@ -635,8 +618,6 @@ def build_nearest_k_candidates_from_blast(
         else:
             nearest = (
                 df.sort_values(by=["qseqid", "bitscore", "evalue"], ascending=[True, False, True])
-                .groupby("qseqid", group_keys=False)
-                .head(int(nearest_k))
                 [["qseqid", "sseqid"]]
                 .drop_duplicates()
                 .reset_index(drop=True)
@@ -644,11 +625,107 @@ def build_nearest_k_candidates_from_blast(
             nearest["search_type"] = "nearest_k"
 
     if save_candidates:
-        nearest_path = temp_results_dir / "candidate_proteins_nearest_k.tsv"
+        nearest_path = temp_results_dir / candidates_filename
         nearest.to_csv(nearest_path, sep="\t", index=False)
         print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
 
     return nearest
+
+
+def filter_nearest_k_candidates_by_query_domains(
+    df_candidates_nearest_k: pd.DataFrame,
+    df_hmmer: pd.DataFrame,
+    data_dir: str | Path = "databases",
+    nearest_k: int | None = 5,
+    temp_results_dir: str | Path = "temp_results",
+    save_candidates: bool = True,
+    candidates_filename: str = "candidate_proteins_nearest_k_domain_filtered.tsv",
+) -> pd.DataFrame:
+    """
+    Restrict ranked nearest-k candidates to proteins sharing at least one
+    Pfam domain with the query, then keep up to `nearest_k` proteins per query.
+    """
+    expected_cols = {"qseqid", "sseqid"}
+    if df_candidates_nearest_k is None or df_candidates_nearest_k.empty:
+        filtered = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    elif nearest_k is not None and nearest_k <= 0:
+        filtered = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    elif df_hmmer is None or df_hmmer.empty:
+        filtered = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    else:
+        missing = expected_cols - set(df_candidates_nearest_k.columns)
+        if missing:
+            raise ValueError(
+                "df_candidates_nearest_k is missing required columns: "
+                f"{missing}"
+            )
+
+        if "pfam_id" not in df_hmmer.columns:
+            if "pfam_acc" not in df_hmmer.columns:
+                raise ValueError(
+                    "df_hmmer must contain either 'pfam_id' or 'pfam_acc' column."
+                )
+            df_hmmer = df_hmmer.copy()
+            df_hmmer["pfam_id"] = df_hmmer["pfam_acc"].astype(str).str.split(".").str[0]
+
+        data_dir = Path(data_dir)
+        protein_domains_path = data_dir / "results_databases" / "protein_domains.parquet"
+        if not protein_domains_path.is_file():
+            raise FileNotFoundError(
+                f"protein_domains.parquet not found at: {protein_domains_path}"
+            )
+
+        df_query_domains = df_hmmer[["qseqid", "pfam_id"]].dropna().drop_duplicates()
+        if df_query_domains.empty:
+            filtered = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+        else:
+            df_domains = pd.read_parquet(
+                protein_domains_path,
+                columns=["uniprot_id", "pfam_id"],
+            ).dropna(subset=["uniprot_id", "pfam_id"])
+            df_domains["uniprot_id"] = df_domains["uniprot_id"].astype(str)
+            df_domains["pfam_id"] = df_domains["pfam_id"].astype(str)
+            df_domains = df_domains.drop_duplicates(subset=["uniprot_id", "pfam_id"])
+
+            ranked = df_candidates_nearest_k.copy()
+            if "search_type" not in ranked.columns:
+                ranked["search_type"] = "nearest_k"
+
+            ranked["qseqid"] = ranked["qseqid"].astype(str)
+            ranked["sseqid"] = ranked["sseqid"].astype(str)
+            df_query_domains["qseqid"] = df_query_domains["qseqid"].astype(str)
+
+            matched = (
+                ranked[["qseqid", "sseqid", "search_type"]]
+                .merge(
+                    df_domains.rename(columns={"uniprot_id": "sseqid"}),
+                    on="sseqid",
+                    how="inner",
+                )
+                .merge(df_query_domains, on=["qseqid", "pfam_id"], how="inner")
+            )
+
+            filtered = (
+                matched[["qseqid", "sseqid", "search_type"]]
+                .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
+                .reset_index(drop=True)
+            )
+
+            if nearest_k is not None:
+                filtered = (
+                    filtered.groupby("qseqid", group_keys=False)
+                    .head(int(nearest_k))
+                    .reset_index(drop=True)
+                )
+
+    if save_candidates:
+        temp_results_dir = Path(temp_results_dir)
+        temp_results_dir.mkdir(parents=True, exist_ok=True)
+        filtered_path = temp_results_dir / candidates_filename
+        filtered.to_csv(filtered_path, sep="\t", index=False)
+        print(f"[INFO] Saved nearest-k domain-filtered mapping to: {filtered_path}")
+
+    return filtered
 
 
 # ----------------------------------------------------------------------
