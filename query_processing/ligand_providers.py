@@ -117,15 +117,14 @@ class ZincLigandSearchProvider(LigandSearchProvider):
 
         rep_data_path = reps_root / meta["file"]
         ligands_path = zinc_root / "ligands.parquet"
-        zinc_smiles_path = data_dir / "zinc" / "ligands_smiles.parquet"
-
         def _fp(path: Path) -> dict:
             st = path.stat()
-            return {"path": str(path), "size": int(st.st_size), "mtime_ns": int(st.st_mtime_ns)}
+            return {
+                "path": str(path.relative_to(data_dir)),
+                "size": int(st.st_size),
+            }
 
         files = [meta_path, rep_data_path, ligands_path]
-        if zinc_smiles_path.is_file():
-            files.append(zinc_smiles_path)
 
         payload = {
             "provider": self.provider_name,

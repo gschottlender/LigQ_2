@@ -42,37 +42,82 @@ def ensure_dir(path: str | Path) -> Path:
     return path
 
 
+DEFAULT_CACHE_NAMESPACE = (
+    "predicted_bindings/zinc/"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
+)
+
+HF_REQUIRED_RELATIVE_PATHS = [
+    "sequences",
+    "results_databases/known_binding_data.parquet",
+    "results_databases/protein_domains.parquet",
+    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/manifest.json",
+    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
+    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+    "compound_data/pdb_chembl/ligands.parquet",
+    "compound_data/pdb_chembl/reps/morgan_1024_r2.dat",
+    "compound_data/pdb_chembl/reps/morgan_1024_r2.meta.json",
+    "compound_data/zinc/ligands.parquet",
+    "compound_data/zinc/reps/morgan_1024_r2.dat",
+    "compound_data/zinc/reps/morgan_1024_r2.meta.json",
+    "complementary_databases/blast",
+    "complementary_databases/pfam",
+]
+
+
+def _missing_required_base_paths(data_dir: Path) -> list[Path]:
+    missing: list[Path] = []
+    for rel_path in HF_REQUIRED_RELATIVE_PATHS:
+        candidate = data_dir / rel_path
+        if not candidate.exists():
+            missing.append(candidate)
+    return missing
+
+
+def _copy_path_if_missing(src: Path, dst: Path) -> None:
+    if dst.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
+
+
 def ensure_base_data_from_hf(data_dir: Path, repo_id: str = "gschottlender/LigQ_2") -> None:
     data_dir = Path(data_dir)
-    sequences_dir = data_dir / "sequences"
-    results_db_dir = data_dir / "results_databases"
-
-    if sequences_dir.exists() and results_db_dir.exists():
-        print("[INFO] Found 'sequences' and 'results_databases' in data_dir. Skipping HF download.")
+    missing_paths = _missing_required_base_paths(data_dir)
+    if not missing_paths:
+        print("[INFO] Found default-ready base data in data_dir. Skipping HF download.")
         return
 
     if snapshot_download is None:
         raise ImportError(
             "huggingface_hub is not installed, but base data is missing.\n"
             "Install it with: pip install huggingface_hub\n"
-            "or manually place 'sequences' and 'results_databases' under data_dir."
+            "or manually place the default-ready dataset structure under data_dir."
         )
 
     print(f"[INFO] Downloading base data from Hugging Face dataset '{repo_id}'...")
     local_dir = Path(snapshot_download(repo_id=repo_id, repo_type="dataset"))
-    src_sequences = local_dir / "sequences"
-    src_results = local_dir / "results_databases"
-
-    if not src_sequences.is_dir():
-        raise FileNotFoundError(f"Expected 'sequences' directory inside HF dataset at: {src_sequences}")
-    if not src_results.is_dir():
-        raise FileNotFoundError(f"Expected 'results_databases' directory inside HF dataset at: {src_results}")
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    if not sequences_dir.exists():
-        shutil.copytree(src_sequences, sequences_dir)
-    if not results_db_dir.exists():
-        shutil.copytree(src_results, results_db_dir)
+    for rel_path in HF_REQUIRED_RELATIVE_PATHS:
+        src = local_dir / rel_path
+        dst = data_dir / rel_path
+        if not src.exists():
+            raise FileNotFoundError(
+                f"Expected required path inside HF dataset at: {src}"
+            )
+        _copy_path_if_missing(src, dst)
+
+    still_missing = _missing_required_base_paths(data_dir)
+    if still_missing:
+        missing_str = "\n".join(f"  - {path}" for path in still_missing)
+        raise FileNotFoundError(
+            "Default-ready base data is still incomplete after HF download. "
+            f"Missing paths:\n{missing_str}"
+        )
 
 
 def ensure_known_binding_table(data_dir: Path, force_rebuild: bool = False) -> pd.DataFrame:
