@@ -48,8 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rep-name",
         type=str,
-        default="chemberta_zinc_base_768",
-        help="Representation name (saved under reps/<rep-name>.dat + .meta.json).",
+        default=None,
+        help=(
+            "Optional representation name (saved under reps/<rep-name>.dat + "
+            ".meta.json). When omitted, a default name is derived from the "
+            "representation settings."
+        ),
     )
     parser.add_argument(
         "--representation-type",
@@ -62,7 +66,7 @@ def parse_args() -> argparse.Namespace:
         "--rdkit-fp-kind",
         type=str,
         default="ap",
-        choices=["ap", "topological_torsion", "rdkit", "maccs"],
+        choices=["ap", "topological_torsion", "rdkit", "morgan_feature", "maccs"],
         help="RDKit fingerprint kind when --representation-type=rdkit.",
     )
     parser.add_argument(
@@ -158,7 +162,7 @@ def ensure_ligands_exist(root: Path) -> None:
 def build_representation_if_needed(
     root: Path,
     representation_type: str,
-    rep_name: str,
+    rep_name: Optional[str],
     model_id: str,
     n_bits: Optional[int],
     batch_size: int,
@@ -173,17 +177,37 @@ def build_representation_if_needed(
 ) -> None:
     ensure_ligands_exist(root)
 
-    if representation_exists(root, rep_name) and not force:
-        print(f"[INFO] Representation '{rep_name}' already exists in {root}. Skipping.")
+    resolved_name = rep_name
+    if not resolved_name:
+        if representation_type == "huggingface":
+            resolved_name = "chemberta_zinc_base_768"
+        elif representation_type == "rdkit":
+            if rdkit_fp_kind == "ap":
+                resolved_name = f"atom_pair_{int(n_bits)}"
+            elif rdkit_fp_kind == "topological_torsion":
+                resolved_name = f"topological_torsion_{int(n_bits)}"
+            elif rdkit_fp_kind == "rdkit":
+                resolved_name = f"rdkit_daylight_{int(n_bits)}"
+            elif rdkit_fp_kind == "morgan_feature":
+                resolved_name = f"morgan_feature_{int(n_bits)}_r2"
+            elif rdkit_fp_kind == "maccs":
+                resolved_name = "maccs_167"
+            else:
+                raise ValueError(f"Unsupported rdkit_fp_kind: {rdkit_fp_kind}")
+        else:
+            raise ValueError(f"Unsupported representation_type: {representation_type}")
+
+    if representation_exists(root, resolved_name) and not force:
+        print(f"[INFO] Representation '{resolved_name}' already exists in {root}. Skipping.")
         return
 
-    print(f"[INFO] Building representation '{rep_name}' in: {root}")
+    print(f"[INFO] Building representation '{resolved_name}' in: {root}")
     if representation_type == "huggingface":
         build_huggingface_representation(
             root=root,
             n_bits=n_bits,
             batch_size=batch_size,
-            name=rep_name,
+            name=resolved_name,
             model_id=model_id,
             max_length=max_length,
             pooling=pooling,
@@ -198,7 +222,7 @@ def build_representation_if_needed(
             fp_kind=rdkit_fp_kind,
             n_bits=int(n_bits),
             batch_size=batch_size,
-            name=rep_name,
+            name=resolved_name,
             n_jobs=n_jobs,
             chunksize=chunksize,
         )

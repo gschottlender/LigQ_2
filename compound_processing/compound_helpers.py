@@ -203,6 +203,7 @@ def rdkit_fp_bits(
       - "ap": Hashed Atom Pair
       - "topological_torsion": Hashed Topological Torsion
       - "rdkit": Daylight-like RDKit fingerprint
+      - "morgan_feature": Morgan/FCFP-like fingerprint with pharmacophore features
       - "maccs": MACCS keys (fixed length 167)
     """
     if pd.isna(smiles):
@@ -221,6 +222,14 @@ def rdkit_fp_bits(
             out_dim = n_bits
         elif fp_kind == "rdkit":
             fp = Chem.RDKFingerprint(mol, fpSize=n_bits)
+            out_dim = n_bits
+        elif fp_kind == "morgan_feature":
+            fp = AllChem.GetMorganFingerprintAsBitVect(
+                mol,
+                radius,
+                nBits=n_bits,
+                useFeatures=True,
+            )
             out_dim = n_bits
         elif fp_kind == "maccs":
             fp = MACCSkeys.GenMACCSKeys(mol)
@@ -628,12 +637,13 @@ def build_rdkit_representation(
     """
     Compute RDKit-based fingerprints in parallel and persist as packed bits.
 
-    fp_kind supported: ap, topological_torsion, rdkit, maccs.
+    fp_kind supported: ap, topological_torsion, rdkit, morgan_feature, maccs.
     """
     fp_kind = str(fp_kind).strip().lower()
-    if fp_kind not in {"ap", "topological_torsion", "rdkit", "maccs"}:
+    if fp_kind not in {"ap", "topological_torsion", "rdkit", "morgan_feature", "maccs"}:
         raise ValueError(
-            "fp_kind must be one of: 'ap', 'topological_torsion', 'rdkit', 'maccs'."
+            "fp_kind must be one of: 'ap', 'topological_torsion', 'rdkit', "
+            "'morgan_feature', 'maccs'."
         )
 
     if fp_kind == "maccs":
@@ -646,6 +656,8 @@ def build_rdkit_representation(
             name = f"topological_torsion_{n_bits}"
         elif fp_kind == "rdkit":
             name = f"rdkit_daylight_{n_bits}"
+        elif fp_kind == "morgan_feature":
+            name = f"morgan_feature_{n_bits}_r{radius}"
         else:
             name = "maccs_167"
 
