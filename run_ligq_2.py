@@ -46,14 +46,15 @@ DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
     "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.3"
 )
+LEGACY_DEFAULT_CACHE_NAMESPACE = (
+    "predicted_bindings/zinc/"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
+)
 
 HF_REQUIRED_RELATIVE_PATHS = [
     "sequences",
     "results_databases/known_binding_data.parquet",
     "results_databases/protein_domains.parquet",
-    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/manifest.json",
-    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
-    f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
     "compound_data/pdb_chembl/ligands.parquet",
     "compound_data/pdb_chembl/reps/morgan_1024_r2.dat",
     "compound_data/pdb_chembl/reps/morgan_1024_r2.meta.json",
@@ -64,6 +65,19 @@ HF_REQUIRED_RELATIVE_PATHS = [
     "complementary_databases/pfam",
 ]
 
+HF_OPTIONAL_CACHE_PATH_GROUPS = [
+    [
+        f"results_databases/{DEFAULT_CACHE_NAMESPACE}/manifest.json",
+        f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
+        f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+    ],
+    [
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/manifest.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+    ],
+]
+
 
 def _missing_required_base_paths(data_dir: Path) -> list[Path]:
     missing: list[Path] = []
@@ -72,6 +86,13 @@ def _missing_required_base_paths(data_dir: Path) -> list[Path]:
         if not candidate.exists():
             missing.append(candidate)
     return missing
+
+
+def _has_any_optional_cache_group(root: Path) -> bool:
+    for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
+        if all((root / rel_path).exists() for rel_path in rel_group):
+            return True
+    return False
 
 
 def _copy_path_if_missing(src: Path, dst: Path) -> None:
@@ -110,6 +131,17 @@ def ensure_base_data_from_hf(data_dir: Path, repo_id: str = "gschottlender/LigQ_
                 f"Expected required path inside HF dataset at: {src}"
             )
         _copy_path_if_missing(src, dst)
+
+    copied_optional_cache = False
+    for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
+        if all((local_dir / rel_path).exists() for rel_path in rel_group):
+            for rel_path in rel_group:
+                _copy_path_if_missing(local_dir / rel_path, data_dir / rel_path)
+            copied_optional_cache = True
+            break
+
+    if not copied_optional_cache:
+        print("[INFO] No optional default predicted-cache namespace found in HF dataset. Continuing without it.")
 
     still_missing = _missing_required_base_paths(data_dir)
     if still_missing:
