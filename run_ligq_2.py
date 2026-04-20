@@ -44,7 +44,7 @@ def ensure_dir(path: str | Path) -> Path:
 
 DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
-    "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.3"
 )
 
 HF_REQUIRED_RELATIVE_PATHS = [
@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ligand-provider", default="zinc", help="Predicted-ligand provider (default: zinc).")
     parser.add_argument("--search-representation", default="morgan_1024_r2")
     parser.add_argument("--search-metric", choices=["tanimoto", "cosine"], default="tanimoto")
-    parser.add_argument("--zinc-search-threshold", type=float, default=0.5)
+    parser.add_argument("--zinc-search-threshold", type=float, default=0.3)
     parser.add_argument(
         "--zinc-search-threshold-max",
         type=float,
@@ -355,6 +355,9 @@ def main() -> None:
         chunk_size_queries=args.block3_query_chunk_size,
         drop_duplicates=not args.keep_repeated_ligands,
         zinc_filter_batch_size=args.block3_zinc_filter_batch_size,
+        zinc_score_col=getattr(provider, "score_column", None),
+        zinc_threshold_min=args.zinc_search_threshold,
+        zinc_threshold_max=args.zinc_search_threshold_max,
     )
 
     print("[INFO] Pipeline completed successfully.")

@@ -29,6 +29,18 @@ class LigandSearchProvider(ABC):
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:
         ...
 
+    def cache_method_signature(self) -> dict:
+        return self.method_signature()
+
+    def cache_coverage(self) -> tuple[float | None, float | None]:
+        return None, None
+
+    def with_cache_coverage(self, threshold_min: float | None, threshold_max: float | None):
+        return self
+
+    def filter_cached_results(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
 
 class ZincLigandSearchProvider(LigandSearchProvider):
     def __init__(
@@ -88,18 +100,54 @@ class ZincLigandSearchProvider(LigandSearchProvider):
         return "zinc"
 
     def method_signature(self) -> dict:
-        # Cache identity is intentionally defined only by the user-facing
-        # search method. Internal ranking/truncation knobs (cluster_threshold,
-        # per-iteration/global top-k, optional max-threshold) do not decide
-        # which proteins are retrieved for a query; they only affect how the
-        # provider computes or trims results once a reference protein has
-        # already been selected by BLAST/HMMER.
         return {
             "provider": self.provider_name,
             "search_representation": self.search_representation,
             "search_metric": self.search_metric,
             "zinc_search_threshold": self.zinc_search_threshold,
+            "zinc_search_threshold_max": self.zinc_search_threshold_max,
         }
+
+    def cache_method_signature(self) -> dict:
+        # Cache identity is intentionally defined only by the user-facing
+        # search method. Thresholds are tracked as cache coverage in the
+        # manifest so wider caches can serve stricter queries later on.
+        return {
+            "provider": self.provider_name,
+            "search_representation": self.search_representation,
+            "search_metric": self.search_metric,
+        }
+
+    @property
+    def score_column(self) -> str:
+        return "tanimoto" if self.search_metric == "tanimoto" else "similarity"
+
+    def cache_coverage(self) -> tuple[float | None, float | None]:
+        return self.zinc_search_threshold, self.zinc_search_threshold_max
+
+    def with_cache_coverage(
+        self,
+        threshold_min: float | None,
+        threshold_max: float | None,
+    ) -> "ZincLigandSearchProvider":
+        return ZincLigandSearchProvider(
+            data_dir=self.data_dir,
+            search_representation=self.search_representation,
+            search_metric=self.search_metric,
+            zinc_search_threshold=self.zinc_search_threshold if threshold_min is None else threshold_min,
+            zinc_search_threshold_max=threshold_max,
+            cluster_threshold=self.cluster_threshold,
+            zinc_per_iteration_topk=self.zinc_per_iteration_topk,
+            zinc_global_topk=self.zinc_global_topk,
+        )
+
+    def filter_cached_results(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty or self.score_column not in df.columns:
+            return df
+        filtered = df[df[self.score_column] >= self.zinc_search_threshold]
+        if self.zinc_search_threshold_max is not None:
+            filtered = filtered[filtered[self.score_column] <= self.zinc_search_threshold_max]
+        return filtered.reset_index(drop=True)
 
     def database_fingerprint(self, data_dir: Path) -> str:
         data_dir = Path(data_dir)

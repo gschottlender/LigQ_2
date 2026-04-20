@@ -1374,6 +1374,9 @@ def build_query_ligand_results(
     save_per_query: bool = True,
     save_summary: bool = True,
     drop_duplicates: bool = True,
+    zinc_score_col: str | None = None,
+    zinc_threshold_min: float | None = None,
+    zinc_threshold_max: float | None = None,
 ) -> pd.DataFrame:
     """
     Sequential wrapper for Block 3.
@@ -1398,6 +1401,9 @@ def build_query_ligand_results(
         executor="thread",
         chunk_size_queries=len(df_queries) if len(df_queries) > 0 else 1,
         drop_duplicates=drop_duplicates,
+        zinc_score_col=zinc_score_col,
+        zinc_threshold_min=zinc_threshold_min,
+        zinc_threshold_max=zinc_threshold_max,
     )
 
 
@@ -1415,6 +1421,9 @@ def build_query_ligand_results_parallel(
     chunk_size_queries: int | None = 100,
     drop_duplicates: bool = True,
     zinc_filter_batch_size: int = 2000,
+    zinc_score_col: str | None = None,
+    zinc_threshold_min: float | None = None,
+    zinc_threshold_max: float | None = None,
 ) -> pd.DataFrame:
     """
     Parallel Block 3 with query chunking (per-query ligand collapse).
@@ -1568,6 +1577,13 @@ def build_query_ligand_results_parallel(
                 zinc_db_chunk = zinc_db_small[
                     zinc_db_small["uniprot_id"].isin(prots_chunk)
                 ]
+
+            if zinc_score_col is not None and zinc_score_col in zinc_db_chunk.columns:
+                if zinc_threshold_min is not None:
+                    zinc_db_chunk = zinc_db_chunk[zinc_db_chunk[zinc_score_col] >= float(zinc_threshold_min)]
+                if zinc_threshold_max is not None:
+                    zinc_db_chunk = zinc_db_chunk[zinc_db_chunk[zinc_score_col] <= float(zinc_threshold_max)]
+                zinc_db_chunk = zinc_db_chunk.reset_index(drop=True)
 
         # Process queries in the chunk.
         # NOTE: we intentionally avoid building chunk-level merged DataFrames
