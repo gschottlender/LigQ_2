@@ -46,6 +46,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--base-name",
+        type=str,
+        default=None,
+        help=(
+            "Optional custom base name under compound_data/<base-name>/. "
+            "When provided, it overrides --base."
+        ),
+    )
+    parser.add_argument(
+        "--target-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional explicit compound database root containing ligands.parquet "
+            "and reps/. When provided, it overrides --base-name and --base."
+        ),
+    )
+    parser.add_argument(
         "--rep-name",
         type=str,
         default=None,
@@ -138,6 +156,14 @@ def parse_args() -> argparse.Namespace:
         "--force",
         action="store_true",
         help="Rebuild even if the representation already exists.",
+    )
+    parser.add_argument(
+        "--ensure-local-compatible",
+        action="store_true",
+        help=(
+            "Also build the same representation in compound_data/pdb_chembl. "
+            "This is enabled automatically for legacy --base zinc behavior."
+        ),
     )
     return parser.parse_args()
 
@@ -237,7 +263,19 @@ def main() -> None:
     local_root = output_dir / DEFAULT_LOCAL_ROOT
     zinc_root = output_dir / DEFAULT_ZINC_ROOT
 
-    primary_root = zinc_root if args.base == "zinc" else local_root
+    using_legacy_zinc = (
+        args.target_root is None
+        and args.base_name is None
+        and args.base == "zinc"
+    )
+    if args.target_root is not None:
+        primary_root = Path(args.target_root).resolve()
+    elif args.base_name is not None:
+        primary_root = output_dir / "compound_data" / args.base_name
+    else:
+        primary_root = zinc_root if args.base == "zinc" else local_root
+
+    ensure_local_compatible = bool(args.ensure_local_compatible or using_legacy_zinc)
 
     # 1) Build on selected base
     build_representation_if_needed(
@@ -257,8 +295,8 @@ def main() -> None:
         revision=args.revision,
     )
 
-    # 2) Ensure same representation exists in local base
-    if primary_root != local_root:
+    # 2) Optionally ensure same representation exists in local base
+    if ensure_local_compatible and primary_root != local_root:
         build_representation_if_needed(
             root=local_root,
             representation_type=args.representation_type,

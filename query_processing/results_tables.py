@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
 from compound_processing.compound_helpers import LigandStore
-from compound_processing.zinc_search import get_zinc_ligands
+from compound_processing.zinc_search import get_compound_database_ligands
 
 
 def build_protein_domains_table(
@@ -228,51 +228,57 @@ def build_predicted_binding_data_incremental(
     print("[INFO] Finished writing predicted_binding_data.")
 
 
-class ZincProviderAdapter:
-    """Compatibility adapter using existing get_zinc_ligands implementation."""
+class CompoundDatabaseProviderAdapter:
+    """Adapter for predicted-ligand search over an external compound database."""
 
     def __init__(
         self,
         store_pdb_chembl: LigandStore,
         rep_pdb_chembl,
-        store_zinc: LigandStore,
-        rep_zinc,
+        store_target: LigandStore,
+        rep_target,
         search_rep_ref=None,
-        search_rep_zinc=None,
+        search_rep_target=None,
         search_metric: str = "tanimoto",
-        zinc_search_threshold: float = 0.5,
-        zinc_search_threshold_max: Optional[float] = None,
+        search_threshold: float = 0.5,
+        search_threshold_max: Optional[float] = None,
         cluster_threshold: float = 0.8,
-        zinc_per_iteration_topk: int = 1000,
-        zinc_global_topk: int = 50000,
+        search_per_iteration_topk: int = 1000,
+        search_global_topk: int = 50000,
+        compound_prefix: str = "",
     ):
         self.store_pdb_chembl = store_pdb_chembl
         self.rep_pdb_chembl = rep_pdb_chembl
-        self.store_zinc = store_zinc
-        self.rep_zinc = rep_zinc
+        self.store_target = store_target
+        self.rep_target = rep_target
         self.search_rep_ref = search_rep_ref
-        self.search_rep_zinc = search_rep_zinc
+        self.search_rep_target = search_rep_target
         self.search_metric = search_metric
-        self.zinc_search_threshold = zinc_search_threshold
-        self.zinc_search_threshold_max = zinc_search_threshold_max
+        self.search_threshold = search_threshold
+        self.search_threshold_max = search_threshold_max
         self.cluster_threshold = cluster_threshold
-        self.zinc_per_iteration_topk = zinc_per_iteration_topk
-        self.zinc_global_topk = zinc_global_topk
+        self.search_per_iteration_topk = search_per_iteration_topk
+        self.search_global_topk = search_global_topk
+        self.compound_prefix = compound_prefix
 
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:
-        return get_zinc_ligands(
+        return get_compound_database_ligands(
             prot=prot,
             pdb_chembl_binding_data=known_binding,
             store_pdb_chembl=self.store_pdb_chembl,
             rep_pdb_chembl=self.rep_pdb_chembl,
-            store_zinc=self.store_zinc,
-            rep_zinc=self.rep_zinc,
+            store_target=self.store_target,
+            rep_target=self.rep_target,
             search_rep_ref=self.search_rep_ref,
-            search_rep_zinc=self.search_rep_zinc,
+            search_rep_target=self.search_rep_target,
             search_metric=self.search_metric,
-            zinc_search_threshold=self.zinc_search_threshold,
-            zinc_search_threshold_max=self.zinc_search_threshold_max,
+            search_threshold=self.search_threshold,
+            search_threshold_max=self.search_threshold_max,
             cluster_threshold=self.cluster_threshold,
-            search_per_iteration_topk=self.zinc_per_iteration_topk,
-            search_global_topk=self.zinc_global_topk,
+            search_per_iteration_topk=self.search_per_iteration_topk,
+            search_global_topk=self.search_global_topk,
+            compound_prefix=self.compound_prefix,
         )
+
+
+ZincProviderAdapter = CompoundDatabaseProviderAdapter

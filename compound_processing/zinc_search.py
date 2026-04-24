@@ -1595,6 +1595,7 @@ def get_zinc_ligands(
     search_topk: Optional[int] = None,
     search_per_iteration_topk: int = 1000,
     search_global_topk: int = 50000,
+    compound_prefix: str = "ZINC",
 ) -> pd.DataFrame:
     """
     For a protein (uniprot_id = prot), select a set of representative ligands
@@ -1790,9 +1791,12 @@ def get_zinc_ligands(
             return pd.DataFrame(columns=["query_id", "chem_comp_id", "smiles", score_col])
 
     # ------------------------------------------------------------------
-    # 5) Add "ZINC" prefix and remove duplicate ZINC compounds
+    # 5) Add provider-specific prefix (if requested) and remove duplicate compounds
     # ------------------------------------------------------------------
-    zinc_ligands["chem_comp_id"] = "ZINC" + zinc_ligands["chem_comp_id"].astype(str)
+    if compound_prefix:
+        zinc_ligands["chem_comp_id"] = compound_prefix + zinc_ligands["chem_comp_id"].astype(str)
+    else:
+        zinc_ligands["chem_comp_id"] = zinc_ligands["chem_comp_id"].astype(str)
 
     zinc_ligands = zinc_ligands.sort_values(score_col, ascending=False)
 
@@ -1807,3 +1811,56 @@ def get_zinc_ligands(
     # 6) Return only the public columns
     # ------------------------------------------------------------------
     return zinc_ligands[["chem_comp_id", "query_id", score_col, "smiles"]]
+
+
+def get_compound_database_ligands(
+    prot: str,
+    pdb_chembl_binding_data: pd.DataFrame,
+    store_pdb_chembl: "LigandStore",
+    rep_pdb_chembl: "Representation",
+    store_target: "LigandStore",
+    rep_target: "Representation",
+    max_queries: int = 50,
+    cluster_threshold: float = 0.8,
+    search_threshold: float = 0.5,
+    search_threshold_max: Optional[float] = None,
+    search_rep_ref: Optional["Representation"] = None,
+    search_rep_target: Optional["Representation"] = None,
+    search_metric: metrics.MetricName = "tanimoto",
+    search_mode: str = "threshold",
+    search_device: Optional[Union[str, torch.device]] = "auto",
+    search_q_batch_size: Optional[int] = None,
+    search_target_chunk_size: Optional[int] = None,
+    search_n_jobs: int = 4,
+    search_assume_normalized: Optional[bool] = None,
+    search_topk: Optional[int] = None,
+    search_per_iteration_topk: int = 1000,
+    search_global_topk: int = 50000,
+    compound_prefix: str = "",
+) -> pd.DataFrame:
+    """Generic wrapper around the existing external-library search backend."""
+    return get_zinc_ligands(
+        prot=prot,
+        pdb_chembl_binding_data=pdb_chembl_binding_data,
+        store_pdb_chembl=store_pdb_chembl,
+        rep_pdb_chembl=rep_pdb_chembl,
+        store_zinc=store_target,
+        rep_zinc=rep_target,
+        max_queries=max_queries,
+        cluster_threshold=cluster_threshold,
+        zinc_search_threshold=search_threshold,
+        zinc_search_threshold_max=search_threshold_max,
+        search_rep_ref=search_rep_ref,
+        search_rep_zinc=search_rep_target,
+        search_metric=search_metric,
+        search_mode=search_mode,
+        search_device=search_device,
+        search_q_batch_size=search_q_batch_size,
+        search_zinc_chunk_size=search_target_chunk_size,
+        search_n_jobs=search_n_jobs,
+        search_assume_normalized=search_assume_normalized,
+        search_topk=search_topk,
+        search_per_iteration_topk=search_per_iteration_topk,
+        search_global_topk=search_global_topk,
+        compound_prefix=compound_prefix,
+    )

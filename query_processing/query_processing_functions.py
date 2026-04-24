@@ -1169,10 +1169,10 @@ def _process_single_query(
     qseqid: str,
     df_cand_q: pd.DataFrame,
     known_q: pd.DataFrame,
-    zinc_q: pd.DataFrame,
+    predicted_q: pd.DataFrame,
     known_db_cols: list[str],
     known_ligand_col: str | None,
-    zinc_ligand_col: str | None,
+    predicted_ligand_col: str | None,
     search_results_dir: Path,
     save_per_query: bool = True,
     drop_duplicates: bool = True,
@@ -1183,13 +1183,13 @@ def _process_single_query(
     For a given query:
       - Count candidate proteins by search_type (sequence / domain).
       - Optionally collapse ligands to one row per ligand ID
-        (chem_comp_id / zinc_chem_comp_id), prioritizing sequence hits
+        (chem_comp_id / predicted_chem_comp_id), prioritizing sequence hits
         over domain hits.
-      - Write per-query TSV files (known_ligands.tsv, zinc_ligands.tsv).
+      - Write per-query TSV files (known_ligands.tsv, predicted_ligands.tsv).
       - Compute lightweight summary counts for the global summary table.
 
     IMPORTANT:
-    - `known_q` and `zinc_q` are NOT globally collapsed; they come
+    - `known_q` and `predicted_q` are NOT globally collapsed; they come
       directly from per-chunk merges.
     """
     # -----------------------------
@@ -1210,8 +1210,8 @@ def _process_single_query(
     # Ensure DataFrames
     if known_q is None:
         known_q = pd.DataFrame()
-    if zinc_q is None:
-        zinc_q = pd.DataFrame()
+    if predicted_q is None:
+        predicted_q = pd.DataFrame()
 
     # -----------------------------
     # 1) Optional ligand collapse
@@ -1242,12 +1242,12 @@ def _process_single_query(
         return df
 
     known_q_final = _sort_and_collapse(known_q, known_ligand_col)
-    zinc_q_final = _sort_and_collapse(zinc_q, zinc_ligand_col)
+    predicted_q_final = _sort_and_collapse(predicted_q, predicted_ligand_col)
 
     # -----------------------------
     # 2) Write per-query TSV files
     # -----------------------------
-    if save_per_query and (not known_q_final.empty or not zinc_q_final.empty):
+    if save_per_query and (not known_q_final.empty or not predicted_q_final.empty):
         q_dir = ensure_dir(search_results_dir / qseqid)
 
         # --- Known ligands ---
@@ -1267,26 +1267,26 @@ def _process_single_query(
             known_path = q_dir / "known_ligands.tsv"
             df_known_out.to_csv(known_path, sep="\t", index=False)
 
-        # --- ZINC ligands ---
-        if not zinc_q_final.empty:
-            df_zinc_out = zinc_q_final.copy()
+        # --- Predicted ligands ---
+        if not predicted_q_final.empty:
+            df_predicted_out = predicted_q_final.copy()
 
             # Normalize ligand column name to "chem_comp_id" when possible.
             ligand_col_out = "chem_comp_id"
-            if zinc_ligand_col is not None:
+            if predicted_ligand_col is not None:
                 if (
-                    zinc_ligand_col in df_zinc_out.columns
-                    and ligand_col_out not in df_zinc_out.columns
+                    predicted_ligand_col in df_predicted_out.columns
+                    and ligand_col_out not in df_predicted_out.columns
                 ):
-                    df_zinc_out = df_zinc_out.rename(
-                        columns={zinc_ligand_col: ligand_col_out}
+                    df_predicted_out = df_predicted_out.rename(
+                        columns={predicted_ligand_col: ligand_col_out}
                     )
-                elif zinc_ligand_col == ligand_col_out:
-                    ligand_col_out = zinc_ligand_col
+                elif predicted_ligand_col == ligand_col_out:
+                    ligand_col_out = predicted_ligand_col
                 else:
                     # Fallback: if chem_comp_id already exists, use it.
-                    if ligand_col_out not in df_zinc_out.columns:
-                        if "chem_comp_id" in df_zinc_out.columns:
+                    if ligand_col_out not in df_predicted_out.columns:
+                        if "chem_comp_id" in df_predicted_out.columns:
                             ligand_col_out = "chem_comp_id"
 
             preferred_order = [
@@ -1298,20 +1298,20 @@ def _process_single_query(
                 "tanimoto",
                 "smiles",
             ]
-            cols_zinc = [c for c in preferred_order if c in df_zinc_out.columns]
-            extra_cols = [c for c in df_zinc_out.columns if c not in cols_zinc]
-            cols_zinc = cols_zinc + extra_cols
+            cols_predicted = [c for c in preferred_order if c in df_predicted_out.columns]
+            extra_cols = [c for c in df_predicted_out.columns if c not in cols_predicted]
+            cols_predicted = cols_predicted + extra_cols
 
-            df_zinc_out = df_zinc_out[cols_zinc]
+            df_predicted_out = df_predicted_out[cols_predicted]
 
-            if "search_type" in df_zinc_out.columns:
-                df_zinc_out = df_zinc_out.sort_values(
+            if "search_type" in df_predicted_out.columns:
+                df_predicted_out = df_predicted_out.sort_values(
                     by="search_type",
                     key=lambda s: (s != "sequence"),
                 )
 
-            zinc_path = q_dir / "zinc_ligands.tsv"
-            df_zinc_out.to_csv(zinc_path, sep="\t", index=False)
+            predicted_path = q_dir / "predicted_ligands.tsv"
+            df_predicted_out.to_csv(predicted_path, sep="\t", index=False)
 
     # -----------------------------
     # 3) Ligand counts for summary
@@ -1333,22 +1333,22 @@ def _process_single_query(
         n_known_nk = df_known_nk[known_ligand_col].nunique()
         n_known_dom = df_known_dom[known_ligand_col].nunique()
 
-    # ZINC ligands
+    # Predicted ligands
     if (
-        zinc_q_final.empty
-        or zinc_ligand_col is None
-        or zinc_ligand_col not in zinc_q_final.columns
+        predicted_q_final.empty
+        or predicted_ligand_col is None
+        or predicted_ligand_col not in predicted_q_final.columns
     ):
-        n_zinc_seq = 0
-        n_zinc_nk = 0
-        n_zinc_dom = 0
+        n_predicted_seq = 0
+        n_predicted_nk = 0
+        n_predicted_dom = 0
     else:
-        df_zinc_seq = zinc_q_final[zinc_q_final["search_type"] == "sequence"]
-        df_zinc_dom = zinc_q_final[zinc_q_final["search_type"] == "domain"]
-        df_zinc_nk = zinc_q_final[zinc_q_final["search_type"] == "nearest_k"]
-        n_zinc_seq = df_zinc_seq[zinc_ligand_col].nunique()
-        n_zinc_nk = df_zinc_nk[zinc_ligand_col].nunique()
-        n_zinc_dom = df_zinc_dom[zinc_ligand_col].nunique()
+        df_predicted_seq = predicted_q_final[predicted_q_final["search_type"] == "sequence"]
+        df_predicted_dom = predicted_q_final[predicted_q_final["search_type"] == "domain"]
+        df_predicted_nk = predicted_q_final[predicted_q_final["search_type"] == "nearest_k"]
+        n_predicted_seq = df_predicted_seq[predicted_ligand_col].nunique()
+        n_predicted_nk = df_predicted_nk[predicted_ligand_col].nunique()
+        n_predicted_dom = df_predicted_dom[predicted_ligand_col].nunique()
 
     return {
         "qseqid": qseqid,
@@ -1358,9 +1358,9 @@ def _process_single_query(
         "n_known_ligands_sequence": n_known_seq,
         "n_known_ligands_nearest_k": n_known_nk,
         "n_known_ligands_domain": n_known_dom,
-        "n_zinc_ligands_sequence": n_zinc_seq,
-        "n_zinc_ligands_nearest_k": n_zinc_nk,
-        "n_zinc_ligands_domain": n_zinc_dom,
+        "n_predicted_ligands_sequence": n_predicted_seq,
+        "n_predicted_ligands_nearest_k": n_predicted_nk,
+        "n_predicted_ligands_domain": n_predicted_dom,
     }
 
 
@@ -1368,15 +1368,15 @@ def build_query_ligand_results(
     df_queries: pd.DataFrame,
     df_candidates_all: pd.DataFrame,
     known_db: pd.DataFrame,
-    zinc_db: pd.DataFrame,
+    predicted_db: pd.DataFrame,
     output_dir: str | Path = "results",
     search_results_subdir: str = "search_results",
     save_per_query: bool = True,
     save_summary: bool = True,
     drop_duplicates: bool = True,
-    zinc_score_col: str | None = None,
-    zinc_threshold_min: float | None = None,
-    zinc_threshold_max: float | None = None,
+    predicted_score_col: str | None = None,
+    predicted_threshold_min: float | None = None,
+    predicted_threshold_max: float | None = None,
 ) -> pd.DataFrame:
     """
     Sequential wrapper for Block 3.
@@ -1392,7 +1392,7 @@ def build_query_ligand_results(
         df_queries=df_queries,
         df_candidates_all=df_candidates_all,
         known_db=known_db,
-        zinc_db=zinc_db,
+        predicted_db=predicted_db,
         output_dir=output_dir,
         search_results_subdir=search_results_subdir,
         save_per_query=save_per_query,
@@ -1401,9 +1401,9 @@ def build_query_ligand_results(
         executor="thread",
         chunk_size_queries=len(df_queries) if len(df_queries) > 0 else 1,
         drop_duplicates=drop_duplicates,
-        zinc_score_col=zinc_score_col,
-        zinc_threshold_min=zinc_threshold_min,
-        zinc_threshold_max=zinc_threshold_max,
+        predicted_score_col=predicted_score_col,
+        predicted_threshold_min=predicted_threshold_min,
+        predicted_threshold_max=predicted_threshold_max,
     )
 
 
@@ -1411,7 +1411,7 @@ def build_query_ligand_results_parallel(
     df_queries: pd.DataFrame,
     df_candidates_all: pd.DataFrame,
     known_db: pd.DataFrame,
-    zinc_db: pd.DataFrame | str | Path,
+    predicted_db: pd.DataFrame | str | Path,
     output_dir: str | Path = "results",
     search_results_subdir: str = "search_results",
     save_per_query: bool = True,
@@ -1420,10 +1420,10 @@ def build_query_ligand_results_parallel(
     executor: str = "process",  # kept for compatibility, currently ignored
     chunk_size_queries: int | None = 100,
     drop_duplicates: bool = True,
-    zinc_filter_batch_size: int = 2000,
-    zinc_score_col: str | None = None,
-    zinc_threshold_min: float | None = None,
-    zinc_threshold_max: float | None = None,
+    predicted_filter_batch_size: int = 2000,
+    predicted_score_col: str | None = None,
+    predicted_threshold_min: float | None = None,
+    predicted_threshold_max: float | None = None,
 ) -> pd.DataFrame:
     """
     Parallel Block 3 with query chunking (per-query ligand collapse).
@@ -1434,11 +1434,11 @@ def build_query_ligand_results_parallel(
         merge size and RAM usage.
       - For each chunk:
           * Filter df_candidates_all to that subset of qseqid.
-          * Reduce known_db and zinc_db to the proteins present
+          * Reduce known_db and predicted_db to the proteins present
             in the chunk.
           * Merge per chunk:
               - df_cand_chunk × known_db_chunk
-              - df_cand_chunk × zinc_db_chunk
+              - df_cand_chunk × predicted_db_chunk
           * Split per qseqid (groupby).
           * Process each query sequentially to keep RAM bounded.
             using `_process_single_query`, which:
@@ -1488,9 +1488,9 @@ def build_query_ligand_results_parallel(
             "n_known_ligands_sequence",
             "n_known_ligands_nearest_k",
             "n_known_ligands_domain",
-            "n_zinc_ligands_sequence",
-            "n_zinc_ligands_nearest_k",
-            "n_zinc_ligands_domain",
+            "n_predicted_ligands_sequence",
+            "n_predicted_ligands_nearest_k",
+            "n_predicted_ligands_domain",
         ]
         summary_df = pd.DataFrame(columns=empty_cols)
         if save_summary:
@@ -1502,25 +1502,27 @@ def build_query_ligand_results_parallel(
     # Detect ligand columns
     known_ligand_col = "chem_comp_id" if "chem_comp_id" in known_db.columns else None
 
-    zinc_is_path = isinstance(zinc_db, (str, Path))
-    zinc_path = Path(zinc_db) if zinc_is_path else None
-    if zinc_is_path:
-        if zinc_path is None or not zinc_path.exists():
-            raise ValueError(f"zinc_db parquet path does not exist: {zinc_db}")
-        zinc_columns = pq.ParquetFile(zinc_path).schema_arrow.names
+    predicted_is_path = isinstance(predicted_db, (str, Path))
+    predicted_path = Path(predicted_db) if predicted_is_path else None
+    if predicted_is_path:
+        if predicted_path is None or not predicted_path.exists():
+            raise ValueError(f"predicted_db parquet path does not exist: {predicted_db}")
+        predicted_columns = pq.ParquetFile(predicted_path).schema_arrow.names
     else:
-        zinc_columns = list(zinc_db.columns)
+        predicted_columns = list(predicted_db.columns)
 
-    if "zinc_chem_comp_id" in zinc_columns:
-        zinc_ligand_col = "zinc_chem_comp_id"
-    elif "chem_comp_id" in zinc_columns:
-        zinc_ligand_col = "chem_comp_id"
+    if "predicted_chem_comp_id" in predicted_columns:
+        predicted_ligand_col = "predicted_chem_comp_id"
+    elif "zinc_chem_comp_id" in predicted_columns:
+        predicted_ligand_col = "zinc_chem_comp_id"
+    elif "chem_comp_id" in predicted_columns:
+        predicted_ligand_col = "chem_comp_id"
     else:
-        zinc_ligand_col = None
+        predicted_ligand_col = None
 
     known_db_cols = list(known_db.columns)
 
-    # Pre-reduce known_db and zinc_db to proteins present in df_candidates_all
+    # Pre-reduce known_db and predicted_db to proteins present in df_candidates_all
     if df_candidates_all.empty:
         prots_all = np.array([], dtype=object)
     else:
@@ -1528,11 +1530,11 @@ def build_query_ligand_results_parallel(
 
     if "uniprot_id" not in known_db.columns:
         raise ValueError("known_db must contain an 'uniprot_id' column.")
-    if "uniprot_id" not in zinc_columns:
-        raise ValueError("zinc_db must contain an 'uniprot_id' column.")
+    if "uniprot_id" not in predicted_columns:
+        raise ValueError("predicted_db must contain an 'uniprot_id' column.")
 
     known_db_small = known_db[known_db["uniprot_id"].isin(prots_all)].copy()
-    zinc_db_small = None if zinc_is_path else zinc_db[zinc_db["uniprot_id"].isin(prots_all)].copy()
+    predicted_db_small = None if predicted_is_path else predicted_db[predicted_db["uniprot_id"].isin(prots_all)].copy()
 
     # Normalize chunk size
     n_total = len(qseqids_all)
@@ -1557,7 +1559,7 @@ def build_query_ligand_results_parallel(
         if df_cand_chunk.empty:
             cand_by_q: dict[str, pd.DataFrame] = {}
             known_db_chunk = pd.DataFrame(columns=known_db.columns)
-            zinc_db_chunk = pd.DataFrame(columns=zinc_columns)
+            predicted_db_chunk = pd.DataFrame(columns=predicted_columns)
         else:
             cand_by_q = {
                 q: subdf for q, subdf in df_cand_chunk.groupby("qseqid", sort=False)
@@ -1567,27 +1569,27 @@ def build_query_ligand_results_parallel(
                 known_db_small["uniprot_id"].isin(prots_chunk)
             ]
 
-            if zinc_is_path:
-                zinc_db_chunk = _read_parquet_rows_for_uniprot_ids(
-                    parquet_path=zinc_path,
+            if predicted_is_path:
+                predicted_db_chunk = _read_parquet_rows_for_uniprot_ids(
+                    parquet_path=predicted_path,
                     uniprot_ids=[str(p) for p in prots_chunk],
-                    batch_size=zinc_filter_batch_size,
+                    batch_size=predicted_filter_batch_size,
                 )
             else:
-                zinc_db_chunk = zinc_db_small[
-                    zinc_db_small["uniprot_id"].isin(prots_chunk)
+                predicted_db_chunk = predicted_db_small[
+                    predicted_db_small["uniprot_id"].isin(prots_chunk)
                 ]
 
-            if zinc_score_col is not None and zinc_score_col in zinc_db_chunk.columns:
-                if zinc_threshold_min is not None:
-                    zinc_db_chunk = zinc_db_chunk[zinc_db_chunk[zinc_score_col] >= float(zinc_threshold_min)]
-                if zinc_threshold_max is not None:
-                    zinc_db_chunk = zinc_db_chunk[zinc_db_chunk[zinc_score_col] <= float(zinc_threshold_max)]
-                zinc_db_chunk = zinc_db_chunk.reset_index(drop=True)
+            if predicted_score_col is not None and predicted_score_col in predicted_db_chunk.columns:
+                if predicted_threshold_min is not None:
+                    predicted_db_chunk = predicted_db_chunk[predicted_db_chunk[predicted_score_col] >= float(predicted_threshold_min)]
+                if predicted_threshold_max is not None:
+                    predicted_db_chunk = predicted_db_chunk[predicted_db_chunk[predicted_score_col] <= float(predicted_threshold_max)]
+                predicted_db_chunk = predicted_db_chunk.reset_index(drop=True)
 
         # Process queries in the chunk.
         # NOTE: we intentionally avoid building chunk-level merged DataFrames
-        # (df_cand_chunk × known_db / zinc_db), because those can explode in RAM.
+        # (df_cand_chunk × known_db / predicted_db), because those can explode in RAM.
         for qseqid in q_chunk:
             df_cand_q = cand_by_q.get(
                 qseqid,
@@ -1596,7 +1598,7 @@ def build_query_ligand_results_parallel(
 
             if df_cand_q.empty:
                 known_q = pd.DataFrame()
-                zinc_q = pd.DataFrame()
+                predicted_q = pd.DataFrame()
             else:
                 prots_q = df_cand_q["sseqid"].unique()
 
@@ -1607,9 +1609,9 @@ def build_query_ligand_results_parallel(
                     how="inner",
                 )
 
-                zinc_db_q = zinc_db_chunk[zinc_db_chunk["uniprot_id"].isin(prots_q)]
-                zinc_q = df_cand_q.merge(
-                    zinc_db_q,
+                predicted_db_q = predicted_db_chunk[predicted_db_chunk["uniprot_id"].isin(prots_q)]
+                predicted_q = df_cand_q.merge(
+                    predicted_db_q,
                     left_on="sseqid",
                     right_on="uniprot_id",
                     how="inner",
@@ -1619,10 +1621,10 @@ def build_query_ligand_results_parallel(
                 qseqid=qseqid,
                 df_cand_q=df_cand_q,
                 known_q=known_q,
-                zinc_q=zinc_q,
+                predicted_q=predicted_q,
                 known_db_cols=known_db_cols,
                 known_ligand_col=known_ligand_col,
-                zinc_ligand_col=zinc_ligand_col,
+                predicted_ligand_col=predicted_ligand_col,
                 search_results_dir=search_results_dir,
                 save_per_query=save_per_query,
                 drop_duplicates=drop_duplicates,

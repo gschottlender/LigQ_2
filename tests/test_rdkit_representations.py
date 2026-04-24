@@ -13,7 +13,7 @@ class TestRDKitRepresentations(unittest.TestCase):
     def test_rdkit_fp_bits_supported_kinds(self):
         smiles = "CCO"
 
-        for fp_kind in ("ap", "topological_torsion", "rdkit"):
+        for fp_kind in ("ap", "topological_torsion", "rdkit", "morgan_feature"):
             arr = rdkit_fp_bits(smiles, fp_kind=fp_kind, n_bits=128)
             self.assertIsNotNone(arr)
             self.assertEqual(arr.shape, (128,))

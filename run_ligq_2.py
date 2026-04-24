@@ -51,19 +51,23 @@ LEGACY_DEFAULT_CACHE_NAMESPACE = (
     "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
 )
 
-HF_REQUIRED_RELATIVE_PATHS = [
+HF_CORE_REQUIRED_RELATIVE_PATHS = [
     "sequences",
     "results_databases/known_binding_data.parquet",
     "results_databases/protein_domains.parquet",
     "compound_data/pdb_chembl/ligands.parquet",
     "compound_data/pdb_chembl/reps/morgan_1024_r2.dat",
     "compound_data/pdb_chembl/reps/morgan_1024_r2.meta.json",
-    "compound_data/zinc/ligands.parquet",
-    "compound_data/zinc/reps/morgan_1024_r2.dat",
-    "compound_data/zinc/reps/morgan_1024_r2.meta.json",
     "complementary_databases/blast",
     "complementary_databases/pfam",
 ]
+
+HF_ZINC_REQUIRED_RELATIVE_PATHS = [
+    "compound_data/zinc/ligands.parquet",
+    "compound_data/zinc/reps/morgan_1024_r2.dat",
+    "compound_data/zinc/reps/morgan_1024_r2.meta.json",
+]
+HF_REQUIRED_RELATIVE_PATHS = HF_CORE_REQUIRED_RELATIVE_PATHS + HF_ZINC_REQUIRED_RELATIVE_PATHS
 
 HF_OPTIONAL_CACHE_PATH_GROUPS = [
     [
@@ -79,9 +83,16 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
 ]
 
 
-def _missing_required_base_paths(data_dir: Path) -> list[Path]:
+def _required_base_paths(provider_name: str) -> list[str]:
+    required = list(HF_CORE_REQUIRED_RELATIVE_PATHS)
+    if provider_name == "zinc":
+        required.extend(HF_ZINC_REQUIRED_RELATIVE_PATHS)
+    return required
+
+
+def _missing_required_base_paths(data_dir: Path, provider_name: str = "zinc") -> list[Path]:
     missing: list[Path] = []
-    for rel_path in HF_REQUIRED_RELATIVE_PATHS:
+    for rel_path in _required_base_paths(provider_name):
         candidate = data_dir / rel_path
         if not candidate.exists():
             missing.append(candidate)
@@ -105,9 +116,14 @@ def _copy_path_if_missing(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def ensure_base_data_from_hf(data_dir: Path, repo_id: str = "gschottlender/LigQ_2") -> None:
+def ensure_base_data_from_hf(
+    data_dir: Path,
+    repo_id: str = "gschottlender/LigQ_2",
+    provider_name: str = "zinc",
+) -> None:
     data_dir = Path(data_dir)
-    missing_paths = _missing_required_base_paths(data_dir)
+    required_rel_paths = _required_base_paths(provider_name)
+    missing_paths = _missing_required_base_paths(data_dir, provider_name=provider_name)
     if not missing_paths:
         print("[INFO] Found default-ready base data in data_dir. Skipping HF download.")
         return
@@ -123,7 +139,7 @@ def ensure_base_data_from_hf(data_dir: Path, repo_id: str = "gschottlender/LigQ_
     local_dir = Path(snapshot_download(repo_id=repo_id, repo_type="dataset"))
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    for rel_path in HF_REQUIRED_RELATIVE_PATHS:
+    for rel_path in required_rel_paths:
         src = local_dir / rel_path
         dst = data_dir / rel_path
         if not src.exists():
@@ -133,17 +149,18 @@ def ensure_base_data_from_hf(data_dir: Path, repo_id: str = "gschottlender/LigQ_
         _copy_path_if_missing(src, dst)
 
     copied_optional_cache = False
-    for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
-        if all((local_dir / rel_path).exists() for rel_path in rel_group):
-            for rel_path in rel_group:
-                _copy_path_if_missing(local_dir / rel_path, data_dir / rel_path)
-            copied_optional_cache = True
-            break
+    if provider_name == "zinc":
+        for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
+            if all((local_dir / rel_path).exists() for rel_path in rel_group):
+                for rel_path in rel_group:
+                    _copy_path_if_missing(local_dir / rel_path, data_dir / rel_path)
+                copied_optional_cache = True
+                break
 
-    if not copied_optional_cache:
+    if provider_name == "zinc" and not copied_optional_cache:
         print("[INFO] No optional default predicted-cache namespace found in HF dataset. Continuing without it.")
 
-    still_missing = _missing_required_base_paths(data_dir)
+    still_missing = _missing_required_base_paths(data_dir, provider_name=provider_name)
     if still_missing:
         missing_str = "\n".join(f"  - {path}" for path in still_missing)
         raise FileNotFoundError(
@@ -209,46 +226,79 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ligand-provider", default="zinc", help="Predicted-ligand provider (default: zinc).")
     parser.add_argument("--search-representation", default="morgan_1024_r2")
     parser.add_argument("--search-metric", choices=["tanimoto", "cosine"], default="tanimoto")
-    parser.add_argument("--zinc-search-threshold", type=float, default=0.3)
+    parser.add_argument("--search-threshold", dest="search_threshold", type=float, default=0.3)
+    parser.add_argument("--zinc-search-threshold", dest="search_threshold", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
-        "--zinc-search-threshold-max",
+        "--search-threshold-max",
+        dest="search_threshold_max",
         type=float,
         default=None,
-        help="Optional maximum similarity threshold (inclusive) for ZINC hits.",
+        help="Optional maximum similarity threshold (inclusive) for predicted hits.",
+    )
+    parser.add_argument(
+        "--zinc-search-threshold-max",
+        dest="search_threshold_max",
+        type=float,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--cluster-threshold", type=float, default=0.8)
     parser.add_argument(
-        "--zinc-per-iteration-topk",
+        "--search-per-iteration-topk",
+        dest="search_per_iteration_topk",
         type=int,
         default=1000,
-        help="Maximum ZINC hits retained per iteration/chunk during search.",
+        help="Maximum predicted hits retained per iteration/chunk during search.",
+    )
+    parser.add_argument(
+        "--zinc-per-iteration-topk",
+        dest="search_per_iteration_topk",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--search-global-topk",
+        dest="search_global_topk",
+        type=int,
+        default=50000,
+        help="Maximum number of global predicted hits retained per protein.",
     )
     parser.add_argument(
         "--zinc-global-topk",
+        dest="search_global_topk",
         type=int,
-        default=50000,
-        help="Maximum number of global ZINC hits retained per protein.",
+        help=argparse.SUPPRESS,
     )
 
     parser.add_argument("--force-rebuild-known-binding", action="store_true")
     parser.add_argument("--force-rebuild-protein-domains", action="store_true")
     parser.add_argument("--force-rebuild-predicted-cache", action="store_true")
     parser.add_argument("--block3-query-chunk-size", type=int, default=100)
-    parser.add_argument("--block3-zinc-filter-batch-size", type=int, default=2000)
+    parser.add_argument(
+        "--block3-predicted-filter-batch-size",
+        dest="block3_predicted_filter_batch_size",
+        type=int,
+        default=2000,
+    )
+    parser.add_argument(
+        "--block3-zinc-filter-batch-size",
+        dest="block3_predicted_filter_batch_size",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    if args.zinc_search_threshold_max is not None and args.zinc_search_threshold_max < args.zinc_search_threshold:
+    if args.search_threshold_max is not None and args.search_threshold_max < args.search_threshold:
         raise ValueError(
-            "--zinc-search-threshold-max must be >= --zinc-search-threshold."
+            "--search-threshold-max must be >= --search-threshold."
         )
-    if args.zinc_per_iteration_topk <= 0:
-        raise ValueError("--zinc-per-iteration-topk must be > 0.")
-    if args.zinc_global_topk <= 0:
-        raise ValueError("--zinc-global-topk must be > 0.")
+    if args.search_per_iteration_topk <= 0:
+        raise ValueError("--search-per-iteration-topk must be > 0.")
+    if args.search_global_topk <= 0:
+        raise ValueError("--search-global-topk must be > 0.")
 
     input_fasta = Path(args.input_fasta)
     data_dir = Path(args.data_dir)
@@ -266,7 +316,11 @@ def main() -> None:
     use_nearest_k = args.use_nearest_k_flag or not methods_explicit
     use_domains = args.use_domains_flag
 
-    ensure_base_data_from_hf(data_dir=data_dir, repo_id=args.hf_repo_id)
+    ensure_base_data_from_hf(
+        data_dir=data_dir,
+        repo_id=args.hf_repo_id,
+        provider_name=args.ligand_provider,
+    )
     if use_domains or use_nearest_k:
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
 
@@ -358,11 +412,11 @@ def main() -> None:
         data_dir=data_dir,
         search_representation=args.search_representation,
         search_metric=args.search_metric,
-        zinc_search_threshold=args.zinc_search_threshold,
-        zinc_search_threshold_max=args.zinc_search_threshold_max,
+        search_threshold=args.search_threshold,
+        search_threshold_max=args.search_threshold_max,
         cluster_threshold=args.cluster_threshold,
-        zinc_per_iteration_topk=args.zinc_per_iteration_topk,
-        zinc_global_topk=args.zinc_global_topk,
+        search_per_iteration_topk=args.search_per_iteration_topk,
+        search_global_topk=args.search_global_topk,
     )
 
     predicted_db = ensure_provider_cache(
@@ -378,7 +432,7 @@ def main() -> None:
         df_queries=df_queries,
         df_candidates_all=df_candidates_all,
         known_db=known_db,
-        zinc_db=predicted_db,
+        predicted_db=predicted_db,
         output_dir=output_dir,
         search_results_subdir="search_results",
         save_per_query=True,
@@ -386,10 +440,10 @@ def main() -> None:
         njobs=args.n_workers,
         chunk_size_queries=args.block3_query_chunk_size,
         drop_duplicates=not args.keep_repeated_ligands,
-        zinc_filter_batch_size=args.block3_zinc_filter_batch_size,
-        zinc_score_col=getattr(provider, "score_column", None),
-        zinc_threshold_min=args.zinc_search_threshold,
-        zinc_threshold_max=args.zinc_search_threshold_max,
+        predicted_filter_batch_size=args.block3_predicted_filter_batch_size,
+        predicted_score_col=getattr(provider, "score_column", None),
+        predicted_threshold_min=args.search_threshold,
+        predicted_threshold_max=args.search_threshold_max,
     )
 
     print("[INFO] Pipeline completed successfully.")

@@ -6,7 +6,7 @@ Given a FASTA file of query proteins, LigQ_2 integrates:
 - Sequence-based search (BLAST)
 - Domain-based search (Pfam / HMMER)
 - Curated ligand knowledge from PDB and ChEMBL
-- Similarity-based ligand prediction using ZINC
+- Similarity-based ligand prediction using ZINC or user-provided compound databases
 
 The pipeline is designed to be:
 - Reproducible
@@ -18,7 +18,7 @@ It now uses an **on-demand predicted-ligand cache**:
 - Predicted ligands are computed only for missing reference proteins.
 - Cached predictions are reused in subsequent runs.
 - Cache is namespaced by search method (**representation + metric**).
-- Cache is automatically invalidated if the local ZINC database changes.
+- Cache is automatically invalidated if the local provider database changes.
 
 ---
 
@@ -171,7 +171,7 @@ This is the primary user-facing entry point.
 4. Run HMMER when domain results and/or nearest-K domain gating are needed
 5. Combine candidate proteins (sequence / nearest_k / domain)
 6. Ensure/refresh known binding table (PDB + ChEMBL)
-7. Run **on-demand** ZINC search for missing candidate proteins only
+7. Run **on-demand** predicted-ligand search for missing candidate proteins only
 8. Reuse local cache for proteins already processed with the same method
 9. Write per-query results and a global summary
 
@@ -202,8 +202,21 @@ python run_ligq_2.py \
   --ligand-provider zinc \
   --search-representation morgan_1024_r2 \
   --search-metric tanimoto \
-  --zinc-search-threshold 0.5 \
+  --search-threshold 0.5 \
   --cluster-threshold 0.8
+```
+
+Legacy `--zinc-*` option names are still accepted as aliases, but the neutral
+`--search-*` flags are the preferred interface going forward.
+
+When `--ligand-provider` is set to a custom base name, LigQ_2 expects to find:
+
+```text
+<data-dir>/compound_data/<provider-name>/
+  ligands.parquet
+  reps/
+    <search-representation>.dat
+    <search-representation>.meta.json
 ```
 
 Optional rebuild controls:
@@ -223,8 +236,13 @@ This helper script builds an additional compound representation under:
 <output-dir>/compound_data/<base>/reps/<rep-name>.meta.json
 ```
 
-It also ensures compatibility between spaces by creating the same representation
-in the local `pdb_chembl` base when needed.
+It can target:
+- the legacy built-in spaces (`zinc`, `pdb_chembl`)
+- any custom base under `compound_data/<base-name>/`
+- an explicit database root via `--target-root`
+
+Compatibility with the local `pdb_chembl` base can still be requested when
+needed with `--ensure-local-compatible`.
 
 ### Supported representation families
 
@@ -243,6 +261,7 @@ in the local `pdb_chembl` base when needed.
    - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
    - `--rdkit-fp-kind rdkit`: **RDKit/Daylight-like** fingerprint (bit vector).
+   - `--rdkit-fp-kind morgan_feature`: **Feature Morgan / FCFP-like** fingerprint (bit vector).
    - `--rdkit-fp-kind maccs`: **MACCS keys** fingerprint (fixed 167 bits).
 
 3. **Morgan fingerprints**
@@ -319,6 +338,17 @@ python add_new_representation.py \
   --rep-name maccs_167
 ```
 
+Build a Feature Morgan representation in a custom base:
+
+```bash
+python add_new_representation.py \
+  --output-dir databases \
+  --base-name vendor \
+  --representation-type rdkit \
+  --rdkit-fp-kind morgan_feature \
+  --n-bits 1024
+```
+
 Build a HuggingFace representation:
 
 ```bash
@@ -367,7 +397,7 @@ sequence-based and domain-based searches.
 Columns report:
 - the number of candidate proteins,
 - the number of unique known ligands,
-- and the number of predicted ZINC ligands,
+- and the number of predicted ligands from the selected provider,
 
 separately for **sequence** and **domain** searches.
 
@@ -433,14 +463,15 @@ Each row represents a ligand–protein association and may include:
 
 ---
 
-### ZINC Ligands
+### Predicted Ligands
 
 ```
-zinc_ligands.tsv
+predicted_ligands.tsv
 ```
 
-Predicted ligands retrieved from **ZINC**, identified by similarity
-searches starting from known ligands associated with candidate proteins.
+Predicted ligands retrieved from the selected provider (for example **ZINC**
+or a user-provided compound database), identified by similarity searches
+starting from known ligands associated with candidate proteins.
 
 Depending on the chosen options:
 - ligands may be **collapsed to one row per compound**, prioritizing
@@ -504,6 +535,43 @@ python run_ligq_2.py --input-fasta queries.fasta --output-dir results
 No mandatory global precomputation step is required anymore.
 Predicted ligands are computed incrementally and cached on demand
 via provider-specific cache namespaces.
+
+### 4. Build a custom compound database
+
+Import a user-provided compound table into the LigQ_2 internal format:
+
+```bash
+python build_compound_database.py \
+  --input-file vendor.csv \
+  --base-name vendor \
+  --id-column compound \
+  --smiles-column SMILES
+```
+
+Supported input formats:
+- `csv`
+- `tsv`
+- `parquet`
+
+If `--id-column` or `--smiles-column` are omitted, the importer tries common
+column names automatically. The command creates:
+
+```text
+databases/compound_data/vendor/
+  ligands.parquet
+  reps/
+    morgan_1024_r2.dat
+    morgan_1024_r2.meta.json
+```
+
+After that, the base can be queried directly with:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results \
+  --ligand-provider vendor
+```
 
 
 ---

@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from compound_processing.compound_helpers import LigandStore
-from query_processing.results_tables import ZincProviderAdapter
+from query_processing.results_tables import CompoundDatabaseProviderAdapter
 
 
 class LigandSearchProvider(ABC):
@@ -42,70 +42,76 @@ class LigandSearchProvider(ABC):
         return df
 
 
-class ZincLigandSearchProvider(LigandSearchProvider):
+class CompoundDatabaseSearchProvider(LigandSearchProvider):
     def __init__(
         self,
         data_dir: Path,
+        provider_name: str,
+        target_base_name: str,
         search_representation: str = "morgan_1024_r2",
         search_metric: str = "tanimoto",
-        zinc_search_threshold: float = 0.5,
-        zinc_search_threshold_max: float | None = None,
+        search_threshold: float = 0.5,
+        search_threshold_max: float | None = None,
         cluster_threshold: float = 0.8,
-        zinc_per_iteration_topk: int = 1000,
-        zinc_global_topk: int = 50000,
+        search_per_iteration_topk: int = 1000,
+        search_global_topk: int = 50000,
     ):
         self.data_dir = Path(data_dir)
+        self._provider_name = str(provider_name)
+        self.target_base_name = str(target_base_name)
+        self.target_root = self.data_dir / "compound_data" / self.target_base_name
+        self.compound_prefix = "ZINC" if self._provider_name == "zinc" else ""
         self.search_representation = search_representation
         self.search_metric = search_metric
-        self.zinc_search_threshold = float(zinc_search_threshold)
-        self.zinc_search_threshold_max = (
-            float(zinc_search_threshold_max) if zinc_search_threshold_max is not None else None
+        self.search_threshold = float(search_threshold)
+        self.search_threshold_max = (
+            float(search_threshold_max) if search_threshold_max is not None else None
         )
         self.cluster_threshold = float(cluster_threshold)
-        self.zinc_per_iteration_topk = int(zinc_per_iteration_topk)
-        self.zinc_global_topk = int(zinc_global_topk)
+        self.search_per_iteration_topk = int(search_per_iteration_topk)
+        self.search_global_topk = int(search_global_topk)
 
         pdb_chembl_root = self.data_dir / "compound_data" / "pdb_chembl"
-        zinc_root = self.data_dir / "compound_data" / "zinc"
 
         self.store_pdb_chembl = LigandStore(pdb_chembl_root)
-        self.store_zinc = LigandStore(zinc_root)
+        self.store_target = LigandStore(self.target_root)
         self.rep_pdb_chembl = self.store_pdb_chembl.load_representation("morgan_1024_r2")
-        self.rep_zinc = self.store_zinc.load_representation("morgan_1024_r2")
+        self.rep_target = self.store_target.load_representation("morgan_1024_r2")
 
         if self.search_representation == "morgan_1024_r2":
             search_rep_ref = self.rep_pdb_chembl
-            search_rep_zinc = self.rep_zinc
+            search_rep_target = self.rep_target
         else:
             search_rep_ref = self.store_pdb_chembl.load_representation(self.search_representation)
-            search_rep_zinc = self.store_zinc.load_representation(self.search_representation)
+            search_rep_target = self.store_target.load_representation(self.search_representation)
 
-        self.adapter = ZincProviderAdapter(
+        self.adapter = CompoundDatabaseProviderAdapter(
             store_pdb_chembl=self.store_pdb_chembl,
             rep_pdb_chembl=self.rep_pdb_chembl,
-            store_zinc=self.store_zinc,
-            rep_zinc=self.rep_zinc,
+            store_target=self.store_target,
+            rep_target=self.rep_target,
             search_rep_ref=search_rep_ref,
-            search_rep_zinc=search_rep_zinc,
+            search_rep_target=search_rep_target,
             search_metric=self.search_metric,
-            zinc_search_threshold=self.zinc_search_threshold,
-            zinc_search_threshold_max=self.zinc_search_threshold_max,
+            search_threshold=self.search_threshold,
+            search_threshold_max=self.search_threshold_max,
             cluster_threshold=self.cluster_threshold,
-            zinc_per_iteration_topk=self.zinc_per_iteration_topk,
-            zinc_global_topk=self.zinc_global_topk,
+            search_per_iteration_topk=self.search_per_iteration_topk,
+            search_global_topk=self.search_global_topk,
+            compound_prefix=self.compound_prefix,
         )
 
     @property
     def provider_name(self) -> str:
-        return "zinc"
+        return self._provider_name
 
     def method_signature(self) -> dict:
         return {
             "provider": self.provider_name,
             "search_representation": self.search_representation,
             "search_metric": self.search_metric,
-            "zinc_search_threshold": self.zinc_search_threshold,
-            "zinc_search_threshold_max": self.zinc_search_threshold_max,
+            "search_threshold": self.search_threshold,
+            "search_threshold_max": self.search_threshold_max,
         }
 
     def cache_method_signature(self) -> dict:
@@ -123,36 +129,38 @@ class ZincLigandSearchProvider(LigandSearchProvider):
         return "tanimoto" if self.search_metric == "tanimoto" else "similarity"
 
     def cache_coverage(self) -> tuple[float | None, float | None]:
-        return self.zinc_search_threshold, self.zinc_search_threshold_max
+        return self.search_threshold, self.search_threshold_max
 
     def with_cache_coverage(
         self,
         threshold_min: float | None,
         threshold_max: float | None,
-    ) -> "ZincLigandSearchProvider":
-        return ZincLigandSearchProvider(
+    ) -> "CompoundDatabaseSearchProvider":
+        return CompoundDatabaseSearchProvider(
             data_dir=self.data_dir,
+            provider_name=self.provider_name,
+            target_base_name=self.target_base_name,
             search_representation=self.search_representation,
             search_metric=self.search_metric,
-            zinc_search_threshold=self.zinc_search_threshold if threshold_min is None else threshold_min,
-            zinc_search_threshold_max=threshold_max,
+            search_threshold=self.search_threshold if threshold_min is None else threshold_min,
+            search_threshold_max=threshold_max,
             cluster_threshold=self.cluster_threshold,
-            zinc_per_iteration_topk=self.zinc_per_iteration_topk,
-            zinc_global_topk=self.zinc_global_topk,
+            search_per_iteration_topk=self.search_per_iteration_topk,
+            search_global_topk=self.search_global_topk,
         )
 
     def filter_cached_results(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty or self.score_column not in df.columns:
             return df
-        filtered = df[df[self.score_column] >= self.zinc_search_threshold]
-        if self.zinc_search_threshold_max is not None:
-            filtered = filtered[filtered[self.score_column] <= self.zinc_search_threshold_max]
+        filtered = df[df[self.score_column] >= self.search_threshold]
+        if self.search_threshold_max is not None:
+            filtered = filtered[filtered[self.score_column] <= self.search_threshold_max]
         return filtered.reset_index(drop=True)
 
     def database_fingerprint(self, data_dir: Path) -> str:
         data_dir = Path(data_dir)
-        zinc_root = data_dir / "compound_data" / "zinc"
-        reps_root = zinc_root / "reps"
+        target_root = data_dir / "compound_data" / self.target_base_name
+        reps_root = target_root / "reps"
         meta_path = reps_root / f"{self.search_representation}.meta.json"
 
         if not meta_path.is_file():
@@ -164,7 +172,7 @@ class ZincLigandSearchProvider(LigandSearchProvider):
             meta = json.load(f)
 
         rep_data_path = reps_root / meta["file"]
-        ligands_path = zinc_root / "ligands.parquet"
+        ligands_path = target_root / "ligands.parquet"
         def _fp(path: Path) -> dict:
             st = path.stat()
             return {
@@ -185,26 +193,68 @@ class ZincLigandSearchProvider(LigandSearchProvider):
         return self.adapter.compute_for_protein(prot=prot, known_binding=known_binding)
 
 
+class ZincLigandSearchProvider(CompoundDatabaseSearchProvider):
+    def __init__(
+        self,
+        data_dir: Path,
+        search_representation: str = "morgan_1024_r2",
+        search_metric: str = "tanimoto",
+        zinc_search_threshold: float = 0.5,
+        zinc_search_threshold_max: float | None = None,
+        cluster_threshold: float = 0.8,
+        zinc_per_iteration_topk: int = 1000,
+        zinc_global_topk: int = 50000,
+    ):
+        super().__init__(
+            data_dir=data_dir,
+            provider_name="zinc",
+            target_base_name="zinc",
+            search_representation=search_representation,
+            search_metric=search_metric,
+            search_threshold=zinc_search_threshold,
+            search_threshold_max=zinc_search_threshold_max,
+            cluster_threshold=cluster_threshold,
+            search_per_iteration_topk=zinc_per_iteration_topk,
+            search_global_topk=zinc_global_topk,
+        )
+
+
 def build_provider(
     provider_name: str,
     data_dir: Path,
     search_representation: str,
     search_metric: str,
-    zinc_search_threshold: float,
-    zinc_search_threshold_max: float | None,
+    search_threshold: float,
+    search_threshold_max: float | None,
     cluster_threshold: float,
-    zinc_per_iteration_topk: int,
-    zinc_global_topk: int,
+    search_per_iteration_topk: int,
+    search_global_topk: int,
 ) -> LigandSearchProvider:
     if provider_name == "zinc":
         return ZincLigandSearchProvider(
             data_dir=data_dir,
             search_representation=search_representation,
             search_metric=search_metric,
-            zinc_search_threshold=zinc_search_threshold,
-            zinc_search_threshold_max=zinc_search_threshold_max,
+            zinc_search_threshold=search_threshold,
+            zinc_search_threshold_max=search_threshold_max,
             cluster_threshold=cluster_threshold,
-            zinc_per_iteration_topk=zinc_per_iteration_topk,
-            zinc_global_topk=zinc_global_topk,
+            zinc_per_iteration_topk=search_per_iteration_topk,
+            zinc_global_topk=search_global_topk,
         )
-    raise ValueError(f"Unknown ligand provider: {provider_name}")
+    target_root = Path(data_dir) / "compound_data" / provider_name
+    if not target_root.exists():
+        raise ValueError(
+            f"Unknown ligand provider '{provider_name}'. Expected compound database at: {target_root}"
+        )
+    return CompoundDatabaseSearchProvider(
+        data_dir=data_dir,
+        provider_name=provider_name,
+        target_base_name=provider_name,
+        search_representation=search_representation,
+        search_metric=search_metric,
+        search_threshold=search_threshold,
+        search_threshold_max=search_threshold_max,
+        cluster_threshold=cluster_threshold,
+        search_per_iteration_topk=search_per_iteration_topk,
+        search_global_topk=search_global_topk,
+    )
