@@ -551,10 +551,20 @@ python build_compound_database.py \
 Supported input formats:
 - `csv`
 - `tsv`
+- `smi`
 - `parquet`
 
 If `--id-column` or `--smiles-column` are omitted, the importer tries common
-column names automatically. The command creates:
+column names automatically for table-like inputs (`csv`, `tsv`, `parquet`).
+
+For `.smi`, the current supported convention is:
+
+```text
+SMILES compound_id
+```
+
+with no header row. The first column is interpreted as `SMILES` and the second
+as the compound identifier. The command creates:
 
 ```text
 databases/compound_data/vendor/

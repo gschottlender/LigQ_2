@@ -34,6 +34,8 @@ def _infer_format(path: Path) -> str:
         return "csv"
     if suffix in {".tsv", ".txt"}:
         return "tsv"
+    if suffix == ".smi":
+        return "smi"
     if suffix == ".parquet":
         return "parquet"
     raise ValueError(
@@ -48,6 +50,29 @@ def _read_table(input_file: Path, file_format: str | None, delimiter: str | None
         return pd.read_csv(input_file, sep="," if delimiter is None else delimiter)
     if resolved_format == "tsv":
         return pd.read_csv(input_file, sep="\t" if delimiter is None else delimiter)
+    if resolved_format == "smi":
+        if delimiter is None:
+            df = pd.read_csv(
+                input_file,
+                sep=r"\s+",
+                header=None,
+                usecols=[0, 1],
+                names=["smiles", "chem_comp_id"],
+                engine="python",
+            )
+        else:
+            df = pd.read_csv(
+                input_file,
+                sep=delimiter,
+                header=None,
+                usecols=[0, 1],
+                names=["smiles", "chem_comp_id"],
+            )
+        if df.shape[1] < 2:
+            raise ValueError(
+                ".smi inputs must contain at least two columns: SMILES and compound_id."
+            )
+        return df
     if resolved_format == "parquet":
         return pd.read_parquet(input_file)
     raise ValueError(f"Unsupported file format: {resolved_format}")
@@ -137,7 +162,11 @@ def parse_args() -> argparse.Namespace:
             "and build the default Morgan representation."
         )
     )
-    parser.add_argument("--input-file", required=True, help="Input CSV/TSV/Parquet file.")
+    parser.add_argument(
+        "--input-file",
+        required=True,
+        help="Input CSV/TSV/SMI/Parquet file.",
+    )
     parser.add_argument(
         "--output-dir",
         default="databases",
@@ -150,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--file-format",
-        choices=["csv", "tsv", "parquet"],
+        choices=["csv", "tsv", "smi", "parquet"],
         default=None,
         help="Optional input file format. If omitted, inferred from the file extension.",
     )
