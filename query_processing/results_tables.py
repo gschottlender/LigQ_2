@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 from tqdm.auto import tqdm
 
 from compound_processing.compound_helpers import LigandStore
-from compound_processing.zinc_search import get_compound_database_ligands
+from compound_processing.compound_database_search import get_compound_database_ligands
 
 
 def build_protein_domains_table(

@@ -199,23 +199,36 @@ class ZincLigandSearchProvider(CompoundDatabaseSearchProvider):
         data_dir: Path,
         search_representation: str = "morgan_1024_r2",
         search_metric: str = "tanimoto",
-        zinc_search_threshold: float = 0.5,
-        zinc_search_threshold_max: float | None = None,
+        search_threshold: float = 0.5,
+        search_threshold_max: float | None = None,
         cluster_threshold: float = 0.8,
-        zinc_per_iteration_topk: int = 1000,
-        zinc_global_topk: int = 50000,
+        search_per_iteration_topk: int = 1000,
+        search_global_topk: int = 50000,
+        *,
+        zinc_search_threshold: float | None = None,
+        zinc_search_threshold_max: float | None = None,
+        zinc_per_iteration_topk: int | None = None,
+        zinc_global_topk: int | None = None,
     ):
+        if zinc_search_threshold is not None:
+            search_threshold = zinc_search_threshold
+        if zinc_search_threshold_max is not None:
+            search_threshold_max = zinc_search_threshold_max
+        if zinc_per_iteration_topk is not None:
+            search_per_iteration_topk = zinc_per_iteration_topk
+        if zinc_global_topk is not None:
+            search_global_topk = zinc_global_topk
         super().__init__(
             data_dir=data_dir,
             provider_name="zinc",
             target_base_name="zinc",
             search_representation=search_representation,
             search_metric=search_metric,
-            search_threshold=zinc_search_threshold,
-            search_threshold_max=zinc_search_threshold_max,
+            search_threshold=search_threshold,
+            search_threshold_max=search_threshold_max,
             cluster_threshold=cluster_threshold,
-            search_per_iteration_topk=zinc_per_iteration_topk,
-            search_global_topk=zinc_global_topk,
+            search_per_iteration_topk=search_per_iteration_topk,
+            search_global_topk=search_global_topk,
         )
 
 
@@ -235,11 +248,11 @@ def build_provider(
             data_dir=data_dir,
             search_representation=search_representation,
             search_metric=search_metric,
-            zinc_search_threshold=search_threshold,
-            zinc_search_threshold_max=search_threshold_max,
+            search_threshold=search_threshold,
+            search_threshold_max=search_threshold_max,
             cluster_threshold=cluster_threshold,
-            zinc_per_iteration_topk=search_per_iteration_topk,
-            zinc_global_topk=search_global_topk,
+            search_per_iteration_topk=search_per_iteration_topk,
+            search_global_topk=search_global_topk,
         )
     target_root = Path(data_dir) / "compound_data" / provider_name
     if not target_root.exists():

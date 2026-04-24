@@ -62,12 +62,17 @@ HF_CORE_REQUIRED_RELATIVE_PATHS = [
     "complementary_databases/pfam",
 ]
 
-HF_ZINC_REQUIRED_RELATIVE_PATHS = [
+HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS = [
     "compound_data/zinc/ligands.parquet",
     "compound_data/zinc/reps/morgan_1024_r2.dat",
     "compound_data/zinc/reps/morgan_1024_r2.meta.json",
 ]
-HF_REQUIRED_RELATIVE_PATHS = HF_CORE_REQUIRED_RELATIVE_PATHS + HF_ZINC_REQUIRED_RELATIVE_PATHS
+HF_REQUIRED_RELATIVE_PATHS = (
+    HF_CORE_REQUIRED_RELATIVE_PATHS + HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS
+)
+
+# Legacy internal alias kept to avoid breaking historical references.
+HF_ZINC_REQUIRED_RELATIVE_PATHS = HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS
 
 HF_OPTIONAL_CACHE_PATH_GROUPS = [
     [
@@ -86,7 +91,7 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
 def _required_base_paths(provider_name: str) -> list[str]:
     required = list(HF_CORE_REQUIRED_RELATIVE_PATHS)
     if provider_name == "zinc":
-        required.extend(HF_ZINC_REQUIRED_RELATIVE_PATHS)
+        required.extend(HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS)
     return required
 
 
