@@ -21,6 +21,8 @@ This script:
 """
 
 import argparse
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +30,42 @@ from generate_databases.zinc_db import generate_zinc_database
 
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
+
+
+def backup_zinc_predicted_cache(
+    output_dir: Path,
+    backup_dirname: str = "old_predicted_bindings_backup",
+) -> Optional[Path]:
+    """
+    Move the existing ZINC predicted-binding cache to a timestamped backup.
+
+    ZINC rebuilds change the ligand universe and invalidate any per-protein
+    predicted cache computed against the previous base. The runtime cache also
+    validates database fingerprints, but moving the old cache keeps the
+    results_databases tree unambiguous after an update.
+    """
+    cache_dir = output_dir / "results_databases" / "predicted_bindings" / "zinc"
+    if not cache_dir.exists():
+        return None
+
+    existing_entries = sorted(cache_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = output_dir / "results_databases" / backup_dirname / "zinc"
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+    shutil.move(str(cache_dir), str(backup_dir))
+    print(f"[INFO] Moved existing ZINC predicted cache to backup: {backup_dir}")
+    return backup_dir
+
 
 # ---------------------------------------------------------------------------
 # Helper: download the ZINC URL file from Hugging Face if missing
@@ -197,6 +235,16 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--keep-existing-predicted-cache",
+        action="store_true",
+        help=(
+            "Keep the current files under "
+            "<output-dir>/results_databases/predicted_bindings/zinc instead "
+            "of moving them to old_predicted_bindings_backup before rebuilding."
+        ),
+    )
+
+    parser.add_argument(
         "--download-workers",
         type=int,
         default=4,
@@ -241,6 +289,7 @@ def main() -> None:
     temp_data_dir = Path(args.temp_data_dir).resolve()
     generate_chemberta = args.chemberta_rep
     backup_old_reps = not args.keep_existing_reps
+    backup_predicted_cache = not args.keep_existing_predicted_cache
 
     print(f"[INFO] Output directory       : {output_dir}")
     print(f"[INFO] Temporary data directory: {temp_data_dir}")
@@ -248,6 +297,10 @@ def main() -> None:
     print(f"[INFO] Retries per scheme      : {args.download_retries_per_scheme}")
     print(f"[INFO] Retry base wait (s)     : {args.download_retry_wait_seconds}")
     print(f"[INFO] Backup old reps         : {backup_old_reps}")
+    print(f"[INFO] Backup predicted cache  : {backup_predicted_cache}")
+
+    if backup_predicted_cache:
+        backup_zinc_predicted_cache(output_dir=output_dir)
 
     # ------------------------------------------------------------------
     # 1) Ensure ZINC URL file exists under <output_dir>/zinc

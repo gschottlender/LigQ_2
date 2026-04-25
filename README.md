@@ -519,11 +519,32 @@ database should then be regenerated with:
 python add_new_representation.py --output-dir databases --base zinc ...
 ```
 
+The ZINC predicted-binding cache is also moved by default from:
+
+```bash
+databases/results_databases/predicted_bindings/zinc/
+```
+
+into:
+
+```bash
+databases/results_databases/old_predicted_bindings_backup/zinc/
+```
+
+This keeps per-protein predicted results computed against an older ZINC build
+separate from the cache that will be generated for the updated database.
+
 If you explicitly want to keep the current contents of `reps/` in place during
 the update, use:
 
 ```bash
 python update_zinc_databases.py --keep-existing-reps
+```
+
+If you explicitly want to keep the existing ZINC predicted cache in place, use:
+
+```bash
+python update_zinc_databases.py --keep-existing-predicted-cache
 ```
 
 ### 3. Run queries directly (single-script operational mode)
