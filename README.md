@@ -225,6 +225,17 @@ Optional rebuild controls:
 - `--force-rebuild-protein-domains`
 - `--force-rebuild-predicted-cache`
 
+If the base data is missing and must be fetched from Hugging Face, but you want
+to avoid downloading the optional precomputed predicted-ligand cache under
+`results_databases/predicted_bindings`, add:
+
+```bash
+python run_ligq_2.py ... --skip-hf-predicted-cache
+```
+
+The run will still build/reuse a local on-demand predicted cache for the
+proteins it actually needs.
+
 ---
 
 ## Utility Script: `add_new_representation.py`

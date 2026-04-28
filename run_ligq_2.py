@@ -111,6 +111,22 @@ def _has_any_optional_cache_group(root: Path) -> bool:
     return False
 
 
+def _hf_allow_patterns(
+    required_rel_paths: list[str],
+    download_optional_predicted_cache: bool,
+) -> list[str]:
+    patterns: list[str] = []
+    for rel_path in required_rel_paths:
+        patterns.append(rel_path)
+        patterns.append(f"{rel_path}/**")
+
+    if download_optional_predicted_cache:
+        for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
+            patterns.extend(rel_group)
+
+    return patterns
+
+
 def _copy_path_if_missing(src: Path, dst: Path) -> None:
     if dst.exists():
         return
@@ -125,6 +141,7 @@ def ensure_base_data_from_hf(
     data_dir: Path,
     repo_id: str = "gschottlender/LigQ_2",
     provider_name: str = "zinc",
+    download_optional_predicted_cache: bool = True,
 ) -> None:
     data_dir = Path(data_dir)
     required_rel_paths = _required_base_paths(provider_name)
@@ -141,7 +158,16 @@ def ensure_base_data_from_hf(
         )
 
     print(f"[INFO] Downloading base data from Hugging Face dataset '{repo_id}'...")
-    local_dir = Path(snapshot_download(repo_id=repo_id, repo_type="dataset"))
+    local_dir = Path(
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            allow_patterns=_hf_allow_patterns(
+                required_rel_paths=required_rel_paths,
+                download_optional_predicted_cache=download_optional_predicted_cache,
+            ),
+        )
+    )
 
     data_dir.mkdir(parents=True, exist_ok=True)
     for rel_path in required_rel_paths:
@@ -154,7 +180,7 @@ def ensure_base_data_from_hf(
         _copy_path_if_missing(src, dst)
 
     copied_optional_cache = False
-    if provider_name == "zinc":
+    if provider_name == "zinc" and download_optional_predicted_cache:
         for rel_group in HF_OPTIONAL_CACHE_PATH_GROUPS:
             if all((local_dir / rel_path).exists() for rel_path in rel_group):
                 for rel_path in rel_group:
@@ -162,7 +188,7 @@ def ensure_base_data_from_hf(
                 copied_optional_cache = True
                 break
 
-    if provider_name == "zinc" and not copied_optional_cache:
+    if provider_name == "zinc" and download_optional_predicted_cache and not copied_optional_cache:
         print("[INFO] No optional default predicted-cache namespace found in HF dataset. Continuing without it.")
 
     still_missing = _missing_required_base_paths(data_dir, provider_name=provider_name)
@@ -227,6 +253,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--keep-repeated-ligands", action="store_true")
     parser.add_argument("--hf-repo-id", default="gschottlender/LigQ_2")
+    parser.add_argument(
+        "--skip-hf-predicted-cache",
+        action="store_true",
+        help=(
+            "When base data must be downloaded from Hugging Face, download only "
+            "the required base files and exclude the optional predicted_bindings cache."
+        ),
+    )
 
     parser.add_argument("--ligand-provider", default="zinc", help="Predicted-ligand provider (default: zinc).")
     parser.add_argument("--search-representation", default="morgan_1024_r2")
@@ -325,6 +359,7 @@ def main() -> None:
         data_dir=data_dir,
         repo_id=args.hf_repo_id,
         provider_name=args.ligand_provider,
+        download_optional_predicted_cache=not args.skip_hf_predicted_cache,
     )
     if use_domains or use_nearest_k:
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
