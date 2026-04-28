@@ -164,7 +164,9 @@ def ensure_base_data_from_hf(
             repo_type="dataset",
             allow_patterns=_hf_allow_patterns(
                 required_rel_paths=required_rel_paths,
-                download_optional_predicted_cache=download_optional_predicted_cache,
+                download_optional_predicted_cache=(
+                    provider_name == "zinc" and download_optional_predicted_cache
+                ),
             ),
         )
     )
