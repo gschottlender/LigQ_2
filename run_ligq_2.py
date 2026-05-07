@@ -263,6 +263,15 @@ def parse_args() -> argparse.Namespace:
             "the required base files and exclude the optional predicted_bindings cache."
         ),
     )
+    parser.add_argument(
+        "--known-only",
+        action="store_true",
+        help=(
+            "Return only curated PDB/ChEMBL ligands for recovered proteins. "
+            "Skips provider setup, predicted-ligand cache generation, and "
+            "searches against ZINC or custom compound databases."
+        ),
+    )
 
     parser.add_argument("--ligand-provider", default="zinc", help="Predicted-ligand provider (default: zinc).")
     parser.add_argument("--search-representation", default="morgan_1024_r2")
@@ -332,13 +341,17 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    if args.search_threshold_max is not None and args.search_threshold_max < args.search_threshold:
+    if (
+        not args.known_only
+        and args.search_threshold_max is not None
+        and args.search_threshold_max < args.search_threshold
+    ):
         raise ValueError(
             "--search-threshold-max must be >= --search-threshold."
         )
-    if args.search_per_iteration_topk <= 0:
+    if not args.known_only and args.search_per_iteration_topk <= 0:
         raise ValueError("--search-per-iteration-topk must be > 0.")
-    if args.search_global_topk <= 0:
+    if not args.known_only and args.search_global_topk <= 0:
         raise ValueError("--search-global-topk must be > 0.")
 
     input_fasta = Path(args.input_fasta)
@@ -360,8 +373,8 @@ def main() -> None:
     ensure_base_data_from_hf(
         data_dir=data_dir,
         repo_id=args.hf_repo_id,
-        provider_name=args.ligand_provider,
-        download_optional_predicted_cache=not args.skip_hf_predicted_cache,
+        provider_name="" if args.known_only else args.ligand_provider,
+        download_optional_predicted_cache=(not args.known_only and not args.skip_hf_predicted_cache),
     )
     if use_domains or use_nearest_k:
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
@@ -449,26 +462,41 @@ def main() -> None:
 
     proteins_needed = set(df_candidates_all["sseqid"].astype(str).unique()) if not df_candidates_all.empty else set()
 
-    provider = build_provider(
-        provider_name=args.ligand_provider,
-        data_dir=data_dir,
-        search_representation=args.search_representation,
-        search_metric=args.search_metric,
-        search_threshold=args.search_threshold,
-        search_threshold_max=args.search_threshold_max,
-        cluster_threshold=args.cluster_threshold,
-        search_per_iteration_topk=args.search_per_iteration_topk,
-        search_global_topk=args.search_global_topk,
-    )
+    predicted_score_col = None
+    if args.known_only:
+        print("[INFO] Known-only mode enabled. Skipping predicted-ligand provider and cache.")
+        predicted_db = pd.DataFrame(
+            columns=[
+                "uniprot_id",
+                "chem_comp_id",
+                "possible_binding_sites",
+                "query_id",
+                "score",
+                "smiles",
+            ]
+        )
+    else:
+        provider = build_provider(
+            provider_name=args.ligand_provider,
+            data_dir=data_dir,
+            search_representation=args.search_representation,
+            search_metric=args.search_metric,
+            search_threshold=args.search_threshold,
+            search_threshold_max=args.search_threshold_max,
+            cluster_threshold=args.cluster_threshold,
+            search_per_iteration_topk=args.search_per_iteration_topk,
+            search_global_topk=args.search_global_topk,
+        )
 
-    predicted_db = ensure_provider_cache(
-        data_dir=data_dir,
-        provider=provider,
-        known_binding=known_db,
-        proteins_needed=proteins_needed,
-        force_rebuild_cache=args.force_rebuild_predicted_cache,
-        load_dataframe=False,
-    )
+        predicted_db = ensure_provider_cache(
+            data_dir=data_dir,
+            provider=provider,
+            known_binding=known_db,
+            proteins_needed=proteins_needed,
+            force_rebuild_cache=args.force_rebuild_predicted_cache,
+            load_dataframe=False,
+        )
+        predicted_score_col = getattr(provider, "score_column", None)
 
     summary_df = build_query_ligand_results_parallel(
         df_queries=df_queries,
@@ -483,7 +511,7 @@ def main() -> None:
         chunk_size_queries=args.block3_query_chunk_size,
         drop_duplicates=not args.keep_repeated_ligands,
         predicted_filter_batch_size=args.block3_predicted_filter_batch_size,
-        predicted_score_col=getattr(provider, "score_column", None),
+        predicted_score_col=predicted_score_col,
         predicted_threshold_min=args.search_threshold,
         predicted_threshold_max=args.search_threshold_max,
     )

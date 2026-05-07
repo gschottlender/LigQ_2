@@ -175,6 +175,10 @@ This is the primary user-facing entry point.
 8. Reuse local cache for proteins already processed with the same method
 9. Write per-query results and a global summary
 
+If `--known-only` is used, steps 7 and 8 are skipped. The pipeline still
+recovers proteins by sequence, nearest-K and/or domain searches, but reports
+only curated ligands from the local PDB/ChEMBL binding table.
+
 ### On-demand cache layout
 
 Method-specific predicted ligand cache is stored under:
@@ -208,6 +212,19 @@ python run_ligq_2.py \
 
 Legacy `--zinc-*` option names are still accepted as aliases, but the neutral
 `--search-*` flags are the preferred interface going forward.
+
+To retrieve only curated PDB/ChEMBL ligands, without searching ZINC or any
+custom compound provider, use:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_known_only \
+  --known-only
+```
+
+In this mode, `predicted_ligands.tsv` files are not produced and the predicted
+ligand counts in `search_results_summary.tsv` remain zero.
 
 When `--ligand-provider` is set to a custom base name, LigQ_2 expects to find:
 
@@ -483,6 +500,8 @@ predicted_ligands.tsv
 Predicted ligands retrieved from the selected provider (for example **ZINC**
 or a user-provided compound database), identified by similarity searches
 starting from known ligands associated with candidate proteins.
+
+This file is skipped when `run_ligq_2.py` is executed with `--known-only`.
 
 Depending on the chosen options:
 - ligands may be **collapsed to one row per compound**, prioritizing
