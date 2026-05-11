@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from compound_processing.bsi_search import BSI_DEFAULT_MAX_KNOWN_LIGANDS, BSI_MODEL_SUBDIR
+
 try:
     from huggingface_hub import snapshot_download
 except ImportError:  # pragma: no cover
@@ -67,6 +69,9 @@ HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS = [
     "compound_data/zinc/reps/morgan_1024_r2.dat",
     "compound_data/zinc/reps/morgan_1024_r2.meta.json",
 ]
+HF_BSI_REQUIRED_RELATIVE_PATHS = [
+    BSI_MODEL_SUBDIR.as_posix(),
+]
 HF_REQUIRED_RELATIVE_PATHS = (
     HF_CORE_REQUIRED_RELATIVE_PATHS + HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS
 )
@@ -88,16 +93,22 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
 ]
 
 
-def _required_base_paths(provider_name: str) -> list[str]:
+def _required_base_paths(provider_name: str, include_bsi_models: bool = False) -> list[str]:
     required = list(HF_CORE_REQUIRED_RELATIVE_PATHS)
     if provider_name == "zinc":
         required.extend(HF_DEFAULT_PROVIDER_REQUIRED_RELATIVE_PATHS)
+    if include_bsi_models:
+        required.extend(HF_BSI_REQUIRED_RELATIVE_PATHS)
     return required
 
 
-def _missing_required_base_paths(data_dir: Path, provider_name: str = "zinc") -> list[Path]:
+def _missing_required_base_paths(
+    data_dir: Path,
+    provider_name: str = "zinc",
+    include_bsi_models: bool = False,
+) -> list[Path]:
     missing: list[Path] = []
-    for rel_path in _required_base_paths(provider_name):
+    for rel_path in _required_base_paths(provider_name, include_bsi_models=include_bsi_models):
         candidate = data_dir / rel_path
         if not candidate.exists():
             missing.append(candidate)
@@ -142,10 +153,15 @@ def ensure_base_data_from_hf(
     repo_id: str = "gschottlender/LigQ_2",
     provider_name: str = "zinc",
     download_optional_predicted_cache: bool = True,
+    include_bsi_models: bool = False,
 ) -> None:
     data_dir = Path(data_dir)
-    required_rel_paths = _required_base_paths(provider_name)
-    missing_paths = _missing_required_base_paths(data_dir, provider_name=provider_name)
+    required_rel_paths = _required_base_paths(provider_name, include_bsi_models=include_bsi_models)
+    missing_paths = _missing_required_base_paths(
+        data_dir,
+        provider_name=provider_name,
+        include_bsi_models=include_bsi_models,
+    )
     if not missing_paths:
         print("[INFO] Found default-ready base data in data_dir. Skipping HF download.")
         return
@@ -193,7 +209,11 @@ def ensure_base_data_from_hf(
     if provider_name == "zinc" and download_optional_predicted_cache and not copied_optional_cache:
         print("[INFO] No optional default predicted-cache namespace found in HF dataset. Continuing without it.")
 
-    still_missing = _missing_required_base_paths(data_dir, provider_name=provider_name)
+    still_missing = _missing_required_base_paths(
+        data_dir,
+        provider_name=provider_name,
+        include_bsi_models=include_bsi_models,
+    )
     if still_missing:
         missing_str = "\n".join(f"  - {path}" for path in still_missing)
         raise FileNotFoundError(
@@ -272,10 +292,51 @@ def parse_args() -> argparse.Namespace:
             "searches against ZINC or custom compound databases."
         ),
     )
+    parser.add_argument(
+        "--bsi",
+        action="store_true",
+        help="Use BSI instead of Tanimoto/Cosine for predicted-ligand search.",
+    )
+    parser.add_argument(
+        "--bsi-threshold",
+        type=float,
+        default=0.5,
+        help="Minimum BSI score to report when --bsi is enabled (default: 0.5).",
+    )
 
     parser.add_argument("--ligand-provider", default="zinc", help="Predicted-ligand provider (default: zinc).")
     parser.add_argument("--search-representation", default="morgan_1024_r2")
     parser.add_argument("--search-metric", choices=["tanimoto", "cosine"], default="tanimoto")
+    parser.add_argument(
+        "--search-device",
+        default="auto",
+        help="Search backend device: auto, cpu, cuda, or cuda:<index> (default: auto).",
+    )
+    parser.add_argument(
+        "--search-query-batch-size",
+        type=int,
+        default=None,
+        help="Optional query batch size override for compound searches.",
+    )
+    parser.add_argument(
+        "--search-target-chunk-size",
+        type=int,
+        default=None,
+        help="Optional target database chunk size override for compound searches.",
+    )
+    parser.add_argument(
+        "--bsi-model-batch-size",
+        type=int,
+        default=65536,
+        help="Batch size used inside the BSI neural model for one seed against one target chunk.",
+    )
+    parser.add_argument(
+        "--bsi-max-known-ligands",
+        dest="bsi_max_known_ligands",
+        type=int,
+        default=BSI_DEFAULT_MAX_KNOWN_LIGANDS,
+        help="Maximum representative known ligands used for BSI search per protein (default: 10).",
+    )
     parser.add_argument("--search-threshold", dest="search_threshold", type=float, default=0.3)
     parser.add_argument("--zinc-search-threshold", dest="search_threshold", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
@@ -341,8 +402,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    if args.bsi_threshold < 0.0 or args.bsi_threshold > 1.0:
+        raise ValueError("--bsi-threshold must be between 0 and 1.")
+    if args.search_query_batch_size is not None and args.search_query_batch_size <= 0:
+        raise ValueError("--search-query-batch-size must be > 0.")
+    if args.search_target_chunk_size is not None and args.search_target_chunk_size <= 0:
+        raise ValueError("--search-target-chunk-size must be > 0.")
+    if args.bsi_model_batch_size <= 0:
+        raise ValueError("--bsi-model-batch-size must be > 0.")
+    if args.bsi_max_known_ligands <= 0:
+        raise ValueError("--bsi-max-known-ligands must be > 0.")
     if (
         not args.known_only
+        and not args.bsi
         and args.search_threshold_max is not None
         and args.search_threshold_max < args.search_threshold
     ):
@@ -374,9 +446,12 @@ def main() -> None:
         data_dir=data_dir,
         repo_id=args.hf_repo_id,
         provider_name="" if args.known_only else args.ligand_provider,
-        download_optional_predicted_cache=(not args.known_only and not args.skip_hf_predicted_cache),
+        download_optional_predicted_cache=(
+            not args.known_only and not args.bsi and not args.skip_hf_predicted_cache
+        ),
+        include_bsi_models=(not args.known_only and args.bsi),
     )
-    if use_domains or use_nearest_k:
+    if use_domains or use_nearest_k or (not args.known_only and args.bsi):
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
 
     print("[INFO] Preparing complementary databases...")
@@ -486,6 +561,13 @@ def main() -> None:
             cluster_threshold=args.cluster_threshold,
             search_per_iteration_topk=args.search_per_iteration_topk,
             search_global_topk=args.search_global_topk,
+            use_bsi=args.bsi,
+            bsi_threshold=args.bsi_threshold,
+            search_device=args.search_device,
+            search_q_batch_size=args.search_query_batch_size,
+            search_target_chunk_size=args.search_target_chunk_size,
+            bsi_model_batch_size=args.bsi_model_batch_size,
+            bsi_max_known_ligands=args.bsi_max_known_ligands,
         )
 
         predicted_db = ensure_provider_cache(
@@ -498,6 +580,8 @@ def main() -> None:
         )
         predicted_score_col = getattr(provider, "score_column", None)
 
+    predicted_threshold_min = args.bsi_threshold if args.bsi else args.search_threshold
+    predicted_threshold_max = None if args.bsi else args.search_threshold_max
     summary_df = build_query_ligand_results_parallel(
         df_queries=df_queries,
         df_candidates_all=df_candidates_all,
@@ -512,8 +596,8 @@ def main() -> None:
         drop_duplicates=not args.keep_repeated_ligands,
         predicted_filter_batch_size=args.block3_predicted_filter_batch_size,
         predicted_score_col=predicted_score_col,
-        predicted_threshold_min=args.search_threshold,
-        predicted_threshold_max=args.search_threshold_max,
+        predicted_threshold_min=predicted_threshold_min,
+        predicted_threshold_max=predicted_threshold_max,
     )
 
     print("[INFO] Pipeline completed successfully.")

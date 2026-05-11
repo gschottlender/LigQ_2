@@ -245,6 +245,9 @@ class CompoundDatabaseProviderAdapter:
         cluster_threshold: float = 0.8,
         search_per_iteration_topk: int = 1000,
         search_global_topk: int = 50000,
+        search_device: str = "auto",
+        search_q_batch_size: Optional[int] = None,
+        search_target_chunk_size: Optional[int] = None,
         compound_prefix: str = "",
     ):
         self.store_pdb_chembl = store_pdb_chembl
@@ -259,6 +262,9 @@ class CompoundDatabaseProviderAdapter:
         self.cluster_threshold = cluster_threshold
         self.search_per_iteration_topk = search_per_iteration_topk
         self.search_global_topk = search_global_topk
+        self.search_device = search_device
+        self.search_q_batch_size = search_q_batch_size
+        self.search_target_chunk_size = search_target_chunk_size
         self.compound_prefix = compound_prefix
 
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:
@@ -275,6 +281,9 @@ class CompoundDatabaseProviderAdapter:
             search_threshold=self.search_threshold,
             search_threshold_max=self.search_threshold_max,
             cluster_threshold=self.cluster_threshold,
+            search_device=self.search_device,
+            search_q_batch_size=self.search_q_batch_size,
+            search_target_chunk_size=self.search_target_chunk_size,
             search_per_iteration_topk=self.search_per_iteration_topk,
             search_global_topk=self.search_global_topk,
             compound_prefix=self.compound_prefix,

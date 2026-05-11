@@ -1295,7 +1295,10 @@ def _process_single_query(
                 ligand_col_out,
                 "possible_binding_sites",
                 "query_id",
+                "bsi_score",
+                "pfam_id",
                 "tanimoto",
+                "similarity",
                 "smiles",
             ]
             cols_predicted = [c for c in preferred_order if c in df_predicted_out.columns]

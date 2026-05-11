@@ -179,6 +179,10 @@ If `--known-only` is used, steps 7 and 8 are skipped. The pipeline still
 recovers proteins by sequence, nearest-K and/or domain searches, but reports
 only curated ligands from the local PDB/ChEMBL binding table.
 
+If `--bsi` is used, the predicted-ligand step uses BSI instead of
+Tanimoto/Cosine. BSI is PFAM-dependent: it is applied only to recovered
+proteins whose PFAM family is supported by the bundled BSI models.
+
 ### On-demand cache layout
 
 Method-specific predicted ligand cache is stored under:
@@ -194,6 +198,11 @@ Method-specific predicted ligand cache is stored under:
 
 The `manifest.json` captures method configuration and provider database
 fingerprint to ensure cache consistency. Locking avoids concurrent write races. During on-demand computation, a tqdm progress bar reports completed vs pending requested proteins.
+
+BSI caches are stored separately from structural-similarity caches. For
+example, `--ligand-provider zinc --bsi` writes under a provider namespace like
+`predicted_bindings/zinc_bsi/`, so BSI results do not mix with Tanimoto or
+Cosine results.
 
 ### New useful options in `run_ligq_2.py`
 
@@ -225,6 +234,52 @@ python run_ligq_2.py \
 
 In this mode, `predicted_ligands.tsv` files are not produced and the predicted
 ligand counts in `search_results_summary.tsv` remain zero.
+
+To use BSI for predicted ligand expansion:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_bsi \
+  --ligand-provider zinc \
+  --bsi \
+  --bsi-threshold 0.5
+```
+
+BSI requires the default `morgan_1024_r2` fingerprints and the BSI model bundle
+under:
+
+```text
+<data-dir>/bsi_models/mpg_1024/
+  manifest.json
+  summary.csv
+  <PFAM>/model.pth
+  <PFAM>/params.json
+```
+
+When `--bsi` is enabled and this folder is missing, `run_ligq_2.py` attempts to
+download it from the configured Hugging Face dataset. If a recovered protein has
+multiple supported PFAM families, LigQ_2 selects the model with the highest
+`val_pr_auc` in `summary.csv`. Proteins with no supported PFAM simply produce no
+BSI predicted ligands.
+
+CPU/GPU search can be controlled with:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_bsi_gpu \
+  --ligand-provider zinc \
+  --bsi \
+  --search-device cuda \
+  --search-target-chunk-size 100000 \
+  --bsi-model-batch-size 65536 \
+  --bsi-max-known-ligands 10
+```
+
+BSI uses at most 10 representative known ligands per recovered protein by
+default. This limit is specific to BSI and does not change the Tanimoto/Cosine
+workflow.
 
 When `--ligand-provider` is set to a custom base name, LigQ_2 expects to find:
 
@@ -501,6 +556,10 @@ Predicted ligands retrieved from the selected provider (for example **ZINC**
 or a user-provided compound database), identified by similarity searches
 starting from known ligands associated with candidate proteins.
 
+For Tanimoto searches, the score column is `tanimoto`. For embedding/Cosine
+searches, the score column is `similarity`. For BSI searches, the score column
+is `bsi_score` and the selected model family is reported in `pfam_id`.
+
 This file is skipped when `run_ligq_2.py` is executed with `--known-only`.
 
 Depending on the chosen options:
@@ -634,6 +693,17 @@ python run_ligq_2.py \
   --ligand-provider vendor
 ```
 
+The same custom base can be queried with BSI if it has the default
+`morgan_1024_r2` representation:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_vendor_bsi \
+  --ligand-provider vendor \
+  --bsi
+```
+
 
 ---
 
@@ -642,6 +712,25 @@ python run_ligq_2.py \
 - Parallel execution supported
 - Resume-safe long computations
 - Designed for HPC but works locally
+- BSI searches are chunked and support CPU/GPU execution without loading the
+  full target database into RAM or VRAM.
+
+For BSI-specific CPU/GPU benchmarks, use:
+
+```bash
+python benchmark_bsi_search.py \
+  --data-dir databases \
+  --ligand-provider zinc \
+  --device cpu \
+  --target-limit 100000 \
+  --seed-counts 1,5,10 \
+  --target-chunk-sizes 25000,50000,100000 \
+  --model-batch-sizes 32768,65536
+```
+
+Set `--target-limit 0` to benchmark the full provider database, including the
+full ZINC in-stock base when available. The benchmark writes a TSV with elapsed
+time, throughput, hit count, peak RAM and peak VRAM.
 
 ---
 
