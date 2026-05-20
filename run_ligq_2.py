@@ -370,7 +370,7 @@ def parse_args() -> argparse.Namespace:
         "--search-global-topk",
         dest="search_global_topk",
         type=int,
-        default=50000,
+        default=10000,
         help="Maximum number of global predicted hits retained per protein.",
     )
     parser.add_argument(

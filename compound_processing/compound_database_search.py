@@ -1596,7 +1596,7 @@ def get_zinc_ligands(
     search_assume_normalized: Optional[bool] = None,
     search_topk: Optional[int] = None,
     search_per_iteration_topk: int = 1000,
-    search_global_topk: int = 50000,
+    search_global_topk: int = 10000,
     compound_prefix: str = "ZINC",
 ) -> pd.DataFrame:
     """
@@ -1659,7 +1659,7 @@ def get_zinc_ligands(
         If set and search_mode="topk", return only the top-K hits per query.
     search_per_iteration_topk : int, default 1000
         Maximum number of hits retained per query/chunk iteration in threshold mode.
-    search_global_topk : int, default 50000
+    search_global_topk : int, default 10000
         Maximum number of global hits retained per protein after ranking.
 
     Returns
@@ -1837,7 +1837,7 @@ def get_compound_database_ligands(
     search_assume_normalized: Optional[bool] = None,
     search_topk: Optional[int] = None,
     search_per_iteration_topk: int = 1000,
-    search_global_topk: int = 50000,
+    search_global_topk: int = 10000,
     compound_prefix: str = "",
 ) -> pd.DataFrame:
     """Generic wrapper around the existing external-library search backend."""

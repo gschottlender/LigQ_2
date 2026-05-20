@@ -244,7 +244,7 @@ class CompoundDatabaseProviderAdapter:
         search_threshold_max: Optional[float] = None,
         cluster_threshold: float = 0.8,
         search_per_iteration_topk: int = 1000,
-        search_global_topk: int = 50000,
+        search_global_topk: int = 10000,
         search_device: str = "auto",
         search_q_batch_size: Optional[int] = None,
         search_target_chunk_size: Optional[int] = None,

@@ -197,7 +197,7 @@ def search_bsi_against_target(
     target_chunk_size: int | None = None,
     model_batch_size: int = 65536,
     per_chunk_topk: int | None = 1000,
-    global_topk: int | None = 50000,
+    global_topk: int | None = 10000,
     compound_prefix: str = "",
     target_limit: int | None = None,
 ) -> pd.DataFrame:
@@ -284,7 +284,7 @@ def get_bsi_ligands(
     search_target_chunk_size: int | None = None,
     bsi_model_batch_size: int = 65536,
     search_per_iteration_topk: int = 1000,
-    search_global_topk: int = 50000,
+    search_global_topk: int = 10000,
     compound_prefix: str = "",
 ) -> pd.DataFrame:
     domains = protein_domains.loc[
