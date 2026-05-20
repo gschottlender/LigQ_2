@@ -9,6 +9,7 @@ import torch
 
 from compound_processing.compound_helpers import LigandStore, Representation
 from compound_processing import metrics
+from compound_processing.device_utils import resolve_torch_device
 
 
 @dataclass(frozen=True)
@@ -116,15 +117,7 @@ class MetricKernel:
 
 
 def _resolve_device(device: Union[str, torch.device]) -> torch.device:
-    if isinstance(device, str) and device.lower() == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if isinstance(device, torch.device):
-        resolved = device
-    else:
-        resolved = torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return resolved
+    return resolve_torch_device(device)
 
 
 def _merge_topk(

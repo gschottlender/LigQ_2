@@ -8,6 +8,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from compound_processing.device_utils import resolve_torch_device
+
 
 class BSIGroupMLP(nn.Module):
     """BSI group model over the symmetric fp1 + fp2 input transform."""
@@ -38,15 +40,6 @@ def build_group_mlp_from_params(params: dict) -> BSIGroupMLP:
         hidden_layers=[int(x) for x in params["hidden_layers"]],
         dropout=float(params["dropout"]),
     )
-
-
-def resolve_torch_device(device: str | torch.device = "auto") -> torch.device:
-    if isinstance(device, str) and device.lower() == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    resolved = device if isinstance(device, torch.device) else torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return resolved
 
 
 def load_group_model(

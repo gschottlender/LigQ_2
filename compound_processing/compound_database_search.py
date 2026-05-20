@@ -23,6 +23,7 @@ from compound_processing.compound_helpers import (
     build_ligand_index,
 )
 from compound_processing import backend, metrics
+from compound_processing.device_utils import resolve_torch_device
 
 
 def _validate_packed_tanimoto_representations(rep_ref: Representation, rep_zinc: Representation) -> None:
@@ -1370,13 +1371,7 @@ def search_similar_in_zinc_torch_gpu(
 def _resolve_search_device(
     device: Optional[Union[str, torch.device]] = None,
 ) -> torch.device:
-    if device is None or (isinstance(device, str) and device.lower() == "auto"):
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return resolved
+    return resolve_torch_device(device)
 
 
 def _autotune_search_params(

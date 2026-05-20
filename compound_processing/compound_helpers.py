@@ -33,6 +33,8 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 from tqdm.auto import tqdm
 
+from compound_processing.device_utils import resolve_torch_device
+
 # Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
 RDLogger.DisableLog("rdApp.*")
 # Morgan globals
@@ -703,7 +705,7 @@ def build_huggingface_representation(
     # Load / reuse HuggingFace model
     # -----------------------------
     if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = resolve_torch_device("auto")
 
     pretrained_kwargs = {
         "trust_remote_code": trust_remote_code,
