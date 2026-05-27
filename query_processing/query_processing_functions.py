@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 
@@ -31,10 +32,16 @@ def _read_parquet_rows_for_uniprot_ids(
     batch_size: int = 2000,
 ) -> pd.DataFrame:
     """Read parquet rows filtered by uniprot_id in bounded batches."""
-    if not uniprot_ids:
-        return pd.DataFrame()
-
     parquet_path = Path(parquet_path)
+
+    def _empty_with_schema() -> pd.DataFrame:
+        schema = pq.ParquetFile(parquet_path).schema_arrow
+        arrays = [pa.array([], type=field.type) for field in schema]
+        return pa.Table.from_arrays(arrays, schema=schema).to_pandas()
+
+    if not uniprot_ids:
+        return _empty_with_schema()
+
     parts: list[pd.DataFrame] = []
     for start in range(0, len(uniprot_ids), max(batch_size, 1)):
         batch = uniprot_ids[start : start + max(batch_size, 1)]
@@ -47,7 +54,7 @@ def _read_parquet_rows_for_uniprot_ids(
             parts.append(part)
 
     if not parts:
-        return pd.DataFrame()
+        return _empty_with_schema()
     if len(parts) == 1:
         return parts[0]
     return pd.concat(parts, ignore_index=True)
@@ -571,6 +578,47 @@ def build_nearest_k_candidates_from_blast(
             "Run run_blast_sequence_search first."
         )
 
+    ranked = _load_ranked_blast_hits(
+        temp_results_dir=temp_results_dir,
+        df_candidates_seq=df_candidates_seq,
+        exclude_sequence_hits=True,
+    )
+
+    if ranked.empty:
+        nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    else:
+        nearest = (
+            ranked[["qseqid", "sseqid"]]
+            .drop_duplicates()
+            .reset_index(drop=True)
+        )
+        nearest["search_type"] = "nearest_k"
+
+    if save_candidates:
+        nearest_path = temp_results_dir / candidates_filename
+        nearest.to_csv(nearest_path, sep="\t", index=False)
+        print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
+
+    return nearest
+
+
+def _load_ranked_blast_hits(
+    temp_results_dir: str | Path = "temp_results",
+    df_candidates_seq: pd.DataFrame | None = None,
+    exclude_sequence_hits: bool = False,
+) -> pd.DataFrame:
+    """
+    Load raw BLAST hits and rank one best hit per (query, subject).
+    """
+    temp_results_dir = Path(temp_results_dir)
+    blast_out = temp_results_dir / "blast_sequence_search.tsv"
+
+    if not blast_out.is_file():
+        raise FileNotFoundError(
+            f"Raw BLAST output not found: {blast_out}. "
+            "Run run_blast_sequence_search first."
+        )
+
     cols = [
         "qseqid",
         "sseqid",
@@ -590,16 +638,33 @@ def build_nearest_k_candidates_from_blast(
     df = pd.read_csv(blast_out, sep="\t", header=None, names=cols)
 
     if df.empty:
-        nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
-    else:
-        # Keep one best row per (qseqid, sseqid)
-        df = (
-            df.sort_values(by=["qseqid", "sseqid", "bitscore", "evalue"], ascending=[True, True, False, True])
-            .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
-            .reset_index(drop=True)
+        return pd.DataFrame(
+            columns=[
+                "qseqid",
+                "sseqid",
+                "pident",
+                "length",
+                "evalue",
+                "bitscore",
+                "qlen",
+                "slen",
+                "qcov",
+                "scov",
+            ]
         )
 
-        # Exclude sequence-assigned proteins
+    df["qcov"] = df["length"] / df["qlen"]
+    df["scov"] = df["length"] / df["slen"]
+    df = (
+        df.sort_values(
+            by=["qseqid", "sseqid", "bitscore", "evalue", "pident", "qcov", "scov"],
+            ascending=[True, True, False, True, False, False, False],
+        )
+        .drop_duplicates(subset=["qseqid", "sseqid"], keep="first")
+        .reset_index(drop=True)
+    )
+
+    if exclude_sequence_hits:
         if df_candidates_seq is None:
             df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid"])
 
@@ -613,23 +678,13 @@ def build_nearest_k_candidates_from_blast(
             )
             df = df[df["_merge"] == "left_only"].drop(columns=["_merge"])
 
-        if df.empty:
-            nearest = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
-        else:
-            nearest = (
-                df.sort_values(by=["qseqid", "bitscore", "evalue"], ascending=[True, False, True])
-                [["qseqid", "sseqid"]]
-                .drop_duplicates()
-                .reset_index(drop=True)
-            )
-            nearest["search_type"] = "nearest_k"
-
-    if save_candidates:
-        nearest_path = temp_results_dir / candidates_filename
-        nearest.to_csv(nearest_path, sep="\t", index=False)
-        print(f"[INFO] Saved nearest-k candidate mapping to: {nearest_path}")
-
-    return nearest
+    return (
+        df.sort_values(
+            by=["qseqid", "bitscore", "evalue", "pident", "qcov", "scov", "sseqid"],
+            ascending=[True, False, True, False, False, False, True],
+        )
+        .reset_index(drop=True)
+    )
 
 
 def filter_nearest_k_candidates_by_query_domains(
@@ -951,6 +1006,8 @@ def map_pfam_hits_to_candidate_proteins(
     temp_results_dir: str | Path = "temp_results",
     save_full_hits: bool = True,
     save_candidates: bool = True,
+    max_candidates_per_domain: int | None = None,
+    df_blast_ranked: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Map Pfam domain hits (from HMMER) to candidate proteins using
@@ -977,6 +1034,11 @@ def map_pfam_hits_to_candidate_proteins(
     save_candidates : bool, default True
         If True, save the slim candidate table to
         temp_results/candidate_proteins_domain.tsv
+    max_candidates_per_domain : int, optional
+        If provided, keep at most this many proteins per (query, Pfam).
+    df_blast_ranked : pd.DataFrame, optional
+        Raw BLAST ranking with qseqid/sseqid and score columns. Used to rank
+        proteins inside each query Pfam before applying max_candidates_per_domain.
 
     Returns
     -------
@@ -1057,11 +1119,66 @@ def map_pfam_hits_to_candidate_proteins(
         print("[INFO] No Pfam hits could be mapped to known proteins.")
         df_candidates = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     else:
-        # 5) Canonical candidate table by domain
-        df_candidates = (
-            df_map[["qseqid", "uniprot_id"]]
+        df_map = (
+            df_map[["qseqid", "pfam_id", "uniprot_id"]]
             .drop_duplicates()
             .rename(columns={"uniprot_id": "sseqid"})
+            .reset_index(drop=True)
+        )
+
+        if max_candidates_per_domain is not None:
+            if max_candidates_per_domain <= 0:
+                raise ValueError("max_candidates_per_domain must be > 0.")
+
+            if df_blast_ranked is None:
+                df_blast_ranked = _load_ranked_blast_hits(
+                    temp_results_dir=temp_results_dir,
+                    exclude_sequence_hits=False,
+                )
+
+            rank_cols = ["qseqid", "sseqid", "bitscore", "evalue", "pident", "qcov", "scov"]
+            missing_rank_cols = set(rank_cols) - set(df_blast_ranked.columns)
+            if missing_rank_cols:
+                raise ValueError(
+                    "df_blast_ranked is missing required columns: "
+                    f"{missing_rank_cols}"
+                )
+
+            ranking = df_blast_ranked[rank_cols].copy()
+            ranking["qseqid"] = ranking["qseqid"].astype(str)
+            ranking["sseqid"] = ranking["sseqid"].astype(str)
+            df_map["qseqid"] = df_map["qseqid"].astype(str)
+            df_map["sseqid"] = df_map["sseqid"].astype(str)
+
+            df_map = df_map.merge(
+                ranking,
+                on=["qseqid", "sseqid"],
+                how="left",
+            )
+            df_map = (
+                df_map.sort_values(
+                    by=[
+                        "qseqid",
+                        "pfam_id",
+                        "bitscore",
+                        "evalue",
+                        "pident",
+                        "qcov",
+                        "scov",
+                        "sseqid",
+                    ],
+                    ascending=[True, True, False, True, False, False, False, True],
+                    na_position="last",
+                )
+                .groupby(["qseqid", "pfam_id"], group_keys=False)
+                .head(int(max_candidates_per_domain))
+                .reset_index(drop=True)
+            )
+
+        # 5) Canonical candidate table by domain
+        df_candidates = (
+            df_map[["qseqid", "sseqid"]]
+            .drop_duplicates()
             .reset_index(drop=True)
         )
         df_candidates["search_type"] = "domain"

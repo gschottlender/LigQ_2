@@ -21,6 +21,7 @@ from query_processing.query_processing_functions import (
     prepare_complementary_databases,
     run_blast_sequence_search,
     build_nearest_k_candidates_from_blast,
+    _load_ranked_blast_hits,
     filter_nearest_k_candidates_by_query_domains,
     run_hmmer_domain_search,
     map_pfam_hits_to_candidate_proteins,
@@ -268,6 +269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-hits", type=int, default=150)
     parser.add_argument("--hmmer-evalue-max", type=float, default=1e-5)
     parser.add_argument("--nearest-k", dest="nearest_k_count", type=int, default=5)
+    parser.add_argument("--max-domain-candidates-per-domain", type=int, default=20)
 
     parser.add_argument("--sequence", dest="use_sequence_flag", action="store_true")
     parser.add_argument("--nearest_k", dest="use_nearest_k_flag", action="store_true")
@@ -412,6 +414,8 @@ def main() -> None:
         raise ValueError("--bsi-model-batch-size must be > 0.")
     if args.bsi_max_known_ligands <= 0:
         raise ValueError("--bsi-max-known-ligands must be > 0.")
+    if args.max_domain_candidates_per_domain <= 0:
+        raise ValueError("--max-domain-candidates-per-domain must be > 0.")
     if (
         not args.known_only
         and not args.bsi
@@ -458,7 +462,7 @@ def main() -> None:
     prepare_complementary_databases(
         data_dir=data_dir,
         prepare_pfam=(use_domains or use_nearest_k),
-        prepare_blast=(use_sequence or use_nearest_k),
+        prepare_blast=(use_sequence or use_nearest_k or use_domains),
     )
 
     if temp_results_dir.exists():
@@ -470,13 +474,20 @@ def main() -> None:
 
     df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     df_candidates_nearest_k = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    df_candidates_nearest_k_ranked = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
+    df_blast_ranked = pd.DataFrame()
     df_candidates_dom = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     df_hmmer = pd.DataFrame()
 
-    if use_sequence or use_nearest_k:
+    if use_sequence or use_nearest_k or use_domains:
         blast_max_target_seqs = args.max_hits
-        if use_nearest_k:
-            blast_max_target_seqs = max(args.max_hits, args.nearest_k_count * 200, 5000)
+        if use_nearest_k or use_domains:
+            blast_max_target_seqs = max(
+                args.max_hits,
+                args.nearest_k_count * 200 if use_nearest_k else 0,
+                args.max_domain_candidates_per_domain * 200 if use_domains else 0,
+                5000,
+            )
         df_candidates_seq = run_blast_sequence_search(
             query_fasta=input_fasta,
             data_dir=data_dir,
@@ -492,6 +503,12 @@ def main() -> None:
         if not use_sequence:
             df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
 
+    if use_domains:
+        df_blast_ranked = _load_ranked_blast_hits(
+            temp_results_dir=temp_results_dir,
+            exclude_sequence_hits=False,
+        )
+
     if use_nearest_k:
         df_candidates_nearest_k_ranked = build_nearest_k_candidates_from_blast(
             temp_results_dir=temp_results_dir,
@@ -499,9 +516,6 @@ def main() -> None:
             save_candidates=True,
             candidates_filename="candidate_proteins_nearest_k_ranked.tsv",
         )
-    else:
-        df_candidates_nearest_k_ranked = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
-
     if use_domains or use_nearest_k:
         df_hmmer = run_hmmer_domain_search(
             query_fasta=input_fasta,
@@ -522,7 +536,13 @@ def main() -> None:
         )
 
     if use_domains:
-        df_candidates_dom = map_pfam_hits_to_candidate_proteins(df_hmmer=df_hmmer, data_dir=data_dir)
+        df_candidates_dom = map_pfam_hits_to_candidate_proteins(
+            df_hmmer=df_hmmer,
+            data_dir=data_dir,
+            temp_results_dir=temp_results_dir,
+            max_candidates_per_domain=args.max_domain_candidates_per_domain,
+            df_blast_ranked=df_blast_ranked,
+        )
 
     df_candidates_all = combine_sequence_and_domain_candidates(
         df_candidates_seq=df_candidates_seq,

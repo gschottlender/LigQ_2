@@ -26,6 +26,38 @@ from compound_processing import backend, metrics
 from compound_processing.device_utils import resolve_torch_device
 
 
+def _reduce_hits_global_topk(
+    hits: List[Tuple[str, int, float]],
+    global_topk: Optional[int],
+) -> List[Tuple[str, int, float]]:
+    if global_topk is None or len(hits) <= int(global_topk):
+        return hits
+    return sorted(
+        hits,
+        key=lambda row: (-float(row[2]), str(row[0]), int(row[1])),
+    )[: int(global_topk)]
+
+
+def _extend_bounded_hits(
+    all_hits: List[Tuple[str, int, float]],
+    hits_chunk: List[Tuple[str, int, float]],
+    *,
+    global_topk: Optional[int],
+    score_max: Optional[float] = None,
+) -> List[Tuple[str, int, float]]:
+    if score_max is not None:
+        max_score = float(score_max)
+        hits_chunk = [row for row in hits_chunk if float(row[2]) <= max_score]
+    if not hits_chunk:
+        return all_hits
+    all_hits.extend(hits_chunk)
+    if global_topk is not None:
+        limit = int(global_topk)
+        if len(all_hits) > max(limit * 2, limit + 1000):
+            return _reduce_hits_global_topk(all_hits, limit)
+    return all_hits
+
+
 def _validate_packed_tanimoto_representations(rep_ref: Representation, rep_zinc: Representation) -> None:
     """Validate representation compatibility for packed Tanimoto ZINC search paths."""
     if rep_zinc is None or rep_ref is None:
@@ -600,6 +632,8 @@ def search_similar_in_zinc(
     zinc_chunk_size: int = 200_000,
     n_jobs: int = 4,
     max_hits_per_query: Optional[int] = None,
+    global_topk: Optional[int] = None,
+    tanimoto_threshold_max: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Search for similar compounds in the ZINC database for a set of ligands
@@ -638,6 +672,8 @@ def search_similar_in_zinc(
     max_hits_per_query : int, optional
         If not None, limit the number of hits per query to this value
         (highest Tanimoto first).
+    global_topk : int, optional
+        If not None, retain only the best N hits globally before metadata merge.
 
     Returns
     -------
@@ -746,7 +782,12 @@ def search_similar_in_zinc(
                     tanimoto_threshold,
                 )
                 if hits_chunk:
-                    all_hits.extend(hits_chunk)
+                    all_hits = _extend_bounded_hits(
+                        all_hits,
+                        hits_chunk,
+                        global_topk=global_topk,
+                        score_max=tanimoto_threshold_max,
+                    )
 
     else:
         # Parallel path using 'fork' context (avoids pickling issues in notebooks)
@@ -781,7 +822,12 @@ def search_similar_in_zinc(
                 for fut in as_completed(futures):
                     hits_chunk = fut.result()
                     if hits_chunk:
-                        all_hits.extend(hits_chunk)
+                        all_hits = _extend_bounded_hits(
+                            all_hits,
+                            hits_chunk,
+                            global_topk=global_topk,
+                            score_max=tanimoto_threshold_max,
+                        )
 
     # ------------------------------------------------------------------
     # 6) Convert hits to DataFrame and map chem_comp_id / smiles
@@ -791,6 +837,7 @@ def search_similar_in_zinc(
             columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"]
         )
 
+    all_hits = _reduce_hits_global_topk(all_hits, global_topk)
     hits_df = pd.DataFrame(all_hits, columns=["query_id", "lig_idx_zinc", "tanimoto"])
 
     hits_df = hits_df.merge(
@@ -1205,6 +1252,8 @@ def search_similar_in_zinc_torch_gpu(
     zinc_chunk_size: Optional[int] = None,
     device: Union[str, torch.device] = "cuda",
     max_hits_per_query: Optional[int] = None,
+    global_topk: Optional[int] = None,
+    tanimoto_threshold_max: Optional[float] = None,
     per_chunk_topk_hint: Optional[int] = None,
     force_copy_packed: bool = True,
     strategy: str = "auto",
@@ -1245,6 +1294,8 @@ def search_similar_in_zinc_torch_gpu(
         Torch device string or torch.device for GPU compute.
     max_hits_per_query
         If not None, keep only the top-N hits per query globally (after merge).
+    global_topk
+        If not None, retain only the best N hits globally before metadata merge.
     per_chunk_topk_hint
         If not None, limit results to top-K per query *per chunk* (can reduce
         memory/CPU overhead if threshold generates many hits).
@@ -1337,7 +1388,12 @@ def search_similar_in_zinc_torch_gpu(
                 strategy=strategy,
             )
             if hits_chunk:
-                all_hits.extend(hits_chunk)
+                all_hits = _extend_bounded_hits(
+                    all_hits,
+                    hits_chunk,
+                    global_topk=global_topk,
+                    score_max=tanimoto_threshold_max,
+                )
 
     # -------------------------------------------------------------------------
     # 5) Convert hits to DataFrame + merge annotations
@@ -1345,6 +1401,7 @@ def search_similar_in_zinc_torch_gpu(
     if not all_hits:
         return pd.DataFrame(columns=["query_id", "lig_idx_zinc", "chem_comp_id", "smiles", "tanimoto"])
 
+    all_hits = _reduce_hits_global_topk(all_hits, global_topk)
     hits_df = pd.DataFrame(all_hits, columns=["query_id", "lig_idx_zinc", "tanimoto"])
 
     hits_df = hits_df.merge(
@@ -1447,6 +1504,8 @@ def search_similar_in_zinc_custom(
     max_hits_per_query: Optional[int] = None,
     assume_normalized: Optional[bool] = None,
     per_chunk_topk_hint: Optional[int] = None,
+    global_topk: Optional[int] = None,
+    threshold_max: Optional[float] = None,
     force_copy_packed_gpu: bool = True,
     gpu_tanimoto_strategy: str = "auto",
 ) -> pd.DataFrame:
@@ -1487,6 +1546,8 @@ def search_similar_in_zinc_custom(
         For cosine similarity, whether vectors are already normalized.
     per_chunk_topk_hint
         Optional per-chunk top-k hint for the GPU Tanimoto backend.
+    global_topk
+        Optional global top-k retained before metadata merge.
     force_copy_packed_gpu
         Copy packed memmap chunks on GPU to avoid non-writable warnings.
     """
@@ -1527,6 +1588,8 @@ def search_similar_in_zinc_custom(
                 zinc_chunk_size=zinc_chunk_size,
                 device=resolved_device,
                 max_hits_per_query=max_hits_per_query,
+                global_topk=global_topk,
+                tanimoto_threshold_max=threshold_max,
                 per_chunk_topk_hint=per_chunk_topk_hint,
                 force_copy_packed=force_copy_packed_gpu,
                 strategy=gpu_tanimoto_strategy,
@@ -1543,6 +1606,8 @@ def search_similar_in_zinc_custom(
             zinc_chunk_size=zinc_chunk_size,
             n_jobs=n_jobs,
             max_hits_per_query=max_hits_per_query,
+            global_topk=global_topk,
+            tanimoto_threshold_max=threshold_max,
         )
 
     request = backend.SearchRequest(
@@ -1559,6 +1624,7 @@ def search_similar_in_zinc_custom(
         q_batch_size=q_batch_size,
         target_chunk_size=zinc_chunk_size,
         max_hits_per_query=max_hits_per_query,
+        global_topk=global_topk,
         assume_normalized=assume_normalized,
         return_fields=("chem_comp_id", "smiles"),
         id_field="chem_comp_id",
@@ -1774,6 +1840,8 @@ def get_zinc_ligands(
         max_hits_per_query=None,
         assume_normalized=search_assume_normalized,
         per_chunk_topk_hint=search_per_iteration_topk,
+        global_topk=search_global_topk,
+        threshold_max=zinc_search_threshold_max,
         gpu_tanimoto_strategy="auto",
     )
 

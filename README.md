@@ -110,6 +110,8 @@ Control candidate-protein methods explicitly:
 - `--nearest_k`: enable nearest-K BLAST method.
 - `--nearest-k`: set K for nearest-K method (default: `5`).
 - `--domains`: enable Pfam/HMMER domain method.
+- `--max-domain-candidates-per-domain`: maximum proteins retained per
+  query Pfam for `--domains` (default: `20`).
 
 Nearest-K candidates are ranked by BLAST proximity and then filtered to
 proteins that share at least one Pfam domain detected in the query.
@@ -121,6 +123,11 @@ If no method flags are provided, LigQ_2 defaults to:
 - `--sequence` ON
 - `--nearest_k` ON (`--nearest-k 5`)
 - `--domains` OFF
+
+When `--domains` is enabled, HMMER identifies the query Pfam families and
+BLAST proximity ranks proteins within each family. Large Pfam families are
+therefore capped per domain before predicted-ligand expansion, while queries
+with multiple domains can still recover candidates from each detected family.
 
 ---
 
@@ -198,6 +205,11 @@ Method-specific predicted ligand cache is stored under:
 
 The `manifest.json` captures method configuration and provider database
 fingerprint to ensure cache consistency. Locking avoids concurrent write races. During on-demand computation, a tqdm progress bar reports completed vs pending requested proteins.
+
+`--search-global-topk` also acts as an early memory-safety limit for
+compound-database similarity searches. Hits are reduced before metadata joins,
+so proteins that produce very large threshold hit sets are capped instead of
+materializing an unbounded intermediate DataFrame.
 
 BSI caches are stored separately from structural-similarity caches. For
 example, `--ligand-provider zinc --bsi` writes under a provider namespace like
