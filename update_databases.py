@@ -18,6 +18,12 @@ from generate_databases.uniprot_db import (
 )
 
 from generate_databases.merge_pdb_chembl import merge_databases
+from query_processing.results_tables import (
+    add_smiles_to_known_binding,
+    build_known_binding_data,
+    build_protein_domains_table,
+    save_known_binding_table,
+)
 
 
 # HuggingFace dataset repo with the preprocessed databases and initial metadata
@@ -93,6 +99,31 @@ def snapshot_dir(root_dir: str) -> dict:
                 continue
             snapshot[rel] = (stat.st_size, int(stat.st_mtime))
     return snapshot
+
+
+def regenerate_results_databases(output_dir, binding_data_merged, ligs_smiles_merged):
+    """Regenerate runtime-ready result tables from freshly merged databases."""
+    results_dir = os.path.join(output_dir, "results_databases")
+    os.makedirs(results_dir, exist_ok=True)
+
+    print("[INFO] Regenerating known binding runtime table...")
+    known_binding = build_known_binding_data(binding_data_merged)
+    known_binding = add_smiles_to_known_binding(known_binding, ligs_smiles_merged)
+    known_binding_path = save_known_binding_table(
+        known_binding,
+        results_dir=results_dir,
+    )
+    print(f"[INFO] Saved known binding runtime table to {known_binding_path}")
+
+    print("[INFO] Regenerating protein-domain runtime table...")
+    protein_domains = build_protein_domains_table(
+        data_dir=output_dir,
+        results_dir=results_dir,
+    )
+    protein_domains_path = os.path.join(results_dir, "protein_domains.parquet")
+    print(f"[INFO] Saved protein-domain runtime table to {protein_domains_path}")
+
+    return known_binding, protein_domains
 
 
 # ----------------------------------------------------------------------
@@ -405,6 +436,12 @@ def main():
 
     print(f"[INFO] Saving uncurated binding data to {uncurated_binding_data_path}")
     uncurated_binding_data.to_parquet(uncurated_binding_data_path, index=False)
+
+    regenerate_results_databases(
+        output_dir=output_dir,
+        binding_data_merged=binding_data_merged,
+        ligs_smiles_merged=ligs_smiles_merged,
+    )
 
     # ------------------------------------------------------------------
     # 6) UniProt: update pickle and export FASTA
