@@ -9,6 +9,7 @@ from pathlib import Path
 from math import inf
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from query_processing.results_tables import build_predicted_binding_data_incremental
 
@@ -177,11 +178,17 @@ def _process_is_alive(pid: int) -> bool:
     return True
 
 
-def _try_read_predicted_parquet(predicted_path: Path) -> tuple[pd.DataFrame | None, bool]:
+def _try_read_predicted_parquet(
+    predicted_path: Path,
+    load_dataframe: bool = True,
+) -> tuple[pd.DataFrame | None, bool]:
     if not predicted_path.exists():
         return None, False
 
     try:
+        pq.ParquetFile(predicted_path)
+        if not load_dataframe:
+            return None, False
         return pd.read_parquet(predicted_path), False
     except Exception as exc:
         print(
@@ -189,6 +196,35 @@ def _try_read_predicted_parquet(predicted_path: Path) -> tuple[pd.DataFrame | No
             f"Will rebuild cache from scratch: {predicted_path} ({exc})"
         )
         return None, True
+
+
+def _read_cached_uniprot_ids(predicted_path: Path, batch_size: int = 65536) -> set[str]:
+    if not predicted_path.exists():
+        return set()
+
+    parquet_file = pq.ParquetFile(predicted_path)
+    if "uniprot_id" not in parquet_file.schema_arrow.names:
+        return set()
+
+    processed: set[str] = set()
+    for batch in parquet_file.iter_batches(
+        batch_size=max(int(batch_size), 1),
+        columns=["uniprot_id"],
+    ):
+        processed.update(str(value) for value in batch.column(0).to_pylist() if value is not None)
+    return processed
+
+
+def _read_cached_protein_index(index_path: Path) -> set[str] | None:
+    if not index_path.exists():
+        return None
+    with open(index_path, "r") as f:
+        return {str(value) for value in json.load(f)}
+
+
+def _write_cached_protein_index(index_path: Path, proteins: set[str]) -> None:
+    with open(index_path, "w") as f:
+        json.dump(sorted(proteins), f)
 
 
 @contextmanager
@@ -272,6 +308,7 @@ def ensure_provider_cache(
 
     predicted_path = cache_dir / "predicted_binding_data.parquet"
     progress_path = cache_dir / "predicted_binding_progress.json"
+    protein_index_path = cache_dir / "cached_proteins.json"
     manifest_path = cache_dir / "manifest.json"
     lock_path = cache_dir / ".cache.lock"
 
@@ -293,21 +330,41 @@ def ensure_provider_cache(
                 shutil.rmtree(cache_dir)
             cache_dir.mkdir(parents=True, exist_ok=True)
 
-        cached, parquet_corrupted = _try_read_predicted_parquet(predicted_path)
+        cached, parquet_corrupted = _try_read_predicted_parquet(
+            predicted_path,
+            load_dataframe=load_dataframe,
+        )
         if parquet_corrupted:
             regenerate_cache = True
-            for path in (predicted_path, progress_path, manifest_path):
+            for path in (predicted_path, progress_path, protein_index_path, manifest_path):
                 if path.exists():
                     path.unlink()
 
-        if progress_path.exists() and not regenerate_cache:
+        processed_from_index = False
+        processed_from_progress = False
+        indexed = _read_cached_protein_index(protein_index_path) if not regenerate_cache else None
+        if indexed is not None:
+            processed = indexed
+            processed_from_index = True
+        elif progress_path.exists() and not regenerate_cache:
             with open(progress_path, "r") as f:
-                processed = set(json.load(f))
+                processed = {str(value) for value in json.load(f)}
+            processed_from_progress = True
+            _write_cached_protein_index(protein_index_path, processed)
         else:
             processed = set()
 
         if cached is not None and "uniprot_id" in cached.columns:
             processed |= set(cached["uniprot_id"].astype(str).unique())
+            _write_cached_protein_index(protein_index_path, processed)
+        elif (
+            not processed_from_index
+            and not processed_from_progress
+            and predicted_path.exists()
+            and not regenerate_cache
+        ):
+            processed |= _read_cached_uniprot_ids(predicted_path)
+            _write_cached_protein_index(protein_index_path, processed)
 
         requested_total = len(set(proteins_needed))
         already_cached = len(set(proteins_needed) & processed)

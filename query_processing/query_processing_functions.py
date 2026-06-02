@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 
@@ -33,25 +34,26 @@ def _read_parquet_rows_for_uniprot_ids(
 ) -> pd.DataFrame:
     """Read parquet rows filtered by uniprot_id in bounded batches."""
     parquet_path = Path(parquet_path)
+    parquet_file = pq.ParquetFile(parquet_path)
 
     def _empty_with_schema() -> pd.DataFrame:
-        schema = pq.ParquetFile(parquet_path).schema_arrow
+        schema = parquet_file.schema_arrow
         arrays = [pa.array([], type=field.type) for field in schema]
         return pa.Table.from_arrays(arrays, schema=schema).to_pandas()
 
     if not uniprot_ids:
         return _empty_with_schema()
+    if "uniprot_id" not in parquet_file.schema_arrow.names:
+        raise ValueError(f"Parquet file must contain 'uniprot_id': {parquet_path}")
 
+    wanted = pa.array([str(value) for value in set(uniprot_ids)])
     parts: list[pd.DataFrame] = []
-    for start in range(0, len(uniprot_ids), max(batch_size, 1)):
-        batch = uniprot_ids[start : start + max(batch_size, 1)]
-        part = pd.read_parquet(
-            parquet_path,
-            engine="pyarrow",
-            filters=[("uniprot_id", "in", batch)],
-        )
-        if not part.empty:
-            parts.append(part)
+    for record_batch in parquet_file.iter_batches(batch_size=max(int(batch_size), 1)):
+        uniprot_col = record_batch.column(record_batch.schema.get_field_index("uniprot_id")).cast(pa.string())
+        mask = pc.is_in(uniprot_col, value_set=wanted)
+        if pc.any(mask).as_py():
+            filtered = record_batch.filter(mask)
+            parts.append(pa.Table.from_batches([filtered]).to_pandas())
 
     if not parts:
         return _empty_with_schema()

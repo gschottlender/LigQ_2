@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -85,11 +86,13 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/manifest.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+        f"results_databases/{DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
     ],
     [
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/manifest.json",
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
     ],
 ]
 
@@ -140,13 +143,20 @@ def _hf_allow_patterns(
 
 
 def _copy_path_if_missing(src: Path, dst: Path) -> None:
-    if dst.exists():
-        return
     dst.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        shutil.copytree(src, dst)
+        dst.mkdir(parents=True, exist_ok=True)
+        for child in src.iterdir():
+            _copy_path_if_missing(child, dst / child.name)
     else:
-        shutil.copy2(src, dst)
+        if dst.exists():
+            if dst.stat().st_size == src.stat().st_size:
+                return
+            dst.unlink()
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy2(src, dst)
 
 
 def ensure_base_data_from_hf(

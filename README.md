@@ -198,13 +198,18 @@ Method-specific predicted ligand cache is stored under:
 <data-dir>/results_databases/predicted_bindings/<provider>/
   search_representation=<...>__search_metric=<...>__.../
     predicted_binding_data.parquet
+    cached_proteins.json
     predicted_binding_progress.json
     manifest.json
     .cache.lock
 ```
 
 The `manifest.json` captures method configuration and provider database
-fingerprint to ensure cache consistency. Locking avoids concurrent write races. During on-demand computation, a tqdm progress bar reports completed vs pending requested proteins.
+fingerprint to ensure cache consistency. `cached_proteins.json` is the
+lightweight index used to check cache coverage without loading the full
+predicted-ligand parquet. Locking avoids concurrent write races. During
+on-demand computation, a tqdm progress bar reports completed vs pending
+requested proteins.
 
 `--search-global-topk` also acts as an early memory-safety limit for
 compound-database similarity searches. Hits are reduced before metadata joins,

@@ -165,12 +165,23 @@ def build_predicted_binding_data_incremental(
 
     parquet_path = cache_dir / "predicted_binding_data.parquet"
     progress_path = cache_dir / "predicted_binding_progress.json"
+    protein_index_path = cache_dir / "cached_proteins.json"
 
-    if resume and progress_path.exists():
+    if resume and protein_index_path.exists():
+        with open(protein_index_path, "r") as f:
+            processed_proteins = set(json.load(f))
+    elif resume and progress_path.exists():
         with open(progress_path, "r") as f:
             processed_proteins = set(json.load(f))
     else:
         processed_proteins = set()
+
+    def _write_processed_index() -> None:
+        processed_sorted = sorted(processed_proteins)
+        with open(progress_path, "w") as f:
+            json.dump(processed_sorted, f)
+        with open(protein_index_path, "w") as f:
+            json.dump(processed_sorted, f)
 
     writer: Optional[pq.ParquetWriter] = None
     temp_path: Optional[Path] = None
@@ -194,8 +205,7 @@ def build_predicted_binding_data_incremental(
             ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
             if ligands is None or ligands.empty:
                 processed_proteins.add(prot)
-                with open(progress_path, "w") as f:
-                    json.dump(sorted(processed_proteins), f)
+                _write_processed_index()
                 pbar.update(1)
                 pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
                 continue
@@ -213,8 +223,7 @@ def build_predicted_binding_data_incremental(
 
             writer.write_table(table)
             processed_proteins.add(prot)
-            with open(progress_path, "w") as f:
-                json.dump(sorted(processed_proteins), f)
+            _write_processed_index()
 
             pbar.update(1)
             pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
