@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import shutil
 import shutil as pyshutil
 import subprocess
@@ -11,6 +12,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+
+from query_processing.predicted_rowgroup_index import load_or_build_row_group_index
 
 
 # ----------------------------------------------------------------------
@@ -32,7 +35,7 @@ def _read_parquet_rows_for_uniprot_ids(
     uniprot_ids: list[str],
     batch_size: int = 2000,
 ) -> pd.DataFrame:
-    """Read parquet rows filtered by uniprot_id in bounded batches."""
+    """Read parquet rows filtered by uniprot_id using row-group lookup when available."""
     parquet_path = Path(parquet_path)
     parquet_file = pq.ParquetFile(parquet_path)
 
@@ -47,6 +50,31 @@ def _read_parquet_rows_for_uniprot_ids(
         raise ValueError(f"Parquet file must contain 'uniprot_id': {parquet_path}")
 
     wanted = pa.array([str(value) for value in set(uniprot_ids)])
+    wanted_values = {str(value) for value in set(uniprot_ids)}
+
+    try:
+        row_group_index = load_or_build_row_group_index(parquet_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        row_group_index = None
+
+    if row_group_index is not None:
+        row_groups = sorted(
+            {
+                row_group
+                for uniprot_id in wanted_values
+                for row_group in row_group_index.get(uniprot_id, [])
+            }
+        )
+        if not row_groups:
+            return _empty_with_schema()
+
+        table = parquet_file.read_row_groups(row_groups)
+        uniprot_col = table["uniprot_id"].cast(pa.string())
+        mask = pc.is_in(uniprot_col, value_set=wanted)
+        if not pc.any(mask).as_py():
+            return _empty_with_schema()
+        return table.filter(mask).to_pandas()
+
     parts: list[pd.DataFrame] = []
     for record_batch in parquet_file.iter_batches(batch_size=max(int(batch_size), 1)):
         uniprot_col = record_batch.column(record_batch.schema.get_field_index("uniprot_id")).cast(pa.string())

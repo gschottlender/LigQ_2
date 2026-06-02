@@ -13,6 +13,7 @@ from tqdm.auto import tqdm
 
 from compound_processing.compound_helpers import LigandStore
 from compound_processing.compound_database_search import get_compound_database_ligands
+from query_processing.predicted_rowgroup_index import build_row_group_index
 
 
 def build_protein_domains_table(
@@ -166,6 +167,7 @@ def build_predicted_binding_data_incremental(
     parquet_path = cache_dir / "predicted_binding_data.parquet"
     progress_path = cache_dir / "predicted_binding_progress.json"
     protein_index_path = cache_dir / "cached_proteins.json"
+    row_group_index_path = cache_dir / "predicted_binding_rowgroup_index.json"
 
     if resume and protein_index_path.exists():
         with open(protein_index_path, "r") as f:
@@ -232,6 +234,9 @@ def build_predicted_binding_data_incremental(
         writer.close()
         if temp_path is not None:
             os.replace(temp_path, parquet_path)
+
+    if parquet_path.exists():
+        build_row_group_index(parquet_path, row_group_index_path)
 
     print()
     print("[INFO] Finished writing predicted_binding_data.")

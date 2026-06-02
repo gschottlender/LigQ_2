@@ -87,12 +87,14 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
+        f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
     ],
     [
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/manifest.json",
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
         f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
     ],
 ]
 

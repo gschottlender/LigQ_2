@@ -309,6 +309,7 @@ def ensure_provider_cache(
     predicted_path = cache_dir / "predicted_binding_data.parquet"
     progress_path = cache_dir / "predicted_binding_progress.json"
     protein_index_path = cache_dir / "cached_proteins.json"
+    row_group_index_path = cache_dir / "predicted_binding_rowgroup_index.json"
     manifest_path = cache_dir / "manifest.json"
     lock_path = cache_dir / ".cache.lock"
 
@@ -336,7 +337,7 @@ def ensure_provider_cache(
         )
         if parquet_corrupted:
             regenerate_cache = True
-            for path in (predicted_path, progress_path, protein_index_path, manifest_path):
+            for path in (predicted_path, progress_path, protein_index_path, row_group_index_path, manifest_path):
                 if path.exists():
                     path.unlink()
 
