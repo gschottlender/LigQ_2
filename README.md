@@ -502,7 +502,7 @@ Columns report:
 - the number of unique known ligands,
 - and the number of predicted ligands from the selected provider,
 
-separately for **sequence** and **domain** searches.
+separately for **sequence**, **nearest-K**, and **domain** searches.
 
 ---
 
@@ -546,6 +546,23 @@ protein–ligand association was obtained**:
 When the same ligand is retrieved by both strategies, **sequence-based
 hits are always prioritized** over domain-based hits when ligand
 collapsing is enabled.
+
+---
+
+### Protein Ranking
+
+```
+protein_ranking.tsv
+```
+
+Candidate proteins recovered for the query, ranked with evidence already
+computed by the pipeline. Sequence and nearest-K candidates are ranked by
+BLAST evidence (`bitscore`, `evalue`, identity and coverage). Domain
+candidates with BLAST evidence are ranked above domain-only candidates;
+domain-only candidates are ranked by Pfam/HMMER evidence.
+
+The ranking table is informational and does not change ligand retrieval,
+cache behavior, or the global summary counts.
 
 ---
 
