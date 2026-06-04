@@ -560,6 +560,9 @@ computed by the pipeline. Sequence and nearest-K candidates are ranked by
 BLAST evidence (`bitscore`, `evalue`, identity and coverage). Domain
 candidates with BLAST evidence are ranked above domain-only candidates;
 domain-only candidates are ranked by Pfam/HMMER evidence.
+`n_shared_domains` reports the number of Pfam domains shared by the query
+and candidate protein for all search types when domain annotations are
+available.
 
 The ranking table is informational and does not change ligand retrieval,
 cache behavior, or the global summary counts.

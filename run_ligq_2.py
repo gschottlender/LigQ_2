@@ -27,6 +27,7 @@ from query_processing.query_processing_functions import (
     run_hmmer_domain_search,
     map_pfam_hits_to_candidate_proteins,
     combine_sequence_and_domain_candidates,
+    add_shared_domain_counts_to_candidates,
     parse_query_fasta,
     build_query_ligand_results_parallel,
 )
@@ -560,6 +561,11 @@ def main() -> None:
         df_candidates_seq=df_candidates_seq,
         df_candidates_nearest_k=df_candidates_nearest_k,
         df_candidates_domain=df_candidates_dom,
+    )
+    df_candidates_all = add_shared_domain_counts_to_candidates(
+        df_candidates=df_candidates_all,
+        df_hmmer=df_hmmer,
+        data_dir=data_dir,
     )
 
     known_db = ensure_known_binding_table(

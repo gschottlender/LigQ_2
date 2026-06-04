@@ -1366,6 +1366,70 @@ def combine_sequence_and_domain_candidates(
     return df_all
 
 
+def add_shared_domain_counts_to_candidates(
+    df_candidates: pd.DataFrame,
+    df_hmmer: pd.DataFrame,
+    data_dir: str | Path = "databases",
+) -> pd.DataFrame:
+    """Add n_shared_domains for candidate proteins without changing candidate selection."""
+    if df_candidates is None or df_candidates.empty:
+        return df_candidates
+    if df_hmmer is None or df_hmmer.empty:
+        return df_candidates
+
+    if "pfam_id" not in df_hmmer.columns:
+        if "pfam_acc" not in df_hmmer.columns:
+            return df_candidates
+        df_hmmer = df_hmmer.copy()
+        df_hmmer["pfam_id"] = df_hmmer["pfam_acc"].astype(str).str.split(".").str[0]
+
+    protein_domains_path = Path(data_dir) / "results_databases" / "protein_domains.parquet"
+    if not protein_domains_path.is_file():
+        return df_candidates
+
+    df_query_domains = df_hmmer[["qseqid", "pfam_id"]].dropna().drop_duplicates()
+    if df_query_domains.empty:
+        return df_candidates
+
+    df_domains = pd.read_parquet(
+        protein_domains_path,
+        columns=["uniprot_id", "pfam_id"],
+    ).dropna(subset=["uniprot_id", "pfam_id"])
+    df_domains["uniprot_id"] = df_domains["uniprot_id"].astype(str)
+    df_domains["pfam_id"] = df_domains["pfam_id"].astype(str)
+    df_domains = df_domains.drop_duplicates(subset=["uniprot_id", "pfam_id"])
+
+    candidates = df_candidates.copy()
+    candidates["qseqid"] = candidates["qseqid"].astype(str)
+    candidates["sseqid"] = candidates["sseqid"].astype(str)
+    df_query_domains["qseqid"] = df_query_domains["qseqid"].astype(str)
+
+    shared_counts = (
+        candidates[["qseqid", "sseqid"]]
+        .drop_duplicates()
+        .merge(
+            df_domains.rename(columns={"uniprot_id": "sseqid"}),
+            on="sseqid",
+            how="inner",
+        )
+        .merge(df_query_domains, on=["qseqid", "pfam_id"], how="inner")
+        .groupby(["qseqid", "sseqid"], as_index=False)["pfam_id"]
+        .nunique()
+        .rename(columns={"pfam_id": "computed_n_shared_domains"})
+    )
+
+    candidates = candidates.merge(shared_counts, on=["qseqid", "sseqid"], how="left")
+    if "n_shared_domains" in candidates.columns:
+        candidates["n_shared_domains"] = candidates["n_shared_domains"].combine_first(
+            candidates["computed_n_shared_domains"]
+        )
+    else:
+        candidates["n_shared_domains"] = candidates["computed_n_shared_domains"]
+    candidates = candidates.drop(columns=["computed_n_shared_domains"])
+    candidates["n_shared_domains"] = candidates["n_shared_domains"].fillna(0).astype(int)
+    return candidates
+
+
 # ----------------------------------------------------------------------
 # Block 3 – Query → ligand results (chunked, simple per-query collapse)
 # ----------------------------------------------------------------------
