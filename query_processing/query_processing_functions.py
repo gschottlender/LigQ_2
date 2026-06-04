@@ -1551,6 +1551,16 @@ def _process_single_query(
     if predicted_q is None:
         predicted_q = pd.DataFrame()
 
+    protein_ranking = _build_protein_ranking_for_query(df_cand_q)
+    protein_rank_map: dict[str, int] = {}
+    if not protein_ranking.empty:
+        protein_rank_map = dict(
+            zip(
+                protein_ranking["sseqid"].astype(str),
+                protein_ranking["protein_rank"].astype(int),
+            )
+        )
+
     # -----------------------------
     # 1) Optional ligand collapse
     # -----------------------------
@@ -1562,21 +1572,35 @@ def _process_single_query(
         if df.empty or ligand_col is None or ligand_col not in df.columns:
             return df
 
+        df = df.copy()
+
+        # Prioritize protein ranking first; keep stable ligand ordering within a protein.
+        if "uniprot_id" in df.columns:
+            df["_protein_rank_sort"] = (
+                df["uniprot_id"].astype(str).map(protein_rank_map).fillna(len(protein_rank_map) + 1)
+            )
+        elif "sseqid" in df.columns:
+            df["_protein_rank_sort"] = (
+                df["sseqid"].astype(str).map(protein_rank_map).fillna(len(protein_rank_map) + 1)
+            )
+        else:
+            df["_protein_rank_sort"] = len(protein_rank_map) + 1
+
         # Prioritize "sequence" over "domain" if search_type is present.
         if "search_type" in df.columns:
             # Use an ordered categorical so sequence < domain.
             cat = pd.CategoricalDtype(["sequence", "nearest_k", "domain"], ordered=True)
-            df = df.copy()
             df["search_type"] = df["search_type"].astype(cat)
-            df = df.sort_values("search_type")
+            df = df.sort_values(["_protein_rank_sort", "search_type"], kind="mergesort")
         else:
-            df = df.copy()
+            df = df.sort_values("_protein_rank_sort", kind="mergesort")
 
         if drop_duplicates:
             # One row per ligand (ligand_col), keeping the first row,
-            # which will correspond to sequence hits when present.
+            # which will correspond to the best-ranked protein when present.
             df = df.drop_duplicates(subset=[ligand_col], keep="first")
 
+        df = df.drop(columns=["_protein_rank_sort"])
         return df
 
     known_q_final = _sort_and_collapse(known_q, known_ligand_col)
@@ -1590,7 +1614,6 @@ def _process_single_query(
     ):
         q_dir = ensure_dir(search_results_dir / qseqid)
 
-        protein_ranking = _build_protein_ranking_for_query(df_cand_q)
         if not protein_ranking.empty:
             protein_ranking.to_csv(q_dir / "protein_ranking.tsv", sep="\t", index=False)
 
@@ -1600,13 +1623,6 @@ def _process_single_query(
             cols_known = ["search_type"] + list(known_db_cols)
             cols_known = [c for c in cols_known if c in known_q_final.columns]
             df_known_out = known_q_final[cols_known].copy()
-
-            # Ensure sequence rows appear first, even if categorical was lost.
-            if "search_type" in df_known_out.columns:
-                df_known_out = df_known_out.sort_values(
-                    by="search_type",
-                    key=lambda s: (s != "sequence"),
-                )
 
             known_path = q_dir / "known_ligands.tsv"
             df_known_out.to_csv(known_path, sep="\t", index=False)
@@ -1650,12 +1666,6 @@ def _process_single_query(
             cols_predicted = cols_predicted + extra_cols
 
             df_predicted_out = df_predicted_out[cols_predicted]
-
-            if "search_type" in df_predicted_out.columns:
-                df_predicted_out = df_predicted_out.sort_values(
-                    by="search_type",
-                    key=lambda s: (s != "sequence"),
-                )
 
             predicted_path = q_dir / "predicted_ligands.tsv"
             df_predicted_out.to_csv(predicted_path, sep="\t", index=False)
