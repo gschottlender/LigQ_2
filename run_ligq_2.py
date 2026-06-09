@@ -99,6 +99,16 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
     ],
 ]
 
+DEFAULT_SEARCH_THRESHOLDS_BY_REPRESENTATION = {
+    "chemberta_zinc_base_768": 0.936140,
+    "rdkit_1024": 0.930324,
+    "maccs": 0.831169,
+    "ap_rdkit": 0.767087,
+    "morgan_feature_1024_r2": 0.509451,
+    "topological_torsion_rdkit_1024": 0.502932,
+    "morgan_1024_r2": 0.415094,
+}
+
 
 def _required_base_paths(provider_name: str, include_bsi_models: bool = False) -> list[str]:
     required = list(HF_CORE_REQUIRED_RELATIVE_PATHS)
@@ -267,6 +277,24 @@ def ensure_protein_domains_table(data_dir: Path, force_rebuild: bool = False) ->
     build_protein_domains_table(data_dir=data_dir, results_dir=results_db_dir)
 
 
+def resolve_search_threshold(args: argparse.Namespace) -> None:
+    if args.known_only or args.bsi or args.search_threshold is not None:
+        return
+
+    default_threshold = DEFAULT_SEARCH_THRESHOLDS_BY_REPRESENTATION.get(
+        args.search_representation
+    )
+    if default_threshold is None:
+        known_reps = ", ".join(sorted(DEFAULT_SEARCH_THRESHOLDS_BY_REPRESENTATION))
+        raise ValueError(
+            "No default --search-threshold is defined for search representation "
+            f"'{args.search_representation}'. Pass --search-threshold explicitly. "
+            f"Known default representations: {known_reps}."
+        )
+
+    args.search_threshold = default_threshold
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LigQ_2 ligand search pipeline for a protein FASTA.")
     parser.add_argument("-i", "--input-fasta", required=True)
@@ -352,7 +380,16 @@ def parse_args() -> argparse.Namespace:
         default=BSI_DEFAULT_MAX_KNOWN_LIGANDS,
         help="Maximum representative known ligands used for BSI search per protein (default: 10).",
     )
-    parser.add_argument("--search-threshold", dest="search_threshold", type=float, default=0.3)
+    parser.add_argument(
+        "--search-threshold",
+        dest="search_threshold",
+        type=float,
+        default=None,
+        help=(
+            "Minimum score for predicted hits. If omitted, LigQ_2 uses the "
+            "representation-specific percentile-99.5 default when available."
+        ),
+    )
     parser.add_argument("--zinc-search-threshold", dest="search_threshold", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--search-threshold-max",
@@ -416,6 +453,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    resolve_search_threshold(args)
 
     if args.bsi_threshold < 0.0 or args.bsi_threshold > 1.0:
         raise ValueError("--bsi-threshold must be between 0 and 1.")
