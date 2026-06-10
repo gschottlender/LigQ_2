@@ -541,19 +541,6 @@ python add_new_representation.py \
   --batch-size 14
 ```
 
-Some Hugging Face model repositories require custom code:
-
-```bash
-python add_new_representation.py \
-  --output-dir databases \
-  --base zinc \
-  --representation-type huggingface \
-  --rep-name ibm-MolFormer \
-  --model-id ibm-research/MoLFormer-XL-both-10pct \
-  --batch-size 14 \
-  --trust-remote-code
-```
-
 For reproducible embedding builds, add `--revision <commit-or-tag>`.
 
 Important: a representation used in search must exist for both `pdb_chembl` and
