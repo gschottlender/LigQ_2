@@ -1,68 +1,56 @@
-# LigQ_2 – Ligand Query Pipeline for Protein Targets
+# LigQ_2
 
-LigQ_2 is a modular bioinformatics and cheminformatics pipeline for **identifying known and predicted ligands for protein targets**, starting from protein sequences.
+LigQ_2 is a protein-to-ligand search pipeline. Given a FASTA file with protein
+queries, it recovers related reference proteins and reports known and predicted
+ligands for those targets.
 
-Given a FASTA file of query proteins, LigQ_2 integrates:
-- Sequence-based search (BLAST)
-- Domain-based search (Pfam / HMMER)
-- Curated ligand knowledge from PDB and ChEMBL
-- Similarity-based ligand prediction using ZINC or user-provided compound databases
+The pipeline combines:
 
-The pipeline is designed to be:
-- Reproducible
-- Scalable (multi-core, large datasets)
-- Usable out of the box, with automatic downloads from Hugging Face when required
+- BLAST sequence search.
+- Pfam/HMMER domain search.
+- Curated ligand associations from PDB and ChEMBL.
+- Predicted ligand expansion against ZINC or user-provided compound databases.
+- Optional BSI scoring for Pfam-supported protein families.
 
-It now uses an **on-demand predicted-ligand cache**:
-- Candidate proteins are found from BLAST/Pfam for each query FASTA run.
-- Predicted ligands are computed only for missing reference proteins.
-- Cached predictions are reused in subsequent runs.
-- Cache is namespaced by search method (**representation + metric**).
-- Cache is automatically invalidated if the local provider database changes.
+LigQ_2 is designed to run directly from the command line with automatic base
+data downloads from Hugging Face when local data is missing.
 
----
+This README is intended to be the operational source of truth for users,
+testers, and reviewers. It focuses on what the current command-line tool does,
+which files it expects, which outputs it writes, and which behaviors should be
+checked before publishing or reviewing a release.
 
-## Installation
+## Contents
 
-LigQ_2 is distributed with a Conda environment file to ensure full reproducibility.
+- [Quick Start](#quick-start)
+- [Input Requirements](#input-requirements)
+- [Main Workflow](#main-workflow)
+- [Candidate Protein Modes](#candidate-protein-modes)
+- [Predicted Ligand Search](#predicted-ligand-search)
+- [Cache Behavior](#cache-behavior)
+- [Data Layout](#data-layout)
+- [Output Files](#output-files)
+- [Custom Compound Databases](#custom-compound-databases)
+- [Additional Representations](#additional-representations)
+- [Updating Databases](#updating-databases)
+- [Reviewer and Tester Checklist](#reviewer-and-tester-checklist)
+- [Performance Notes](#performance-notes)
 
-### 1. Clone the repository
+## Quick Start
+
+### Install
 
 ```bash
 git clone https://github.com/gschottlender/LigQ_2.git
 cd LigQ_2
-```
-
-### 2. Create the Conda environment
-
-```bash
 conda env create -f environment.yml -n ligq_2_env
-```
-
-This command will create a Conda environment named **ligq_2_env**, containing:
-- Python
-- RDKit
-- BLAST+
-- HMMER
-- All required Python dependencies
-
-(The environment name is defined inside `environment.yml`.)
-
-### 3. Activate the environment
-
-```bash
 conda activate ligq_2_env
 ```
 
-Once activated, all LigQ_2 scripts can be run directly.
+The environment includes Python, RDKit, BLAST+, HMMER, pandas, numpy, pyarrow,
+and `huggingface_hub`.
 
----
-
-## Quick Start
-
-### 1) Default run (recommended)
-
-Run LigQ_2 with the default settings:
+### Run the default search
 
 ```bash
 python run_ligq_2.py \
@@ -70,180 +58,28 @@ python run_ligq_2.py \
   --output-dir results
 ```
 
-- By default, candidate-protein search uses:
-  - strict `sequence` BLAST matches
-  - `nearest_k` BLAST matches (`K=5`) excluding proteins already found by `sequence`
-    and restricted to proteins sharing at least one Pfam domain with the query
-- Domain-based search is optional (enable with `--domains`).
-- Ligands are **collapsed per query** (one row per ligand ID).
-- If a ligand is found by both sequence and domain searches, the
-  sequence-based hit is prioritized.
-- This mode produces cleaner and more compact result tables.
+Default behavior:
 
----
+- Uses strict BLAST sequence candidates.
+- Uses nearest-K BLAST candidates (`--nearest-k 5`) filtered to proteins sharing
+  at least one Pfam domain with the query.
+- Does not use full domain-only candidate expansion unless `--domains` is set.
+- Uses `zinc` as the predicted-ligand provider.
+- Uses `morgan_1024_r2` and `tanimoto` for structural similarity.
+- Collapses duplicate ligand IDs per query unless `--keep-repeated-ligands` is set.
+- Downloads missing default-ready base data from Hugging Face. For the default
+  `zinc` provider this includes the required ZINC ligand table and
+  `morgan_1024_r2` representation.
+- Downloads the optional precomputed ZINC predicted-ligand cache only when base
+  data has to be downloaded and `--skip-hf-predicted-cache` is not set. If base
+  data already exists locally but no compatible predicted cache exists, LigQ_2
+  computes the missing cache entries on demand.
 
-### 2) Keep repeated ligands (no collapse)
+The automatic Hugging Face download path is default-ready for `zinc`. Custom
+providers are loaded from local `databases/compound_data/<provider>/` directories
+and are not created by `run_ligq_2.py`.
 
-Run LigQ_2 while **keeping repeated ligands** coming from different
-proteins or search types (sequence / domain):
-
-```bash
-python run_ligq_2.py \
-  --input-fasta queries.fasta \
-  --output-dir results \
-  --keep-repeated-ligands
-```
-
-- Ligands are **not collapsed**.
-- Multiple rows per ligand may appear if the same compound is associated
-  with different proteins or search types.
-- This mode preserves more contextual information, at the cost of larger
-  output files.
-
----
-
-### 3) Search method flags
-
-Control candidate-protein methods explicitly:
-
-- `--sequence`: enable strict sequence-based BLAST method.
-- `--nearest_k`: enable nearest-K BLAST method.
-- `--nearest-k`: set K for nearest-K method (default: `5`).
-- `--domains`: enable Pfam/HMMER domain method.
-- `--max-domain-candidates-per-domain`: maximum proteins retained per
-  query Pfam for `--domains` (default: `20`).
-
-Nearest-K candidates are ranked by BLAST proximity and then filtered to
-proteins that share at least one Pfam domain detected in the query.
-The final output returns up to `K` proteins per query after that domain
-filter. If fewer than `K` proteins share query domains, only those
-available proteins are returned.
-
-If no method flags are provided, LigQ_2 defaults to:
-- `--sequence` ON
-- `--nearest_k` ON (`--nearest-k 5`)
-- `--domains` OFF
-
-When `--domains` is enabled, HMMER identifies the query Pfam families and
-BLAST proximity ranks proteins within each family. Large Pfam families are
-therefore capped per domain before predicted-ligand expansion, while queries
-with multiple domains can still recover candidates from each detected family.
-
----
-
-### 4) Increase sequence diversity (lower identity threshold)
-
-Run LigQ_2 with a **lower minimum sequence identity** to retrieve a more
-diverse set of candidate proteins from sequence-based searches:
-
-```bash
-python run_ligq_2.py \
-  --input-fasta queries.fasta \
-  --output-dir results \
-  --min-identity 0.5
-```
-
-- A lower identity threshold increases the diversity of sequence hits.
-- This may lead to more candidate proteins and a broader ligand space.
-- Useful for exploratory analyses or distant homology searches.
-
----
-
-### 5) Combine both options
-
-Retrieve diverse sequence hits **and** keep all repeated ligands:
-
-```bash
-python run_ligq_2.py \
-  --input-fasta queries.fasta \
-  --output-dir results \
-  --min-identity 0.5 \
-  --keep-repeated-ligands
-```
-
-- Maximizes coverage and diversity.
-- Recommended only when detailed, redundant information is desired.
-
----
-
-## Main Script: run_ligq_2.py
-
-This is the primary user-facing entry point.
-
-### Workflow
-
-1. Ensure base data (sequences and results_databases)
-2. Prepare complementary databases (Pfam, BLAST)
-3. Run BLAST (strict sequence hits + ranked nearest-K pool)
-4. Run HMMER when domain results and/or nearest-K domain gating are needed
-5. Combine candidate proteins (sequence / nearest_k / domain)
-6. Ensure/refresh known binding table (PDB + ChEMBL)
-7. Run **on-demand** predicted-ligand search for missing candidate proteins only
-8. Reuse local cache for proteins already processed with the same method
-9. Write per-query results and a global summary
-
-If `--known-only` is used, steps 7 and 8 are skipped. The pipeline still
-recovers proteins by sequence, nearest-K and/or domain searches, but reports
-only curated ligands from the local PDB/ChEMBL binding table.
-
-If `--bsi` is used, the predicted-ligand step uses BSI instead of
-Tanimoto/Cosine. BSI is PFAM-dependent: it is applied only to recovered
-proteins whose PFAM family is supported by the bundled BSI models.
-
-### On-demand cache layout
-
-Method-specific predicted ligand cache is stored under:
-
-```
-<data-dir>/results_databases/predicted_bindings/<provider>/
-  search_representation=<...>__search_metric=<...>__.../
-    predicted_binding_data.parquet
-    cached_proteins.json
-    predicted_binding_rowgroup_index.json
-    predicted_binding_progress.json
-    manifest.json
-    .cache.lock
-```
-
-The `manifest.json` captures method configuration and provider database
-fingerprint to ensure cache consistency. `cached_proteins.json` is the
-lightweight index used to check cache coverage without loading the full
-predicted-ligand parquet. `predicted_binding_rowgroup_index.json` maps
-proteins to parquet row groups so result extraction can read only the
-blocks needed for the requested proteins. Locking avoids concurrent write races. During
-on-demand computation, a tqdm progress bar reports completed vs pending
-requested proteins.
-
-`--search-global-topk` also acts as an early memory-safety limit for
-compound-database similarity searches. Hits are reduced before metadata joins,
-so proteins that produce very large threshold hit sets are capped instead of
-materializing an unbounded intermediate DataFrame.
-
-BSI caches are stored separately from structural-similarity caches. For
-example, `--ligand-provider zinc --bsi` writes under a provider namespace like
-`predicted_bindings/zinc_bsi/`, so BSI results do not mix with Tanimoto or
-Cosine results.
-
-### New useful options in `run_ligq_2.py`
-
-Default provider is `zinc`, but the pipeline now uses a provider interface (`--ligand-provider`) so additional sources can be added without changing the main workflow.
-
-```bash
-python run_ligq_2.py \
-  --input-fasta queries.fasta \
-  --output-dir results \
-  --ligand-provider zinc \
-  --search-representation morgan_1024_r2 \
-  --search-metric tanimoto \
-  --search-threshold 0.5 \
-  --cluster-threshold 0.8
-```
-
-Legacy `--zinc-*` option names are still accepted as aliases, but the neutral
-`--search-*` flags are the preferred interface going forward.
-
-To retrieve only curated PDB/ChEMBL ligands, without searching ZINC or any
-custom compound provider, use:
+### Known ligands only
 
 ```bash
 python run_ligq_2.py \
@@ -252,10 +88,12 @@ python run_ligq_2.py \
   --known-only
 ```
 
-In this mode, `predicted_ligands.tsv` files are not produced and the predicted
-ligand counts in `search_results_summary.tsv` remain zero.
+`--known-only` still recovers candidate proteins, but skips provider setup,
+predicted-ligand cache generation, and ZINC/custom-compound searches.
+Only the core sequence, Pfam, BLAST, known-ligand, and protein-domain data are
+required in this mode.
 
-To use BSI for predicted ligand expansion:
+### BSI search
 
 ```bash
 python run_ligq_2.py \
@@ -266,132 +104,404 @@ python run_ligq_2.py \
   --bsi-threshold 0.5
 ```
 
-BSI requires the default `morgan_1024_r2` fingerprints and the BSI model bundle
-under:
+BSI uses `morgan_1024_r2`, models under `<data-dir>/bsi_models/mpg_1024`, and
+reports `bsi_score` plus the selected `pfam_id`. Proteins without a supported
+Pfam family produce no BSI predicted ligands.
 
-```text
-<data-dir>/bsi_models/mpg_1024/
-  manifest.json
-  summary.csv
-  <PFAM>/model.pth
-  <PFAM>/params.json
-```
-
-When `--bsi` is enabled and this folder is missing, `run_ligq_2.py` attempts to
-download it from the configured Hugging Face dataset. If a recovered protein has
-multiple supported PFAM families, LigQ_2 selects the model with the highest
-`val_pr_auc` in `summary.csv`. Proteins with no supported PFAM simply produce no
-BSI predicted ligands.
-
-CPU/GPU search can be controlled with:
+Useful BSI-specific controls:
 
 ```bash
-python run_ligq_2.py \
-  --input-fasta queries.fasta \
-  --output-dir results_bsi_gpu \
-  --ligand-provider zinc \
-  --bsi \
-  --search-device cuda \
-  --search-target-chunk-size 100000 \
-  --bsi-model-batch-size 65536 \
-  --bsi-max-known-ligands 10
+--bsi-threshold 0.5
+--bsi-model-batch-size 65536
+--bsi-max-known-ligands 10
 ```
 
-BSI uses at most 10 representative known ligands per recovered protein by
-default. This limit is specific to BSI and does not change the Tanimoto/Cosine
-workflow.
+## Input Requirements
 
-When `--ligand-provider` is set to a custom base name, LigQ_2 expects to find:
+Input is a protein FASTA file:
 
 ```text
-<data-dir>/compound_data/<provider-name>/
-  ligands.parquet
-  reps/
-    <search-representation>.dat
-    <search-representation>.meta.json
+>query_1
+MSEQUENCE...
+>query_2
+MSEQUENCE...
 ```
 
-Optional rebuild controls:
+LigQ_2 uses the first whitespace-delimited token after `>` as the query ID. That
+ID becomes the output directory name under `search_results/`.
 
-- `--force-rebuild-known-binding`
-- `--force-rebuild-protein-domains`
-- `--force-rebuild-predicted-cache`
+## Main Workflow
 
-If the base data is missing and must be fetched from Hugging Face, but you want
-to avoid downloading the optional precomputed predicted-ligand cache under
-`results_databases/predicted_bindings`, add:
+`run_ligq_2.py` performs these steps:
+
+1. Parse query IDs and sequences from the input FASTA.
+2. Ensure required base data exists under `--data-dir` (default `databases`).
+3. Download missing default-ready data from Hugging Face when needed.
+4. Prepare BLAST and Pfam/HMMER complementary databases.
+5. Recover candidate proteins by sequence, nearest-K, and optionally domains.
+6. Ensure runtime tables for known ligands and protein domains exist.
+7. Build or reuse provider-specific predicted-ligand cache on demand.
+8. Write per-query outputs and a global summary.
+
+No mandatory global precomputation step is required for predicted ligands.
+Predictions are computed only for candidate proteins needed by the current run
+and cached for reuse.
+
+## Candidate Protein Modes
+
+If no candidate method flags are provided, LigQ_2 uses:
+
+- `--sequence` ON.
+- `--nearest_k` ON.
+- `--nearest-k 5`.
+- `--domains` OFF.
+
+If any candidate method flag is provided explicitly, the implicit default is
+disabled and only the requested candidate modes are enabled. For example,
+`--domains` alone runs domain candidate expansion only; BLAST can still be run
+internally to rank domain candidates, but sequence hits are not included unless
+`--sequence` is also passed.
+
+Available flags:
+
+```bash
+--sequence
+--nearest_k
+--nearest-k 5
+--domains
+--max-domain-candidates-per-domain 20
+```
+
+`--sequence` applies strict BLAST thresholds:
+
+```bash
+--min-identity 0.9
+--min-query-coverage 0.9
+--min-subject-coverage 0.7
+--blast-evalue-max 1e-5
+--max-hits 150
+```
+
+`--nearest_k` uses the broader ranked BLAST pool, excludes strict sequence hits,
+filters to proteins sharing query Pfam domains, and caps the final output after
+domain filtering.
+
+`--domains` runs HMMER against Pfam and expands candidates by shared domains.
+Within each query Pfam, candidate proteins are ranked by BLAST proximity when
+available and capped by `--max-domain-candidates-per-domain`.
+
+## Predicted Ligand Search
+
+Default provider:
+
+```bash
+--ligand-provider zinc
+```
+
+Default representation and metric:
+
+```bash
+--search-representation morgan_1024_r2
+--search-metric tanimoto
+```
+
+For each recovered candidate protein, LigQ_2 uses its curated PDB/ChEMBL
+ligands as query compounds and searches the selected provider database for
+similar or BSI-compatible ligands. Candidate proteins without curated known
+ligands can still appear in `protein_ranking.tsv`, but they cannot seed a
+predicted-ligand search.
+
+Supported provider types:
+
+- `zinc`: built-in default provider under `compound_data/zinc/`.
+- custom provider: any local `compound_data/<provider>/` directory with
+  `ligands.parquet` and compatible representations under `reps/`.
+
+Additional provider controls:
+
+```bash
+--search-threshold <float>
+--search-threshold-max <float>
+--cluster-threshold 0.8
+--search-device auto
+--search-query-batch-size <int>
+--search-target-chunk-size <int>
+--search-per-iteration-topk 1000
+--search-global-topk 10000
+```
+
+### Default search thresholds
+
+If `--search-threshold` is omitted, non-BSI predicted searches use
+representation-specific percentile-99.5 defaults:
+
+```text
+chemberta_zinc_base_768              0.936140
+rdkit_1024                           0.930324
+maccs                                0.831169
+ap_rdkit                             0.767087
+morgan_feature_1024_r2               0.509451
+topological_torsion_rdkit_1024       0.502932
+morgan_1024_r2                       0.415094
+```
+
+Rules:
+
+- Explicit `--search-threshold` always overrides the representation default.
+- Legacy `--zinc-search-threshold` is still accepted as an alias.
+- Unknown representations require an explicit `--search-threshold`.
+- `--known-only` does not use predicted-search thresholds.
+- `--bsi` uses `--bsi-threshold`, not this structural-similarity threshold map.
+- The representation name must match the files under both
+  `compound_data/pdb_chembl/reps/` and the selected provider's `reps/`
+  directory.
+
+## Cache Behavior
+
+Predicted-ligand caches live under:
+
+```text
+<data-dir>/results_databases/predicted_bindings/<provider>/
+  search_representation=<...>__search_metric=<...>__cache_threshold_min=<...>/
+    predicted_binding_data.parquet
+    predicted_binding_progress.json
+    cached_proteins.json
+    predicted_binding_rowgroup_index.json
+    manifest.json
+    .cache.lock
+```
+
+The cache system is provider-generic:
+
+- Built-in ZINC uses provider namespace `zinc`.
+- Custom providers use their `--ligand-provider` name.
+- BSI providers use `<provider>_bsi`, for example `zinc_bsi`.
+- The same indexing and RAM-control machinery is used for ZINC and custom
+  providers.
+
+The cache is designed for large runs:
+
+- `cached_proteins.json` tracks completed proteins without reading the full
+  predicted-ligand parquet.
+- `predicted_binding_progress.json` preserves resume information.
+- `predicted_binding_rowgroup_index.json` maps proteins to parquet row groups so
+  result generation can read only relevant blocks.
+- `manifest.json` stores provider, method, threshold coverage, and database
+  fingerprint information.
+- `.cache.lock` avoids concurrent cache writers.
+
+A cache generated with a lower minimum threshold can serve stricter later
+queries if provider, method, and database fingerprint match. For example, the
+optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.3` can
+serve the current default `morgan_1024_r2` threshold `0.415094`.
+
+Use `--force-rebuild-predicted-cache` to discard and regenerate the compatible
+cache namespace for the selected provider, method, and threshold coverage.
+
+Use this flag to avoid downloading the optional precomputed ZINC cache while
+still allowing required base-data downloads:
 
 ```bash
 python run_ligq_2.py ... --skip-hf-predicted-cache
 ```
 
-The run will still build/reuse a local on-demand predicted cache for the
-proteins it actually needs.
+## Data Layout
 
----
+Default data root:
 
-## Utility Script: `add_new_representation.py`
-
-This helper script builds an additional compound representation under:
-
-```
-<output-dir>/compound_data/<base>/reps/<rep-name>.dat
-<output-dir>/compound_data/<base>/reps/<rep-name>.meta.json
+```bash
+--data-dir databases
 ```
 
-It can target:
-- the legacy built-in spaces (`zinc`, `pdb_chembl`)
-- any custom base under `compound_data/<base-name>/`
-- an explicit database root via `--target-root`
+Default-ready data layout:
 
-Compatibility with the local `pdb_chembl` base can still be requested when
-needed with `--ensure-local-compatible`.
+```text
+databases/
+  db_metadata.json
+  sequences/
+    target_sequences.fasta
+    target_sequences.pkl
+  merged_databases/
+    binding_data_merged.parquet
+    ligs_smiles_merged.parquet
+    uncurated_binding_data.parquet
+  results_databases/
+    known_binding_data.parquet
+    protein_domains.parquet
+    predicted_bindings/
+  compound_data/
+    pdb_chembl/
+      ligands.parquet
+      reps/
+        morgan_1024_r2.dat
+        morgan_1024_r2.meta.json
+    zinc/
+      ligands.parquet
+      reps/
+        morgan_1024_r2.dat
+        morgan_1024_r2.meta.json
+  complementary_databases/
+    blast/
+    pfam/
+  bsi_models/
+    mpg_1024/
+```
 
-### Supported representation families
+`merged_databases/` is needed when runtime tables are rebuilt locally with
+`--force-rebuild-known-binding` or after `update_databases.py` detects PDB or
+ChEMBL changes. Regular runs use the runtime-ready files in
+`results_databases/`.
 
-1. **HuggingFace embeddings** (`--representation-type huggingface`)
-   - Example default: `seyonec/ChemBERTa-zinc-base-v1`
-   - Output vectors stored as dense embeddings (float16 memmap).
-   - `--n-bits` is optional; when omitted, the model `hidden_size` is used.
-   - Some HuggingFace repositories ship **custom Python code** for the tokenizer,
-     config, or model classes. In those cases you must add
-     `--trust-remote-code` so `transformers` can load the repository correctly.
-   - If you want reproducible loading of a remote-code model, you can also pin
-     a specific repository revision with `--revision <commit-or-tag>`.
+The canonical Hugging Face dataset is:
 
-2. **RDKit fingerprints** (`--representation-type rdkit`)
-   - `--n-bits` is required.
-   - `--rdkit-fp-kind ap`: **Atom Pair** fingerprint (hashed bit vector).
-   - `--rdkit-fp-kind topological_torsion`: **Topological Torsion** fingerprint (hashed bit vector).
-   - `--rdkit-fp-kind rdkit`: **RDKit/Daylight-like** fingerprint (bit vector).
-   - `--rdkit-fp-kind morgan_feature`: **Feature Morgan / FCFP-like** fingerprint (bit vector).
-   - `--rdkit-fp-kind maccs`: **MACCS keys** fingerprint (fixed 167 bits).
+```text
+gschottlender/LigQ_2
+https://huggingface.co/datasets/gschottlender/LigQ_2/tree/main
+```
 
-3. **Morgan fingerprints**
-   - Already available in the database build pipeline as `morgan_1024_r2`
-     (used by default for ZINC similarity search in `run_ligq_2.py`).
+The current default-ready Hugging Face tree provides `morgan_1024_r2` for both
+`pdb_chembl` and `zinc`. Extra representations must exist locally for both
+`compound_data/pdb_chembl/reps/` and the selected target provider before they
+can be used in predicted-ligand search.
 
-### Multi-core CPU optimization
+## Output Files
 
-For RDKit bit fingerprints, generation is optimized for multi-core CPU in the same
-style as Morgan fingerprints:
-- batched processing,
-- multiprocessing workers,
-- packed bit storage in memmap (`uint8`),
-- metadata with timing and failure statistics.
+Global summary:
 
-Progress display for **all representation builders** (Morgan, RDKit, HuggingFace):
-- single-line tqdm progress bar,
-- percentage complete,
-- elapsed time and **estimated remaining time (ETA)**.
+```text
+<output-dir>/search_results_summary.tsv
+```
 
-Parallelism controls:
-- `--n-jobs` (number of workers; default: all CPUs)
-- `--chunksize` (chunk size for worker scheduling)
+The global summary contains one row per FASTA query, including queries with no
+recovered candidates.
 
-### Example commands
+Per-query directory, when the query has candidates or ligand results:
 
-Build an Atom Pair representation:
+```text
+<output-dir>/search_results/<QUERY_ID>/
+  protein_ranking.tsv
+  known_ligands.tsv
+  predicted_ligands.tsv
+```
+
+Per-query files are written only when they contain information:
+
+- `protein_ranking.tsv` is written when candidate proteins are recovered.
+- `known_ligands.tsv` is written when known ligands are found.
+- `predicted_ligands.tsv` is written when predicted ligands are found.
+- `predicted_ligands.tsv` is always absent in `--known-only` mode.
+
+If a query has no recovered candidates and no ligands, it remains represented in
+`search_results_summary.tsv` but may not have a per-query directory.
+
+### `protein_ranking.tsv`
+
+Ranks candidate proteins recovered for the query.
+
+- Sequence and nearest-K candidates are ranked by BLAST evidence.
+- Domain candidates with BLAST evidence are ranked above domain-only candidates.
+- Domain-only candidates are ranked by Pfam/HMMER evidence.
+- `n_shared_domains` reports shared Pfam domains when available.
+
+This table is informational; it does not change ligand retrieval or cache
+behavior.
+
+### `known_ligands.tsv`
+
+Curated PDB/ChEMBL ligands associated with recovered proteins.
+The table keeps the known-binding columns from
+`results_databases/known_binding_data.parquet` plus `search_type`, so reviewers
+can trace each ligand back to the candidate recovery mode.
+
+### `predicted_ligands.tsv`
+
+Predicted ligands from the selected provider.
+
+Score columns:
+
+- `tanimoto` for Tanimoto searches.
+- `similarity` for cosine/embedding searches.
+- `bsi_score` for BSI.
+
+`search_type` indicates whether the ligand came through `sequence`, `nearest_k`,
+or `domain` candidate proteins. When duplicate ligand IDs are collapsed,
+evidence priority is `sequence`, then `nearest_k`, then `domain`.
+
+### `search_results_summary.tsv`
+
+The summary reports per-query counts split by candidate source:
+
+- `n_proteins_sequence`, `n_proteins_nearest_k`, `n_proteins_domain`
+- `n_known_ligands_sequence`, `n_known_ligands_nearest_k`,
+  `n_known_ligands_domain`
+- `n_predicted_ligands_sequence`, `n_predicted_ligands_nearest_k`,
+  `n_predicted_ligands_domain`
+
+## Custom Compound Databases
+
+Build a custom provider:
+
+```bash
+python build_compound_database.py \
+  --input-file vendor.csv \
+  --base-name vendor \
+  --id-column compound \
+  --smiles-column SMILES
+```
+
+Supported input formats:
+
+- `csv`
+- `tsv`
+- `smi`
+- `parquet`
+
+For `.smi`, the expected format is:
+
+```text
+SMILES compound_id
+```
+
+The command creates:
+
+```text
+databases/compound_data/vendor/
+  ligands.parquet
+  reps/
+    morgan_1024_r2.dat
+    morgan_1024_r2.meta.json
+```
+
+`build_compound_database.py` builds the default `morgan_1024_r2`
+representation for the custom provider. Additional representations must be
+added separately with `add_new_representation.py`.
+
+Run against the custom provider:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_vendor \
+  --ligand-provider vendor
+```
+
+For custom providers, `run_ligq_2.py` expects
+`databases/compound_data/vendor/` to already exist. The automatic Hugging Face
+download does not create arbitrary custom provider directories.
+
+Run BSI against the custom provider:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir results_vendor_bsi \
+  --ligand-provider vendor \
+  --bsi
+```
+
+## Additional Representations
+
+Use `add_new_representation.py` to build extra representations:
 
 ```bash
 python add_new_representation.py \
@@ -400,59 +510,26 @@ python add_new_representation.py \
   --representation-type rdkit \
   --rdkit-fp-kind ap \
   --n-bits 1024 \
-  --rep-name atom_pair_1024 \
+  --rep-name ap_rdkit \
   --n-jobs 16 \
   --chunksize 500
 ```
 
-Build a Topological Torsion representation:
+For ZINC, the legacy default `--base zinc` also ensures the same representation
+exists in `compound_data/pdb_chembl/`, which is required for search
+compatibility. For custom providers, pass `--base-name <provider>` and
+`--ensure-local-compatible` when the representation must also be built for
+`pdb_chembl`.
 
-```bash
-python add_new_representation.py \
-  --output-dir databases \
-  --base zinc \
-  --representation-type rdkit \
-  --rdkit-fp-kind topological_torsion \
-  --n-bits 1024 \
-  --rep-name topological_torsion_1024
-```
+Supported RDKit fingerprint kinds:
 
-Build an RDKit/Daylight-like representation:
+- `ap`
+- `topological_torsion`
+- `rdkit`
+- `morgan_feature`
+- `maccs`
 
-```bash
-python add_new_representation.py \
-  --output-dir databases \
-  --base zinc \
-  --representation-type rdkit \
-  --rdkit-fp-kind rdkit \
-  --n-bits 2048 \
-  --rep-name rdkit_daylight_2048
-```
-
-Build a MACCS representation:
-
-```bash
-python add_new_representation.py \
-  --output-dir databases \
-  --base zinc \
-  --representation-type rdkit \
-  --rdkit-fp-kind maccs \
-  --n-bits 167 \
-  --rep-name maccs_167
-```
-
-Build a Feature Morgan representation in a custom base:
-
-```bash
-python add_new_representation.py \
-  --output-dir databases \
-  --base-name vendor \
-  --representation-type rdkit \
-  --rdkit-fp-kind morgan_feature \
-  --n-bits 1024
-```
-
-Build a HuggingFace representation:
+Hugging Face embedding example:
 
 ```bash
 python add_new_representation.py \
@@ -465,8 +542,7 @@ python add_new_representation.py \
   --batch-size 14
 ```
 
-Build a HuggingFace representation from a repository that requires custom code
-(e.g. MoLFormer):
+Some Hugging Face model repositories require custom code:
 
 ```bash
 python add_new_representation.py \
@@ -479,283 +555,198 @@ python add_new_representation.py \
   --trust-remote-code
 ```
 
-If you see a HuggingFace error saying the repository contains custom code that
-must be executed locally, rerun the command with `--trust-remote-code`. For
-extra reproducibility, add `--revision <commit-or-tag>` to pin the exact model
-revision being loaded.
+For reproducible embedding builds, add `--revision <commit-or-tag>`.
 
----
+Important: a representation used in search must exist for both `pdb_chembl` and
+the selected target provider. If it is missing from either side, provider setup
+will fail before the search runs.
 
-## Outputs
+The percentile-99.5 default thresholds in `run_ligq_2.py` are keyed by exact
+representation names. Use `--rep-name` to match those names when building extra
+representations:
 
-### Global Summary
+| Search representation | Required build flags |
+| --- | --- |
+| `chemberta_zinc_base_768` | `--representation-type huggingface --model-id seyonec/ChemBERTa-zinc-base-v1 --n-bits 768 --rep-name chemberta_zinc_base_768` |
+| `rdkit_1024` | `--representation-type rdkit --rdkit-fp-kind rdkit --n-bits 1024 --rep-name rdkit_1024` |
+| `maccs` | `--representation-type rdkit --rdkit-fp-kind maccs --n-bits 167 --rep-name maccs` |
+| `ap_rdkit` | `--representation-type rdkit --rdkit-fp-kind ap --n-bits 1024 --rep-name ap_rdkit` |
+| `morgan_feature_1024_r2` | `--representation-type rdkit --rdkit-fp-kind morgan_feature --n-bits 1024 --rep-name morgan_feature_1024_r2` |
+| `topological_torsion_rdkit_1024` | `--representation-type rdkit --rdkit-fp-kind topological_torsion --n-bits 1024 --rep-name topological_torsion_rdkit_1024` |
+| `morgan_1024_r2` | Built by default for HF data and custom providers. |
 
-```
-results/search_results_summary.tsv
-```
-
-Contains one row per query protein, summarizing the results obtained from
-sequence-based and domain-based searches.
-
-Columns report:
-- the number of candidate proteins,
-- the number of unique known ligands,
-- and the number of predicted ligands from the selected provider,
-
-separately for **sequence**, **nearest-K**, and **domain** searches.
-
----
-
-### Per-Query Results
-
-```
-results/search_results/<QUERY_ID>/
-```
-
-Each directory corresponds to a single query protein and contains
-ligand-level results derived from two complementary search strategies:
-
----
-
-#### `search_type: sequence` vs `search_type: domain`
-
-For every ligand entry, the column `search_type` indicates **how the
-protein–ligand association was obtained**:
-
-- **`sequence`**
-
-  The ligand is associated with a protein identified by **direct
-  sequence similarity** to the query protein (full-length alignment).
-
-  These hits typically reflect:
-  - closer evolutionary relationships,
-  - higher confidence functional similarity,
-  - more conservative ligand transfer.
-
-- **`domain`**
-
-  The ligand is associated with a protein identified by **shared protein
-  domains** (e.g. Pfam-based matches), even when full-length sequence
-  similarity is low.
-
-  These hits typically reflect:
-  - conserved catalytic or binding domains,
-  - broader functional similarity,
-  - increased chemical diversity at the cost of lower specificity.
-
-When the same ligand is retrieved by both strategies, **sequence-based
-hits are always prioritized** over domain-based hits when ligand
-collapsing is enabled.
-
----
-
-### Protein Ranking
-
-```
-protein_ranking.tsv
-```
-
-Candidate proteins recovered for the query, ranked with evidence already
-computed by the pipeline. Sequence and nearest-K candidates are ranked by
-BLAST evidence (`bitscore`, `evalue`, identity and coverage). Domain
-candidates with BLAST evidence are ranked above domain-only candidates;
-domain-only candidates are ranked by Pfam/HMMER evidence.
-`n_shared_domains` reports the number of Pfam domains shared by the query
-and candidate protein for all search types when domain annotations are
-available.
-
-The ranking table is informational and does not change ligand retrieval,
-cache behavior, or the global summary counts.
-
----
-
-### Known Ligands
-
-```
-known_ligands.tsv
-```
-
-Curated ligands retrieved from **PDB and ChEMBL** that are associated with
-candidate proteins identified by sequence-based and/or domain-based
-searches.
-
-Each row represents a ligand–protein association and may include:
-- structural identifiers,
-- binding site information,
-- experimental annotations.
-
----
-
-### Predicted Ligands
-
-```
-predicted_ligands.tsv
-```
-
-Predicted ligands retrieved from the selected provider (for example **ZINC**
-or a user-provided compound database), identified by similarity searches
-starting from known ligands associated with candidate proteins.
-
-For Tanimoto searches, the score column is `tanimoto`. For embedding/Cosine
-searches, the score column is `similarity`. For BSI searches, the score column
-is `bsi_score` and the selected model family is reported in `pfam_id`.
-
-This file is skipped when `run_ligq_2.py` is executed with `--known-only`.
-
-Depending on the chosen options:
-- ligands may be **collapsed to one row per compound**, prioritizing
-  sequence-based hits, or
-- multiple rows may be present for the same ligand when repeated ligands
-  are kept.
-
----
+If a representation name is not listed in the default-threshold table, run with
+an explicit `--search-threshold`.
 
 ## Updating Databases
 
-### 1. Update PDB and ChEMBL (requires specification of ChEMBL version to download)
+### Update PDB and ChEMBL
 
 ```bash
 python update_databases.py --chembl-version 36
 ```
 
-### 2. Update ZINC
+When PDB or ChEMBL changes are detected, this command:
+
+- refreshes processed `pdb/` and/or `chembl/` data;
+- rebuilds `merged_databases/`;
+- regenerates runtime tables:
+
+```text
+results_databases/known_binding_data.parquet
+results_databases/protein_domains.parquet
+```
+
+During regular search runs, the same runtime tables can be rebuilt from local
+`merged_databases/` with:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir rebuild_runtime_results \
+  --known-only \
+  --force-rebuild-known-binding \
+  --force-rebuild-protein-domains
+```
+
+### Update ZINC
 
 ```bash
 python update_zinc_databases.py
 ```
 
-By default, this command now backs up any existing files under:
+Default behavior:
 
-```bash
-databases/compound_data/zinc/reps/
-```
+- backs up existing `databases/compound_data/zinc/reps/` into
+  `databases/compound_data/zinc/old_reps_backup/<timestamp>/`;
+- rebuilds the fresh ZINC base and default representation;
+- moves existing ZINC predicted cache from
+  `databases/results_databases/predicted_bindings/zinc/` to
+  `databases/results_databases/old_predicted_bindings_backup/zinc/`.
 
-into a timestamped folder under:
-
-```bash
-databases/compound_data/zinc/old_reps_backup/
-```
-
-before rebuilding the updated ZINC base. After the update finishes,
-`reps/` contains only the newly generated representation associated with the
-fresh ZINC database build (by default, `morgan_1024_r2`).
-
-This avoids mixing old representations computed on a previous ZINC version
-with the new updated base. Additional representations for the updated ZINC
-database should then be regenerated with:
-
-```bash
-python add_new_representation.py --output-dir databases --base zinc ...
-```
-
-The ZINC predicted-binding cache is also moved by default from:
-
-```bash
-databases/results_databases/predicted_bindings/zinc/
-```
-
-into:
-
-```bash
-databases/results_databases/old_predicted_bindings_backup/zinc/
-```
-
-This keeps per-protein predicted results computed against an older ZINC build
-separate from the cache that will be generated for the updated database.
-
-If you explicitly want to keep the current contents of `reps/` in place during
-the update, use:
+Optional overrides:
 
 ```bash
 python update_zinc_databases.py --keep-existing-reps
-```
-
-If you explicitly want to keep the existing ZINC predicted cache in place, use:
-
-```bash
 python update_zinc_databases.py --keep-existing-predicted-cache
 ```
 
-### 3. Run queries directly (single-script operational mode)
+After updating ZINC, rebuild any non-default representations needed for that
+new ZINC base.
 
-```bash
-python run_ligq_2.py --input-fasta queries.fasta --output-dir results
-```
+## Reviewer and Tester Checklist
 
-No mandatory global precomputation step is required anymore.
-Predicted ligands are computed incrementally and cached on demand
-via provider-specific cache namespaces.
+Use this checklist before publishing or reviewing a release.
 
-### 4. Build a custom compound database
-
-Import a user-provided compound table into the LigQ_2 internal format:
-
-```bash
-python build_compound_database.py \
-  --input-file vendor.csv \
-  --base-name vendor \
-  --id-column compound \
-  --smiles-column SMILES
-```
-
-Supported input formats:
-- `csv`
-- `tsv`
-- `smi`
-- `parquet`
-
-If `--id-column` or `--smiles-column` are omitted, the importer tries common
-column names automatically for table-like inputs (`csv`, `tsv`, `parquet`).
-
-For `.smi`, the current supported convention is:
-
-```text
-SMILES compound_id
-```
-
-with no header row. The first column is interpreted as `SMILES` and the second
-as the compound identifier. The command creates:
-
-```text
-databases/compound_data/vendor/
-  ligands.parquet
-  reps/
-    morgan_1024_r2.dat
-    morgan_1024_r2.meta.json
-```
-
-After that, the base can be queried directly with:
+### Smoke test
 
 ```bash
 python run_ligq_2.py \
   --input-fasta queries.fasta \
-  --output-dir results \
-  --ligand-provider vendor
+  --output-dir smoke_results \
+  --known-only
 ```
 
-The same custom base can be queried with BSI if it has the default
-`morgan_1024_r2` representation:
+Expected:
+
+- command finishes with `[INFO] Pipeline completed successfully`;
+- `smoke_results/search_results_summary.tsv` exists;
+- the summary has one row per FASTA query;
+- queries with recovered candidates have a directory under
+  `smoke_results/search_results/`;
+- those query directories have `protein_ranking.tsv` when candidates are
+  recovered;
+- `predicted_ligands.tsv` is absent in known-only mode.
+
+### Default predicted run
 
 ```bash
 python run_ligq_2.py \
   --input-fasta queries.fasta \
-  --output-dir results_vendor_bsi \
-  --ligand-provider vendor \
-  --bsi
+  --output-dir default_results
 ```
 
+Check:
 
----
+- missing base data is downloaded from `gschottlender/LigQ_2`;
+- optional HF cache is downloaded only when base data is missing and
+  `--skip-hf-predicted-cache` is not set;
+- cache namespace is under `results_databases/predicted_bindings/zinc/`;
+- cache includes `manifest.json`, `cached_proteins.json`, and
+  `predicted_binding_rowgroup_index.json`;
+- `predicted_ligands.tsv` contains the expected score column (`tanimoto` by
+  default).
+
+### Cache and rebuild checks
+
+Useful targeted checks:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir rebuild_known_results \
+  --known-only \
+  --force-rebuild-known-binding \
+  --force-rebuild-protein-domains
+
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir rebuild_cache_results \
+  --force-rebuild-predicted-cache
+```
+
+Reviewers should confirm that rebuilding known/protein-domain tables requires
+local `merged_databases/`, while rebuilding predicted caches uses the selected
+provider and writes under `results_databases/predicted_bindings/<provider>/`.
+
+### Expected failure checks
+
+Unknown search representations must fail unless the user gives an explicit
+threshold:
+
+```bash
+python run_ligq_2.py \
+  --input-fasta queries.fasta \
+  --output-dir unknown_rep_results \
+  --search-representation custom_rep_without_default
+```
+
+Expected behavior: LigQ_2 raises a clear error asking for
+`--search-threshold`. The same command should proceed past argument resolution
+when `--search-threshold <float>` is supplied and the representation files exist
+for both `pdb_chembl` and the selected provider.
+
+### CLI and documentation consistency
+
+```bash
+python run_ligq_2.py --help
+python -m py_compile run_ligq_2.py
+```
+
+Reviewers should confirm that README defaults match `run_ligq_2.py`, especially:
+
+- default candidate methods: sequence + nearest-K;
+- `--domains` is opt-in;
+- structural threshold defaults by representation;
+- BSI uses `--bsi-threshold`;
+- unknown representations require explicit `--search-threshold`;
+- default HF data is `morgan_1024_r2` only.
 
 ## Performance Notes
 
-- Parallel execution supported
-- Resume-safe long computations
-- Designed for HPC but works locally
-- BSI searches are chunked and support CPU/GPU execution without loading the
-  full target database into RAM or VRAM.
+- BLAST uses `--n-workers`.
+- Predicted ligand search is incremental by protein.
+- Large predicted caches are not loaded wholesale during normal result writing.
+- `--search-global-topk` caps per-protein predicted hit sets before large
+  metadata joins.
+- `--search-target-chunk-size` and `--search-device` control CPU/GPU memory use.
+- `--block3-query-chunk-size` and `--block3-predicted-filter-batch-size`
+  control memory use while writing query-level outputs.
+- `--temp-results-dir` is recreated for each run and stores intermediate BLAST,
+  HMMER, and candidate-mapping files useful for debugging.
+- BSI supports CPU/GPU execution and chunked target evaluation.
 
-For BSI-specific CPU/GPU benchmarks, use:
+BSI benchmark example:
 
 ```bash
 python benchmark_bsi_search.py \
@@ -768,22 +759,7 @@ python benchmark_bsi_search.py \
   --model-batch-sizes 32768,65536
 ```
 
-Set `--target-limit 0` to benchmark the full provider database, including the
-full ZINC in-stock base when available. The benchmark writes a TSV with elapsed
-time, throughput, hit count, peak RAM and peak VRAM.
-
----
-
-## Dependencies
-
-- Python ≥ 3.9
-- BLAST+
-- HMMER
-- RDKit
-- pandas, numpy, pyarrow
-- huggingface_hub
-
----
+Set `--target-limit 0` to benchmark the full provider database.
 
 ## Data Sources
 
@@ -793,9 +769,7 @@ time, throughput, hit count, peak RAM and peak VRAM.
 - Pfam
 - ZINC
 
----
-
 ## Status
 
-Active development  
-Databases synced December 2025
+Active development. Current default public data is distributed through the
+Hugging Face dataset `gschottlender/LigQ_2`.
