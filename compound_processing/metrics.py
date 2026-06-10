@@ -460,6 +460,60 @@ def cosine_torch_tensor(
     return torch.matmul(qt, xt.T).to(torch.float32)
 
 
+def resolve_assume_normalized(
+    assume_normalized: Optional[bool],
+    q_meta: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Resolve cosine normalization behavior using optional representation metadata."""
+    if assume_normalized is None and q_meta is not None:
+        return bool(q_meta.get("normalized", False))
+    return bool(assume_normalized)
+
+
+def prepare_cosine_queries_torch(
+    q: np.ndarray,
+    *,
+    device: Union[str, "torch.device"] = "cuda",
+    assume_normalized: Optional[bool] = None,
+    q_meta: Optional[Dict[str, Any]] = None,
+    eps: float = 1e-12,
+) -> "torch.Tensor":
+    """
+    Prepare query embeddings once on GPU for repeated cosine scoring calls.
+
+    This avoids re-uploading/re-normalizing the same query batch for each target chunk.
+    """
+    _require_torch()
+    dev = torch.device(device)
+    qt = torch.as_tensor(q, device=dev).to(torch.float32)
+
+    if not resolve_assume_normalized(assume_normalized, q_meta):
+        qn = torch.linalg.norm(qt, dim=1, keepdim=True).clamp_min(eps)
+        qt = qt / qn
+    return qt
+
+
+def cosine_torch_tensor_prepared_q(
+    qt: "torch.Tensor",
+    x: np.ndarray,
+    *,
+    assume_normalized: Optional[bool] = None,
+    q_meta: Optional[Dict[str, Any]] = None,
+    eps: float = 1e-12,
+) -> "torch.Tensor":
+    """
+    GPU cosine similarity reusing a precomputed query tensor `qt` already on device.
+    """
+    _require_torch()
+    xt = torch.as_tensor(x, device=qt.device).to(torch.float32)
+
+    if not resolve_assume_normalized(assume_normalized, q_meta):
+        xn = torch.linalg.norm(xt, dim=1, keepdim=True).clamp_min(eps)
+        xt = xt / xn
+
+    return torch.matmul(qt, xt.T).to(torch.float32)
+
+
 # -----------------------------------------------------------------------------
 # Public entrypoint
 # -----------------------------------------------------------------------------
@@ -550,8 +604,7 @@ def score_block(
         return ti.detach().cpu().numpy().astype(np.float32, copy=False)
 
     # cosine
-    if assume_normalized is None and q_meta is not None:
-        assume_normalized = bool(q_meta.get("normalized", False))
+    assume_normalized = resolve_assume_normalized(assume_normalized, q_meta)
 
     if dev == "cpu":
         return cosine_cpu(Q, X, assume_normalized=assume_normalized)

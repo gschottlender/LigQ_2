@@ -15,10 +15,14 @@ This script:
      with consistent defaults to:
        - download all ZINC .smi chunks listed in the URL file,
        - build a unified ligands_smiles.parquet,
+       - move previous representation files into
+         compound_data/zinc/old_reps_backup,
        - build the ZINC ligand index and Morgan fingerprints.
 """
 
 import argparse
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +30,42 @@ from generate_databases.zinc_db import generate_zinc_database
 
 from huggingface_hub import hf_hub_download
 from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
+
+
+def backup_zinc_predicted_cache(
+    output_dir: Path,
+    backup_dirname: str = "old_predicted_bindings_backup",
+) -> Optional[Path]:
+    """
+    Move the existing ZINC predicted-binding cache to a timestamped backup.
+
+    ZINC rebuilds change the ligand universe and invalidate any per-protein
+    predicted cache computed against the previous base. The runtime cache also
+    validates database fingerprints, but moving the old cache keeps the
+    results_databases tree unambiguous after an update.
+    """
+    cache_dir = output_dir / "results_databases" / "predicted_bindings" / "zinc"
+    if not cache_dir.exists():
+        return None
+
+    existing_entries = sorted(cache_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = output_dir / "results_databases" / backup_dirname / "zinc"
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+    shutil.move(str(cache_dir), str(backup_dir))
+    print(f"[INFO] Moved existing ZINC predicted cache to backup: {backup_dir}")
+    return backup_dir
+
 
 # ---------------------------------------------------------------------------
 # Helper: download the ZINC URL file from Hugging Face if missing
@@ -185,6 +225,56 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         help="Generate (or update) the ChemBERTa compound embeddings database."
     )
 
+    parser.add_argument(
+        "--keep-existing-reps",
+        action="store_true",
+        help=(
+            "Keep the current files under <output-dir>/compound_data/zinc/reps "
+            "instead of moving them to old_reps_backup before rebuilding."
+        ),
+    )
+
+    parser.add_argument(
+        "--keep-existing-predicted-cache",
+        action="store_true",
+        help=(
+            "Keep the current files under "
+            "<output-dir>/results_databases/predicted_bindings/zinc instead "
+            "of moving them to old_predicted_bindings_backup before rebuilding."
+        ),
+    )
+
+    parser.add_argument(
+        "--download-workers",
+        type=int,
+        default=4,
+        help=(
+            "Number of parallel workers for ZINC chunk download. "
+            "Lower values are slower but more robust against rate limits. "
+            "Default: %(default)s"
+        ),
+    )
+
+    parser.add_argument(
+        "--download-retries-per-scheme",
+        type=int,
+        default=4,
+        help=(
+            "Retries per URL scheme (https first, then http fallback). "
+            "Default: %(default)s"
+        ),
+    )
+
+    parser.add_argument(
+        "--download-retry-wait-seconds",
+        type=float,
+        default=2.0,
+        help=(
+            "Base wait in seconds between retries; backoff is linear "
+            "(base * attempt). Default: %(default)s"
+        ),
+    )
+
     return parser.parse_args(args)
 
 
@@ -198,9 +288,19 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve()
     temp_data_dir = Path(args.temp_data_dir).resolve()
     generate_chemberta = args.chemberta_rep
+    backup_old_reps = not args.keep_existing_reps
+    backup_predicted_cache = not args.keep_existing_predicted_cache
 
     print(f"[INFO] Output directory       : {output_dir}")
     print(f"[INFO] Temporary data directory: {temp_data_dir}")
+    print(f"[INFO] Download workers        : {args.download_workers}")
+    print(f"[INFO] Retries per scheme      : {args.download_retries_per_scheme}")
+    print(f"[INFO] Retry base wait (s)     : {args.download_retry_wait_seconds}")
+    print(f"[INFO] Backup old reps         : {backup_old_reps}")
+    print(f"[INFO] Backup predicted cache  : {backup_predicted_cache}")
+
+    if backup_predicted_cache:
+        backup_zinc_predicted_cache(output_dir=output_dir)
 
     # ------------------------------------------------------------------
     # 1) Ensure ZINC URL file exists under <output_dir>/zinc
@@ -230,6 +330,7 @@ def main() -> None:
     #   - read the URL file from `zinc_data_dir / urls_filename`,
     #   - download the raw .smi chunks into `zinc_temp_dir`,
     #   - build the ligands_smiles parquet,
+    #   - move old reps to compound_root/old_reps_backup,
     #   - build the ligand index + Morgan representation under compound_root.
     # ------------------------------------------------------------------
     zinc_temp_dir = temp_data_dir / "zinc_db"
@@ -246,7 +347,11 @@ def main() -> None:
         radius=2,
         batch_size=10_000,
         rep_name="morgan_1024_r2",
-        chemberta_rep=generate_chemberta
+        download_workers=args.download_workers,
+        download_retries_per_scheme=args.download_retries_per_scheme,
+        download_retry_wait_seconds=args.download_retry_wait_seconds,
+        chemberta_rep=generate_chemberta,
+        backup_old_reps=backup_old_reps,
     )
     print("[INFO] ZINC database generation completed.")
 

@@ -9,6 +9,7 @@ import torch
 
 from compound_processing.compound_helpers import LigandStore, Representation
 from compound_processing import metrics
+from compound_processing.device_utils import resolve_torch_device
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class SearchRequest:
     q_batch_size: int = 200
     target_chunk_size: int = 200_000
     max_hits_per_query: Optional[int] = None
+    global_topk: Optional[int] = None
     assume_normalized: Optional[bool] = None
     return_fields: Sequence[str] = field(default_factory=lambda: ("chem_comp_id", "smiles"))
     id_field: str = "chem_comp_id"
@@ -116,15 +118,7 @@ class MetricKernel:
 
 
 def _resolve_device(device: Union[str, torch.device]) -> torch.device:
-    if isinstance(device, str) and device.lower() == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if isinstance(device, torch.device):
-        resolved = device
-    else:
-        resolved = torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
-        return torch.device("cpu")
-    return resolved
+    return resolve_torch_device(device)
 
 
 def _merge_topk(
@@ -183,6 +177,55 @@ def _merge_topk(
     )
 
 
+def _global_topk_order(
+    query_ids: np.ndarray,
+    target_idx: np.ndarray,
+    scores: np.ndarray,
+    *,
+    topk: int,
+) -> np.ndarray:
+    if scores.size <= topk:
+        return np.arange(scores.size)
+    query_str = query_ids.astype(str, copy=False)
+    order = np.lexsort((target_idx, query_str, -scores))
+    return order[:topk]
+
+
+def _reduce_global_arrays(
+    query_ids: np.ndarray,
+    target_idx: np.ndarray,
+    scores: np.ndarray,
+    *,
+    topk: Optional[int],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if topk is None or scores.size <= int(topk):
+        return query_ids, target_idx, scores
+    order = _global_topk_order(query_ids, target_idx, scores, topk=int(topk))
+    return query_ids[order], target_idx[order], scores[order]
+
+
+def _reduce_global_lists(
+    query_id_out: List[np.ndarray],
+    target_idx_out: List[np.ndarray],
+    score_out: List[np.ndarray],
+    *,
+    topk: Optional[int],
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
+    if topk is None or not score_out:
+        return query_id_out, target_idx_out, score_out
+    total = sum(arr.size for arr in score_out)
+    limit = int(topk)
+    if total <= max(limit * 2, limit + 1000):
+        return query_id_out, target_idx_out, score_out
+    q, x, s = _reduce_global_arrays(
+        np.concatenate(query_id_out),
+        np.concatenate(target_idx_out),
+        np.concatenate(score_out),
+        topk=limit,
+    )
+    return [q], [x], [s]
+
+
 def search(request: SearchRequest) -> pd.DataFrame:
     if request.mode not in ("threshold", "topk"):
         raise ValueError("mode must be 'threshold' or 'topk'.")
@@ -190,6 +233,8 @@ def search(request: SearchRequest) -> pd.DataFrame:
         raise ValueError("threshold must be provided for mode='threshold'.")
     if request.mode == "topk" and (request.topk is None or request.topk <= 0):
         raise ValueError("topk must be provided and > 0 for mode='topk'.")
+    if request.global_topk is not None and request.global_topk <= 0:
+        raise ValueError("global_topk must be > 0.")
 
     score_col = "tanimoto" if request.metric == "tanimoto" else "similarity"
     if not request.query_ids:
@@ -231,11 +276,28 @@ def search(request: SearchRequest) -> pd.DataFrame:
         batch_x_idx: List[np.ndarray] = []
         batch_scores: List[np.ndarray] = []
 
+        precomputed_q = None
+        if resolved_device.type == "cuda" and request.metric == "cosine":
+            precomputed_q = metrics.prepare_cosine_queries_torch(
+                batch_q,
+                device=resolved_device,
+                assume_normalized=request.assume_normalized,
+                q_meta=request.rep_ref.meta,
+            )
+
         for chunk_start, _chunk_end, x_raw in request.rep_target.iter_raw_chunks(request.target_chunk_size):
             if x_raw.size == 0:
                 continue
 
-            scores = kernel.score_block(batch_q, x_raw, return_torch=(resolved_device.type == "cuda"))
+            if precomputed_q is not None:
+                scores = metrics.cosine_torch_tensor_prepared_q(
+                    precomputed_q,
+                    x_raw,
+                    assume_normalized=request.assume_normalized,
+                    q_meta=request.rep_ref.meta,
+                )
+            else:
+                scores = kernel.score_block(batch_q, x_raw, return_torch=(resolved_device.type == "cuda"))
             q_idx, x_idx, vals = kernel.select_hits(
                 scores,
                 mode=request.mode,
@@ -254,6 +316,24 @@ def search(request: SearchRequest) -> pd.DataFrame:
             batch_q_idx.append(q_idx.astype(np.int64, copy=False))
             batch_x_idx.append((x_idx + chunk_start).astype(np.int64, copy=False))
             batch_scores.append(vals.astype(np.float32, copy=False))
+
+            if request.global_topk is not None:
+                total_batch_hits = sum(arr.size for arr in batch_scores)
+                limit = int(request.global_topk)
+                if total_batch_hits > max(limit * 2, limit + 1000):
+                    q_idx_tmp = np.concatenate(batch_q_idx)
+                    x_idx_tmp = np.concatenate(batch_x_idx)
+                    scores_tmp = np.concatenate(batch_scores)
+                    q_ids_tmp = np.asarray(batch_ids, dtype=object)[q_idx_tmp]
+                    order = _global_topk_order(
+                        q_ids_tmp,
+                        x_idx_tmp,
+                        scores_tmp,
+                        topk=limit,
+                    )
+                    batch_q_idx = [q_idx_tmp[order]]
+                    batch_x_idx = [x_idx_tmp[order]]
+                    batch_scores = [scores_tmp[order]]
 
         if not batch_q_idx:
             continue
@@ -277,15 +357,28 @@ def search(request: SearchRequest) -> pd.DataFrame:
         query_id_out.append(np.asarray(batch_ids, dtype=object)[q_idx_all])
         target_idx_out.append(x_idx_all)
         score_out.append(scores_all)
+        query_id_out, target_idx_out, score_out = _reduce_global_lists(
+            query_id_out,
+            target_idx_out,
+            score_out,
+            topk=request.global_topk,
+        )
 
     if not query_id_out:
         return pd.DataFrame(columns=["query_id", "target_idx", score_col, *request.return_fields])
 
+    query_ids_final, target_idx_final, scores_final = _reduce_global_arrays(
+        np.concatenate(query_id_out),
+        np.concatenate(target_idx_out),
+        np.concatenate(score_out),
+        topk=request.global_topk,
+    )
+
     hits_df = pd.DataFrame(
         {
-            "query_id": np.concatenate(query_id_out),
-            "target_idx": np.concatenate(target_idx_out),
-            score_col: np.concatenate(score_out),
+            "query_id": query_ids_final,
+            "target_idx": target_idx_final,
+            score_col: scores_final,
         }
     )
 

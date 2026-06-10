@@ -9,11 +9,14 @@ Utilities to:
 This module is designed to be imported and its functions called from other scripts.
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Union, Tuple, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+import time
+from datetime import datetime
 
 import pandas as pd
 import pyarrow as pa
@@ -26,10 +29,55 @@ from compound_processing.compound_helpers import (
 )
 
 
+def backup_and_clear_representations(
+    root: Union[str, Path],
+    backup_dirname: str = "old_reps_backup",
+) -> Optional[Path]:
+    """
+    Move the current contents of ``root/reps`` into a timestamped backup folder
+    under ``root/<backup_dirname>`` and leave ``root/reps`` empty.
+
+    Returns the backup directory used, or ``None`` when there was nothing to move.
+    """
+    root = Path(root)
+    reps_dir = root / "reps"
+
+    if not reps_dir.exists():
+        return None
+
+    existing_entries = sorted(reps_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = root / backup_dirname
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    for entry in existing_entries:
+        shutil.move(str(entry), str(backup_dir / entry.name))
+
+    print(
+        f"[INFO] Moved {len(existing_entries)} existing representation files "
+        f"from {reps_dir} to backup {backup_dir}"
+    )
+    return backup_dir
+
+
 def download_zinc_database(
     data_dir: Union[str, Path] = "databases/zinc",
     temp_data_dir: Union[str, Path] = "temp_data/zinc_db",
     urls_filename: str = "ZINC-downloader-2D-smi.uri",
+    max_workers: int = 4,
+    retries_per_scheme: int = 4,
+    retry_wait_seconds: float = 2.0,
 ) -> None:
     data_dir = Path(data_dir)
     temp_data_dir = Path(temp_data_dir)
@@ -41,7 +89,7 @@ def download_zinc_database(
 
     with urls_path.open("r") as f:
         urls = [
-            line.strip().replace("http://", "https://")
+            line.strip()
             for line in f
             if line.strip() and not line.startswith("#")
         ]
@@ -52,60 +100,77 @@ def download_zinc_database(
 
     total = len(urls)
 
-    def _download_one(url: str) -> Tuple[str, bool]:
-        filename = url.split("/")[-1]
+    def _download_one(url: str) -> Tuple[str, bool, str]:
+        def _candidate_urls(raw_url: str) -> List[str]:
+            if raw_url.startswith("http://"):
+                return [raw_url.replace("http://", "https://", 1), raw_url]
+            if raw_url.startswith("https://"):
+                return [raw_url, raw_url.replace("https://", "http://", 1)]
+            return [raw_url]
+
+        filename = url.split("/")[-1].split("?")[0]
         output_path = temp_data_dir / filename
 
-        wget_cmd = [
-            "wget",
-            "--tries=10",
-            "--retry-connrefused",
-            "--waitretry=5",
-            "--timeout=30",
-            "--read-timeout=30",
-            "--continue",
-            "--no-dns-cache",
-            "--quiet",
-            "-O",
-            str(output_path),
-            url,
-        ]
+        last_error = "unknown error"
+        for candidate_url in _candidate_urls(url):
+            for attempt in range(1, retries_per_scheme + 1):
+                wget_cmd = [
+                    "wget",
+                    "--tries=1",
+                    "--retry-connrefused",
+                    "--timeout=60",
+                    "--read-timeout=60",
+                    "--continue",
+                    "--no-dns-cache",
+                    "-O",
+                    str(output_path),
+                    candidate_url,
+                ]
 
-        result = subprocess.run(
-            wget_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return filename, (result.returncode == 0)
+                result = subprocess.run(
+                    wget_cmd,
+                    capture_output=True,
+                    text=True,
+                )
 
-    # "máximo workers" razonable para I/O:
-    # - si devolvés os.cpu_count() suele estar bien
-    # - pero para descargas, podés ir más alto sin romper nada.
-    # Para no sorpresarte, uso min(32, os.cpu_count()+4) estilo stdlib.
-    max_workers = min(32, (os.cpu_count() or 1) + 4)
+                if result.returncode == 0:
+                    return filename, True, ""
 
-    failed: List[str] = []
+                err_tail = (result.stderr or result.stdout or "").strip().splitlines()
+                if err_tail:
+                    last_error = err_tail[-1]
+                else:
+                    last_error = f"wget exited with code {result.returncode}"
+
+                if attempt < retries_per_scheme:
+                    time.sleep(retry_wait_seconds * attempt)
+
+        return filename, False, last_error
+
+    max_workers = max(1, int(max_workers))
+
+    failed: List[Tuple[str, str]] = []
     done = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futures = [ex.submit(_download_one, url) for url in urls]
 
         for fut in as_completed(futures):
-            filename, ok = fut.result()
+            filename, ok, err_msg = fut.result()
             done += 1
 
             # Compact progress (single line)
             print(f"\r[INFO] {done}/{total} Downloading {filename}...", end="", flush=True)
 
             if not ok:
-                failed.append(filename)
+                failed.append((filename, err_msg))
 
     print()
 
     if failed:
         print("[ERROR] The following downloads failed:")
-        for f in failed:
-            print(f"   - {f}")
+        for f, err in failed:
+            print(f"   - {f}: {err}")
     else:
         print("[INFO] All downloads completed successfully.")
 
@@ -208,6 +273,8 @@ def build_zinc_compound_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    backup_old_reps: bool = True,
+    old_reps_backup_dirname: str = "old_reps_backup",
 ) -> Dict[str, Path]:
     """
     End-to-end pipeline to build the ZINC compound database:
@@ -215,8 +282,7 @@ def build_zinc_compound_database(
       1) Read ligands_smiles.parquet (chem_comp_id, smiles).
       2) Build ligands.parquet with:
            - dense integer index: lig_idx
-           - chem_comp_id and SMILES
-           - InChIKey (via build_ligand_index).
+           - chem_comp_id and SMILES.
       3) Build a Morgan fingerprint representation as a memmap
          (rep_name.dat + rep_name.meta.json).
 
@@ -234,6 +300,11 @@ def build_zinc_compound_database(
         Batch size for fingerprint calculation.
     rep_name : str
         Name of the representation (e.g. 'morgan_1024_r2').
+    backup_old_reps : bool
+        If True, move existing files under ``root/reps`` into
+        ``root/old_reps_backup/<timestamp>`` before rebuilding the ZINC base.
+    old_reps_backup_dirname : str
+        Directory name, relative to ``root``, where old representations are backed up.
 
     Returns
     -------
@@ -260,10 +331,20 @@ def build_zinc_compound_database(
 
     print(f"[INFO] ZINC ligands: {n} compounds read from {ligands_smiles_parquet}")
 
+    if backup_old_reps:
+        backup_and_clear_representations(
+            root=root,
+            backup_dirname=old_reps_backup_dirname,
+        )
+
     # ------------------------------------------------------------------
-    # 2) Build ligands.parquet with dense index and InChIKey
+    # 2) Build ligands.parquet with dense index and SMILES only
     # ------------------------------------------------------------------
-    ligands_path = build_ligand_index(final_ligs=df, root=root)
+    ligands_path = build_ligand_index(
+        final_ligs=df,
+        root=root,
+        compute_inchikey=False,
+    )
     print(f"[INFO] ligands.parquet written to: {ligands_path}")
 
     # ------------------------------------------------------------------
@@ -303,7 +384,6 @@ def build_zinc_chemberta_compound_database(
            - lig_idx (índice denso)
            - chem_comp_id
            - smiles
-           - InChIKey
       2) Construye la representación ChemBERTa como memmap
          (rep_name.dat + rep_name.meta.json) usando esos ligandos.
 
@@ -369,7 +449,11 @@ def generate_zinc_database(
     radius: int = 2,
     batch_size: int = 10_000,
     rep_name: str = "morgan_1024_r2",
+    download_workers: int = 4,
+    download_retries_per_scheme: int = 4,
+    download_retry_wait_seconds: float = 2.0,
     chemberta_rep: bool = False,
+    backup_old_reps: bool = True,
 ) -> Dict[str, Path]:
     """
     High-level helper to generate the full ZINC compound database in one call.
@@ -380,6 +464,8 @@ def generate_zinc_database(
       3) Build the ZINC compound database under `compound_root`:
            - ligands.parquet
            - Morgan fingerprints memmap (rep_name.dat + rep_name.meta.json)
+           - by default, move any previous files from `compound_root/reps`
+             into `compound_root/old_reps_backup/<timestamp>` before rebuilding
       4) Optionally build ChemBERTa embeddings memmap under the same root (disabled by default).
 
     Returns
@@ -399,6 +485,9 @@ def generate_zinc_database(
         data_dir=zinc_data_dir,
         temp_data_dir=zinc_temp_dir,
         urls_filename=urls_filename,
+        max_workers=download_workers,
+        retries_per_scheme=download_retries_per_scheme,
+        retry_wait_seconds=download_retry_wait_seconds,
     )
 
     # 2) Build unified ligands_smiles.parquet
@@ -417,6 +506,7 @@ def generate_zinc_database(
         radius=radius,
         batch_size=batch_size,
         rep_name=rep_name,
+        backup_old_reps=backup_old_reps,
     )
 
     # 4) Build ChemBERTa compound database (re-using the same ligands.parquet)
@@ -432,4 +522,3 @@ def generate_zinc_database(
         result_paths["chemberta_rep_meta"] = chemberta_paths["rep_meta"]
 
     return result_paths
-

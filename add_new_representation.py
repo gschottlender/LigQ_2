@@ -12,7 +12,10 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from compound_processing.compound_helpers import build_huggingface_representation
+from compound_processing.compound_helpers import (
+    build_huggingface_representation,
+    build_rdkit_representation,
+)
 
 
 DEFAULT_LOCAL_ROOT = Path("compound_data/pdb_chembl")
@@ -43,10 +46,46 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--base-name",
+        type=str,
+        default=None,
+        help=(
+            "Optional custom base name under compound_data/<base-name>/. "
+            "When provided, it overrides --base."
+        ),
+    )
+    parser.add_argument(
+        "--target-root",
+        type=str,
+        default=None,
+        help=(
+            "Optional explicit compound database root containing ligands.parquet "
+            "and reps/. When provided, it overrides --base-name and --base."
+        ),
+    )
+    parser.add_argument(
         "--rep-name",
         type=str,
-        default="chemberta_zinc_base_768",
-        help="Representation name (saved under reps/<rep-name>.dat + .meta.json).",
+        default=None,
+        help=(
+            "Optional representation name (saved under reps/<rep-name>.dat + "
+            ".meta.json). When omitted, a default name is derived from the "
+            "representation settings."
+        ),
+    )
+    parser.add_argument(
+        "--representation-type",
+        type=str,
+        default="huggingface",
+        choices=["huggingface", "rdkit"],
+        help="Type of representation to build.",
+    )
+    parser.add_argument(
+        "--rdkit-fp-kind",
+        type=str,
+        default="ap",
+        choices=["ap", "topological_torsion", "rdkit", "morgan_feature", "maccs"],
+        help="RDKit fingerprint kind when --representation-type=rdkit.",
     )
     parser.add_argument(
         "--model-id",
@@ -57,14 +96,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--n-bits",
         type=int,
-        default=768,
-        help="Expected embedding dimension (must match model hidden_size).",
+        default=None,
+        help=(
+            "Expected representation dimension. For HuggingFace, defaults to the "
+            "model hidden_size when omitted; if provided, it must match hidden_size. "
+            "For RDKit fingerprints, this is required."
+        ),
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=14,
-        help="Batch size for embedding computation.",
+        help="Batch size for representation computation.",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=None,
+        help="Number of CPU workers for RDKit fingerprints (default: all CPUs).",
+    )
+    parser.add_argument(
+        "--chunksize",
+        type=int,
+        default=500,
+        help="Chunk size for multiprocessing imap in RDKit fingerprints.",
     )
     parser.add_argument(
         "--max-length",
@@ -80,9 +135,35 @@ def parse_args() -> argparse.Namespace:
         help="Pooling strategy for HuggingFace representation.",
     )
     parser.add_argument(
+        "--trust-remote-code",
+        action="store_true",
+        help=(
+            "Allow HuggingFace to execute custom code from the model repository "
+            "when loading tokenizer/model. Required for some models such as "
+            "ibm-research/MoLFormer-XL-both-10pct."
+        ),
+    )
+    parser.add_argument(
+        "--revision",
+        type=str,
+        default=None,
+        help=(
+            "Optional HuggingFace model revision/commit to pin when loading the "
+            "representation model."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Rebuild even if the representation already exists.",
+    )
+    parser.add_argument(
+        "--ensure-local-compatible",
+        action="store_true",
+        help=(
+            "Also build the same representation in compound_data/pdb_chembl. "
+            "This is enabled automatically for legacy --base zinc behavior."
+        ),
     )
     return parser.parse_args()
 
@@ -106,30 +187,73 @@ def ensure_ligands_exist(root: Path) -> None:
 
 def build_representation_if_needed(
     root: Path,
-    rep_name: str,
+    representation_type: str,
+    rep_name: Optional[str],
     model_id: str,
     n_bits: Optional[int],
     batch_size: int,
     max_length: Optional[int],
     pooling: str,
+    rdkit_fp_kind: str,
+    n_jobs: Optional[int],
+    chunksize: int,
     force: bool,
+    trust_remote_code: bool,
+    revision: Optional[str],
 ) -> None:
     ensure_ligands_exist(root)
 
-    if representation_exists(root, rep_name) and not force:
-        print(f"[INFO] Representation '{rep_name}' already exists in {root}. Skipping.")
+    resolved_name = rep_name
+    if not resolved_name:
+        if representation_type == "huggingface":
+            resolved_name = "chemberta_zinc_base_768"
+        elif representation_type == "rdkit":
+            if rdkit_fp_kind == "ap":
+                resolved_name = f"atom_pair_{int(n_bits)}"
+            elif rdkit_fp_kind == "topological_torsion":
+                resolved_name = f"topological_torsion_{int(n_bits)}"
+            elif rdkit_fp_kind == "rdkit":
+                resolved_name = f"rdkit_daylight_{int(n_bits)}"
+            elif rdkit_fp_kind == "morgan_feature":
+                resolved_name = f"morgan_feature_{int(n_bits)}_r2"
+            elif rdkit_fp_kind == "maccs":
+                resolved_name = "maccs_167"
+            else:
+                raise ValueError(f"Unsupported rdkit_fp_kind: {rdkit_fp_kind}")
+        else:
+            raise ValueError(f"Unsupported representation_type: {representation_type}")
+
+    if representation_exists(root, resolved_name) and not force:
+        print(f"[INFO] Representation '{resolved_name}' already exists in {root}. Skipping.")
         return
 
-    print(f"[INFO] Building representation '{rep_name}' in: {root}")
-    build_huggingface_representation(
-        root=root,
-        n_bits=n_bits,
-        batch_size=batch_size,
-        name=rep_name,
-        model_id=model_id,
-        max_length=max_length,
-        pooling=pooling,
-    )
+    print(f"[INFO] Building representation '{resolved_name}' in: {root}")
+    if representation_type == "huggingface":
+        build_huggingface_representation(
+            root=root,
+            n_bits=n_bits,
+            batch_size=batch_size,
+            name=resolved_name,
+            model_id=model_id,
+            max_length=max_length,
+            pooling=pooling,
+            trust_remote_code=trust_remote_code,
+            revision=revision,
+        )
+    elif representation_type == "rdkit":
+        if n_bits is None:
+            raise ValueError("--n-bits must be provided for RDKit fingerprints.")
+        build_rdkit_representation(
+            root=root,
+            fp_kind=rdkit_fp_kind,
+            n_bits=int(n_bits),
+            batch_size=batch_size,
+            name=resolved_name,
+            n_jobs=n_jobs,
+            chunksize=chunksize,
+        )
+    else:
+        raise ValueError(f"Unsupported representation_type: {representation_type}")
 
 
 def main() -> None:
@@ -139,31 +263,55 @@ def main() -> None:
     local_root = output_dir / DEFAULT_LOCAL_ROOT
     zinc_root = output_dir / DEFAULT_ZINC_ROOT
 
-    primary_root = zinc_root if args.base == "zinc" else local_root
+    using_legacy_zinc = (
+        args.target_root is None
+        and args.base_name is None
+        and args.base == "zinc"
+    )
+    if args.target_root is not None:
+        primary_root = Path(args.target_root).resolve()
+    elif args.base_name is not None:
+        primary_root = output_dir / "compound_data" / args.base_name
+    else:
+        primary_root = zinc_root if args.base == "zinc" else local_root
+
+    ensure_local_compatible = bool(args.ensure_local_compatible or using_legacy_zinc)
 
     # 1) Build on selected base
     build_representation_if_needed(
         root=primary_root,
+        representation_type=args.representation_type,
         rep_name=args.rep_name,
         model_id=args.model_id,
         n_bits=args.n_bits,
         batch_size=args.batch_size,
         max_length=args.max_length,
         pooling=args.pooling,
+        rdkit_fp_kind=args.rdkit_fp_kind,
+        n_jobs=args.n_jobs,
+        chunksize=args.chunksize,
         force=args.force,
+        trust_remote_code=args.trust_remote_code,
+        revision=args.revision,
     )
 
-    # 2) Ensure same representation exists in local base
-    if primary_root != local_root:
+    # 2) Optionally ensure same representation exists in local base
+    if ensure_local_compatible and primary_root != local_root:
         build_representation_if_needed(
             root=local_root,
+            representation_type=args.representation_type,
             rep_name=args.rep_name,
             model_id=args.model_id,
             n_bits=args.n_bits,
             batch_size=args.batch_size,
             max_length=args.max_length,
             pooling=args.pooling,
+            rdkit_fp_kind=args.rdkit_fp_kind,
+            n_jobs=args.n_jobs,
+            chunksize=args.chunksize,
             force=False,
+            trust_remote_code=args.trust_remote_code,
+            revision=args.revision,
         )
 
 
