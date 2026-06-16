@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from compound_processing.compound_helpers import (
+    backup_and_clear_representations,
     build_ligand_index,
     build_morgan_representation,
 )
@@ -143,6 +144,7 @@ def build_compound_database(
         smiles_column=smiles_column,
     )
 
+    backup_and_clear_representations(root)
     build_ligand_index(final_ligs=final_ligs, root=root)
     build_morgan_representation(
         root=root,
