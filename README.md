@@ -569,6 +569,17 @@ an explicit `--search-threshold`.
 ### Update PDB and ChEMBL
 
 ```bash
+python update_databases.py
+```
+
+By default, `update_databases.py` resolves the latest available ChEMBL
+release from the EBI release index and regenerates the local ChEMBL database
+only when that version differs from `db_metadata.json`.
+
+For reproducible updates against a fixed ChEMBL release, pass an explicit
+version:
+
+```bash
 python update_databases.py --chembl-version 36
 ```
 
