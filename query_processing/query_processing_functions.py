@@ -234,6 +234,7 @@ def prepare_blast_db(
     complementary_dir: Path,
     fasta_rel_path: str = "sequences/target_sequences.fasta",
     db_name: str = "target_sequences",
+    force: bool = False,
 ) -> Path:
     """
     Create a BLAST protein database from target_sequences.fasta.
@@ -269,10 +270,28 @@ def prepare_blast_db(
     # BLAST DB target prefix (files: .pin/.psq/.phr, etc.)
     db_prefix = blast_dir / db_name
 
-    # If DB seems already created, skip
-    if (blast_dir / f"{db_name}.pin").exists() or (blast_dir / f"{db_name}.psq").exists():
-        print("[INFO] BLAST DB already present, skipping makeblastdb.")
+    db_files = sorted(blast_dir.glob(f"{db_name}.*"))
+    required_db_files = [
+        blast_dir / f"{db_name}.phr",
+        blast_dir / f"{db_name}.pin",
+        blast_dir / f"{db_name}.psq",
+    ]
+    db_complete = all(path.exists() for path in required_db_files)
+    db_current = (
+        db_complete
+        and min(path.stat().st_mtime_ns for path in required_db_files)
+        >= fasta_path.stat().st_mtime_ns
+    )
+
+    if db_current and not force:
+        print("[INFO] BLAST DB already present and current, skipping makeblastdb.")
         return blast_dir
+
+    if db_files:
+        reason = "forced rebuild" if force else "stale or incomplete BLAST DB"
+        print(f"[INFO] Removing existing BLAST DB files ({reason})...")
+        for path in db_files:
+            path.unlink()
 
     print(f"[INFO] Creating BLAST protein DB from {fasta_path}")
     cmd = [

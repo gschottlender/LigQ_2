@@ -18,6 +18,41 @@ from compound_processing.compound_helpers import LigandStore
 from query_processing.results_tables import CompoundDatabaseProviderAdapter
 
 
+def _file_fingerprint(path: Path, data_dir: Path) -> dict:
+    st = path.stat()
+    return {
+        "path": str(path.relative_to(data_dir)),
+        "size": int(st.st_size),
+        "mtime_ns": int(st.st_mtime_ns),
+    }
+
+
+def _representation_files(root: Path, rep_name: str) -> list[Path]:
+    reps_root = root / "reps"
+    meta_path = reps_root / f"{rep_name}.meta.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(
+            f"Representation metadata not found for '{rep_name}' at: {meta_path}"
+        )
+
+    with open(meta_path, "r") as f:
+        meta = json.load(f)
+
+    return [meta_path, reps_root / meta["file"]]
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        out.append(path)
+    return out
+
+
 class LigandSearchProvider(ABC):
     @property
     @abstractmethod
@@ -179,32 +214,27 @@ class CompoundDatabaseSearchProvider(LigandSearchProvider):
     def database_fingerprint(self, data_dir: Path) -> str:
         data_dir = Path(data_dir)
         target_root = data_dir / "compound_data" / self.target_base_name
-        reps_root = target_root / "reps"
-        meta_path = reps_root / f"{self.search_representation}.meta.json"
+        pdb_chembl_root = data_dir / "compound_data" / "pdb_chembl"
 
-        if not meta_path.is_file():
-            raise FileNotFoundError(
-                f"Representation metadata not found for '{self.search_representation}' at: {meta_path}"
-            )
+        rep_names = ["morgan_1024_r2"]
+        if self.search_representation != "morgan_1024_r2":
+            rep_names.append(self.search_representation)
 
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
+        files = [
+            target_root / "ligands.parquet",
+            pdb_chembl_root / "ligands.parquet",
+            data_dir / "results_databases" / "known_binding_data.parquet",
+        ]
+        for rep_name in rep_names:
+            files.extend(_representation_files(target_root, rep_name))
+            files.extend(_representation_files(pdb_chembl_root, rep_name))
 
-        rep_data_path = reps_root / meta["file"]
-        ligands_path = target_root / "ligands.parquet"
-        def _fp(path: Path) -> dict:
-            st = path.stat()
-            return {
-                "path": str(path.relative_to(data_dir)),
-                "size": int(st.st_size),
-            }
-
-        files = [meta_path, rep_data_path, ligands_path]
+        files = _dedupe_paths(files)
 
         payload = {
             "provider": self.provider_name,
             "search_representation": self.search_representation,
-            "files": [_fp(p) for p in files],
+            "files": [_file_fingerprint(path, data_dir) for path in files],
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -357,20 +387,17 @@ class BSILigandSearchProvider(LigandSearchProvider):
     def database_fingerprint(self, data_dir: Path) -> str:
         data_dir = Path(data_dir)
         target_root = data_dir / "compound_data" / self.target_base_name
-        reps_root = target_root / "reps"
-        meta_path = reps_root / f"{BSI_REPRESENTATION}.meta.json"
-        if not meta_path.is_file():
-            raise FileNotFoundError(f"BSI representation metadata not found: {meta_path}")
-
-        with open(meta_path, "r") as f:
-            meta = json.load(f)
+        pdb_chembl_root = data_dir / "compound_data" / "pdb_chembl"
 
         files = [
-            meta_path,
-            reps_root / meta["file"],
             target_root / "ligands.parquet",
+            pdb_chembl_root / "ligands.parquet",
+            data_dir / "results_databases" / "known_binding_data.parquet",
             data_dir / "results_databases" / "protein_domains.parquet",
         ]
+        files.extend(_representation_files(target_root, BSI_REPRESENTATION))
+        files.extend(_representation_files(pdb_chembl_root, BSI_REPRESENTATION))
+        files = _dedupe_paths(files)
 
         payload = {
             "provider": self.provider_name,
@@ -380,13 +407,7 @@ class BSILigandSearchProvider(LigandSearchProvider):
             "files": [],
         }
         for path in files:
-            st = path.stat()
-            payload["files"].append(
-                {
-                    "path": str(path.relative_to(data_dir)),
-                    "size": int(st.st_size),
-                }
-            )
+            payload["files"].append(_file_fingerprint(path, data_dir))
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:

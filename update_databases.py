@@ -5,6 +5,7 @@ import json
 import argparse
 import re
 from datetime import date
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -27,6 +28,8 @@ from query_processing.results_tables import (
     build_protein_domains_table,
     save_known_binding_table,
 )
+from query_processing.query_processing_functions import prepare_blast_db
+from query_processing.predicted_cache import remove_predicted_cache_dirs
 
 
 # HuggingFace dataset repo with the preprocessed databases and initial metadata
@@ -206,6 +209,28 @@ def regenerate_results_databases(output_dir, binding_data_merged, ligs_smiles_me
     print(f"[INFO] Saved protein-domain runtime table to {protein_domains_path}")
 
     return known_binding, protein_domains
+
+
+def rebuild_blast_database(output_dir: str) -> None:
+    """Rebuild the BLAST database from the freshly exported target FASTA."""
+    data_dir = Path(output_dir)
+    complementary_dir = data_dir / "complementary_databases"
+    print("[INFO] Rebuilding BLAST target sequence database...")
+    prepare_blast_db(
+        data_dir=data_dir,
+        complementary_dir=complementary_dir,
+        force=True,
+    )
+
+
+def invalidate_all_predicted_caches(output_dir: str) -> None:
+    """Remove predicted-ligand caches after PDB/ChEMBL local base changes."""
+    removed = remove_predicted_cache_dirs(Path(output_dir))
+    if not removed:
+        print("[INFO] No predicted-ligand caches found to invalidate.")
+        return
+    for path in removed:
+        print(f"[INFO] Removed stale predicted-ligand cache: {path}")
 
 
 # ----------------------------------------------------------------------
@@ -543,6 +568,7 @@ def main():
 
     print("[INFO] Exporting UniProt sequences to FASTA...")
     uniprot_dict_to_fasta(output_dir=sequences_dir)
+    rebuild_blast_database(output_dir)
 
     metadata["uniprot_last_update"] = date.today().isoformat()
 
@@ -552,6 +578,8 @@ def main():
     print(f"[INFO] Saving metadata to {metadata_path}")
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)
+
+    invalidate_all_predicted_caches(output_dir)
 
     print("[INFO] Full pipeline finished successfully.")
 

@@ -587,6 +587,8 @@ When PDB or ChEMBL changes are detected, this command:
 
 - refreshes processed `pdb/` and/or `chembl/` data;
 - rebuilds `merged_databases/`;
+- rebuilds the BLAST database from the updated `target_sequences.fasta`;
+- removes predicted-ligand caches because the local PDB/ChEMBL seed set changed;
 - regenerates runtime tables:
 
 ```text
@@ -617,9 +619,8 @@ Default behavior:
 - backs up existing `databases/compound_data/zinc/reps/` into
   `databases/compound_data/zinc/old_reps_backup/<timestamp>/`;
 - rebuilds the fresh ZINC base and default representation;
-- moves existing ZINC predicted cache from
-  `databases/results_databases/predicted_bindings/zinc/` to
-  `databases/results_databases/old_predicted_bindings_backup/zinc/`.
+- moves existing ZINC predicted caches from `predicted_bindings/zinc/` and
+  `predicted_bindings/zinc_bsi/` to `old_predicted_bindings_backup/`.
 
 Optional overrides:
 
@@ -630,6 +631,12 @@ python update_zinc_databases.py --keep-existing-predicted-cache
 
 After updating ZINC, rebuild any non-default representations needed for that
 new ZINC base.
+
+Rebuilding a custom compound database with `build_compound_database.py` removes
+the matching `<provider>` and `<provider>_bsi` predicted caches. At runtime,
+cache manifests also include fingerprints for the selected target database,
+the local PDB/ChEMBL reference database, and known-binding table, so stale
+predictions are rebuilt from scratch when any of those inputs change.
 
 ## Performance Notes
 

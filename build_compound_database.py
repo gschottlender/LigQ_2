@@ -11,6 +11,7 @@ from compound_processing.compound_helpers import (
     build_ligand_index,
     build_morgan_representation,
 )
+from query_processing.predicted_cache import remove_predicted_cache_dirs
 
 
 COMMON_ID_COLUMNS = [
@@ -152,6 +153,12 @@ def build_compound_database(
         n_jobs=default_rep_n_jobs,
         chunksize=default_rep_chunksize,
     )
+    removed = remove_predicted_cache_dirs(
+        Path(output_dir),
+        provider_names=[base_name, f"{base_name}_bsi"],
+    )
+    for path in removed:
+        print(f"[INFO] Removed stale predicted-ligand cache: {path}")
     return root
 
 
