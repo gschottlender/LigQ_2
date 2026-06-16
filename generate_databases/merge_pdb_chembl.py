@@ -7,6 +7,7 @@ from pathlib import Path
 
 from compound_processing.compound_helpers import (
     unify_pdb_chembl,
+    backup_and_clear_representations,
     build_ligand_index,
     build_morgan_representation,
     build_huggingface_representation,
@@ -45,6 +46,7 @@ def merge_databases(data_dir, chemberta_rep=False, tanimoto_curation_threshold=0
 
     # Build ligand index under some root directory
     root = Path(f"{data_dir}/compound_data/pdb_chembl")
+    backup_and_clear_representations(root)
     build_ligand_index(ligs_smiles_merged, root)
 
     # Default representation used for Tanimoto-based curation.

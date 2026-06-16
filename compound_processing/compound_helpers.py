@@ -21,7 +21,9 @@ from typing import Optional, Dict, List, Tuple
 import os
 import multiprocessing as mp
 import json
+import shutil
 import time
+from datetime import datetime
 from contextlib import nullcontext
 import numpy as np
 import pandas as pd
@@ -503,6 +505,49 @@ def build_ligand_index(
     out_path = root / "ligands.parquet"
     df.to_parquet(out_path, index=False)
     return out_path
+
+
+def backup_and_clear_representations(
+    root: str | Path,
+    backup_dirname: str = "old_reps_backup",
+) -> Optional[Path]:
+    """
+    Move the current representation files out of ``root/reps``.
+
+    Any change to ``ligands.parquet`` can invalidate every representation
+    because rows are addressed by dense ``lig_idx``. Backing up old files avoids
+    accidentally mixing a fresh ligand index with stale memmaps.
+    """
+    root = Path(root)
+    reps_dir = root / "reps"
+
+    if not reps_dir.exists():
+        return None
+
+    existing_entries = sorted(reps_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = root / backup_dirname
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    for entry in existing_entries:
+        shutil.move(str(entry), str(backup_dir / entry.name))
+
+    print(
+        f"[INFO] Moved {len(existing_entries)} existing representation files "
+        f"from {reps_dir} to backup {backup_dir}"
+    )
+    return backup_dir
 
 
 

@@ -46,6 +46,29 @@ def _provider_filter_cached_results(provider, df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def remove_predicted_cache_dirs(
+    data_dir: Path,
+    provider_names: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> list[Path]:
+    """Remove predicted-ligand cache directories and return removed paths."""
+    cache_root = Path(data_dir) / "results_databases" / "predicted_bindings"
+    removed: list[Path] = []
+
+    if provider_names is None:
+        if cache_root.exists():
+            shutil.rmtree(cache_root)
+            removed.append(cache_root)
+        return removed
+
+    for provider_name in sorted({str(name) for name in provider_names}):
+        cache_dir = cache_root / provider_name
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            removed.append(cache_dir)
+
+    return removed
+
+
 def _cache_dir_name(method_signature: dict, threshold_min: float | None, threshold_max: float | None) -> str:
     parts = [
         f"{k}={_cache_namespace(str(v))}"

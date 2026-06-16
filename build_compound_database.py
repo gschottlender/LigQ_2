@@ -8,9 +8,11 @@ from pathlib import Path
 import pandas as pd
 
 from compound_processing.compound_helpers import (
+    backup_and_clear_representations,
     build_ligand_index,
     build_morgan_representation,
 )
+from query_processing.predicted_cache import remove_predicted_cache_dirs
 
 
 COMMON_ID_COLUMNS = [
@@ -142,6 +144,7 @@ def build_compound_database(
         smiles_column=smiles_column,
     )
 
+    backup_and_clear_representations(root)
     build_ligand_index(final_ligs=final_ligs, root=root)
     build_morgan_representation(
         root=root,
@@ -152,6 +155,12 @@ def build_compound_database(
         n_jobs=default_rep_n_jobs,
         chunksize=default_rep_chunksize,
     )
+    removed = remove_predicted_cache_dirs(
+        Path(output_dir),
+        provider_names=[base_name, f"{base_name}_bsi"],
+    )
+    for path in removed:
+        print(f"[INFO] Removed stale predicted-ligand cache: {path}")
     return root
 
 
