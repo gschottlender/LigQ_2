@@ -291,7 +291,7 @@ The cache is designed for large runs:
 
 A cache generated with a lower minimum threshold can serve stricter later
 queries if provider, method, and database fingerprint match. For example, the
-optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.3` can
+optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.4` can
 serve the current default `morgan_1024_r2` threshold `0.415094`.
 
 Use `--force-rebuild-predicted-cache` to discard and regenerate the compatible

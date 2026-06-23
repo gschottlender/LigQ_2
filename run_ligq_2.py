@@ -49,11 +49,7 @@ def ensure_dir(path: str | Path) -> Path:
 
 DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
-    "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.3"
-)
-LEGACY_DEFAULT_CACHE_NAMESPACE = (
-    "predicted_bindings/zinc/"
-    "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.4"
 )
 
 HF_CORE_REQUIRED_RELATIVE_PATHS = [
@@ -89,13 +85,6 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
-    ],
-    [
-        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/manifest.json",
-        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
-        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
-        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
-        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
     ],
 ]
 
