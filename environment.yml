@@ -249,3 +249,7 @@ dependencies:
       - transformers==4.57.1
       - triton==3.5.1
       - urllib3==2.5.0
+      - fastapi
+      - uvicorn
+      - python-multipart
+      - aiofiles

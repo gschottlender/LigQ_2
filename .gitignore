@@ -1,0 +1,57 @@
+#  Python 
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+ligq_2_env/
+
+#  Node / frontend ─
+gui/frontend/node_modules/
+gui/frontend/dist/
+gui/frontend/dist-ssr/
+gui/frontend/.vite/
+gui/frontend/.vscode/
+gui/frontend/FRONTEND.md
+
+# Vite/ESLint caches
+gui/frontend/.eslintcache
+gui/frontend/.cache/
+
+#  Backend 
+# __pycache__/ and *.py[cod] above already cover gui/backend/**
+# Uploaded files (temp storage, not part of the codebase)
+gui/backend/uploads/
+gui/backend/BACKEND.md
+
+#  Logs and temp 
+*.log
+/tmp/ligq2_uvicorn.log
+/tmp/ligq2_uvicorn.pid
+nohup.out
+
+#  Pipeline outputs 
+results/
+uploads/
+databases/
+temp_data/
+temp_results/
+
+# OS 
+.DS_Store
+Thumbs.db
+CLAUDE.md
+
+#Files
+P00533.fasta
+
+#Origin file
+compound_processing/
+generate_databases/
+query_processing/
+tests/
+add_new_representation.py
+benchmark_bsi_search.py
+build_compound_database.py
+run_ligq_2.py
+update_databases.py
+update_zinc_databases.py
