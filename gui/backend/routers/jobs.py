@@ -9,7 +9,10 @@ from fastapi.responses import JSONResponse
 from core.config import PIPELINE_ROOT, UPLOADS_DIR
 from core import state
 from models.job import AddRepresentationRequest, Job, JobStatus
-from services.fs_inspector import database_exists, list_databases, representation_exists
+from services.fs_inspector import (
+    database_exists,
+    representation_is_search_ready,
+)
 from services.job_runner import run_job
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -70,10 +73,14 @@ async def start_search(
     if not database_exists(ligand_provider):
         return _err("database_not_found", f"Ligand provider '{ligand_provider}' not found.")
 
-    if not representation_exists(ligand_provider, search_representation):
+    if not representation_is_search_ready(ligand_provider, search_representation):
         return _err(
-            "representation_not_found",
-            f"Representation '{search_representation}' not found for '{ligand_provider}'.",
+            "representation_not_ready",
+            (
+                f"Representation '{search_representation}' is incomplete. Both its .dat and "
+                f".meta.json files must exist for '{ligand_provider}' and 'pdb_chembl'. "
+                "Add the representation again before searching."
+            ),
         )
 
     if search_threshold is not None and not (0.0 <= search_threshold <= 1.0):
@@ -210,7 +217,7 @@ async def add_representation(
     if not database_exists(body.base_name):
         return _err("database_not_found", f"Database '{body.base_name}' not found.")
 
-    if representation_exists(body.base_name, body.rep_name):
+    if representation_is_search_ready(body.base_name, body.rep_name):
         return _err(
             "conflict",
             f"Representation '{body.rep_name}' already exists for '{body.base_name}'.",

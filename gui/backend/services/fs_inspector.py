@@ -71,7 +71,11 @@ def list_representations(db_name: str) -> list[dict]:
             "default_threshold": defaults.get(f.stem),
         }
         for f in sorted(reps_dir.iterdir())
-        if f.is_file() and f.suffix == ".dat"
+        if (
+            f.is_file()
+            and f.suffix == ".dat"
+            and representation_is_search_ready(db_name, f.stem)
+        )
     ]
 
 
@@ -79,8 +83,23 @@ def database_exists(db_name: str) -> bool:
     return (COMPOUND_DATA_DIR / db_name / "ligands.parquet").exists()
 
 
+def representation_files_complete(root: Path, rep_name: str) -> bool:
+    reps_dir = root / "reps"
+    return (
+        (reps_dir / f"{rep_name}.dat").is_file()
+        and (reps_dir / f"{rep_name}.meta.json").is_file()
+    )
+
+
 def representation_exists(db_name: str, rep_name: str) -> bool:
-    return (COMPOUND_DATA_DIR / db_name / "reps" / f"{rep_name}.dat").exists()
+    return representation_files_complete(COMPOUND_DATA_DIR / db_name, rep_name)
+
+
+def representation_is_search_ready(db_name: str, rep_name: str) -> bool:
+    return (
+        representation_exists(db_name, rep_name)
+        and representation_exists("pdb_chembl", rep_name)
+    )
 
 
 def read_file_columns(path: Path) -> list[str]:

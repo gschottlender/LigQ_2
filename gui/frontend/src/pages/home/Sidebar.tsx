@@ -3,14 +3,16 @@ import { useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
-import { JobProgressPanel } from '../../components/JobProgressPanel';
-import type { JobProgress } from '../../types';
+import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
+import type { JobFailure, JobProgress } from '../../types';
 
 interface SidebarProps {
   isRunning: boolean;
   progressPercent: number;
   progressMessage: string;
   progress: JobProgress | null;
+  failure: JobFailure | null;
+  jobError: string | null;
   startedAt: string | null;
   onJobCreated: (jobId: string) => void;
 }
@@ -155,6 +157,8 @@ export function Sidebar({
   progressPercent,
   progressMessage,
   progress,
+  failure,
+  jobError,
   startedAt,
   onJobCreated,
 }: SidebarProps) {
@@ -446,6 +450,10 @@ export function Sidebar({
               startedAt={startedAt}
               compact
             />
+          )}
+
+          {!isRunning && (failure || jobError) && (
+            <JobFailurePanel failure={failure} error={jobError} compact />
           )}
         </div>
       </aside>

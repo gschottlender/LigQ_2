@@ -4,7 +4,8 @@ import { Sidebar } from './Sidebar';
 import { MetricCards } from './MetricCards';
 import { QueryList } from './QueryList';
 import { ResultsPanel } from './ResultsPanel';
-import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, JobProgress } from '../../types';
+import { JobFailurePanel } from '../../components/JobProgressPanel';
+import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, JobFailure, JobProgress } from '../../types';
 import type { SelectedItem } from './SelectedResultPanel';
 import { SelectedResultPanel } from './SelectedResultPanel';
 import { api } from '../../lib/api';
@@ -72,6 +73,8 @@ export function VisualizeResults() {
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [jobProgress, setJobProgress] = useState<JobProgress | null>(null);
+  const [jobFailure, setJobFailure] = useState<JobFailure | null>(null);
+  const [jobError, setJobError] = useState<string | null>(null);
   const [jobStartedAt, setJobStartedAt] = useState<string | null>(null);
   const [activeResultFolder, setActiveResultFolder] = useState<string | null>(null);
 
@@ -88,6 +91,8 @@ export function VisualizeResults() {
     setProgressPercent(0);
     setProgressMessage('');
     setJobProgress(null);
+    setJobFailure(null);
+    setJobError(null);
     setJobStartedAt(null);
     setActiveResultFolder(null);
   }, []);
@@ -105,6 +110,8 @@ export function VisualizeResults() {
       setResults(queryResults);
       setJobId(resultId);
       setSearchState('done');
+      setJobFailure(null);
+      setJobError(null);
       setSelectedQueryId(null);
       setActiveResultFolder(resultId);
     } catch {
@@ -162,6 +169,8 @@ export function VisualizeResults() {
         setProgressPercent(job.progress_percent ?? 0);
         setProgressMessage(job.progress_message ?? '');
         setJobProgress(job.progress ?? null);
+        setJobFailure(job.failure ?? null);
+        setJobError(job.error ?? null);
         setJobStartedAt(job.started_at ?? null);
         if (job.output_dir) {
           setActiveResultFolder((job.output_dir as string).split('/').pop() ?? null);
@@ -272,6 +281,8 @@ export function VisualizeResults() {
         progressPercent={progressPercent}
         progressMessage={progressMessage}
         progress={jobProgress}
+        failure={jobFailure}
+        jobError={jobError}
         startedAt={jobStartedAt}
         onJobCreated={handleJobCreated}
       />
@@ -296,6 +307,12 @@ export function VisualizeResults() {
           </button>
           {showHistory && HistoryPanel}
         </div>
+
+        {searchState === 'done' && (jobFailure || jobError) && (
+          <div className="px-4 pb-2 pt-14 sm:px-6">
+            <JobFailurePanel failure={jobFailure} error={jobError} />
+          </div>
+        )}
 
         {searchState === 'idle' && (
           <div className="flex flex-col items-center justify-center h-full min-h-96 gap-4 text-center px-6">

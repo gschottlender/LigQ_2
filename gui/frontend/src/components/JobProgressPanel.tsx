@@ -1,12 +1,18 @@
-import { Activity, Clock3, Gauge, Loader2 } from 'lucide-react';
+import { Activity, AlertTriangle, Clock3, Gauge, Loader2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { JobProgress } from '../types';
+import type { JobFailure, JobProgress } from '../types';
 
 interface JobProgressPanelProps {
   progress: JobProgress | null | undefined;
   fallbackPercent?: number;
   fallbackMessage?: string;
   startedAt?: string | null;
+  compact?: boolean;
+}
+
+interface JobFailurePanelProps {
+  failure?: JobFailure | null;
+  error?: string | null;
   compact?: boolean;
 }
 
@@ -98,6 +104,34 @@ export function JobProgressPanel({
             {formatDuration(elapsed)} elapsed
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+export function JobFailurePanel({ failure, error, compact = false }: JobFailurePanelProps) {
+  const hasStepNumber = failure?.step_index != null && failure.step_count != null;
+  const title = hasStepNumber
+    ? `Failed at Step ${failure.step_index}/${failure.step_count}`
+    : 'Job failed';
+  const message = failure?.message || error || 'The process stopped unexpectedly.';
+
+  return (
+    <div
+      role="alert"
+      className={`${compact ? 'mt-3' : 'mt-4'} flex items-start gap-3 rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-700 dark:bg-red-950/30`}
+    >
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-red-800 dark:text-red-200">{title}</p>
+        {failure?.label && (
+          <p className="mt-0.5 text-sm font-medium text-red-700 dark:text-red-300">
+            {failure.label}
+          </p>
+        )}
+        <p className="mt-1 break-words text-xs leading-relaxed text-red-700 dark:text-red-300">
+          {message}
+        </p>
       </div>
     </div>
   );

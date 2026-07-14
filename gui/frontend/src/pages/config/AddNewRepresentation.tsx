@@ -3,7 +3,7 @@ import { AlertTriangle, ChevronDown, ChevronRight, Info, Loader2, Settings, Uplo
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
-import { JobProgressPanel } from '../../components/JobProgressPanel';
+import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
 import { useJobPolling } from '../../hooks/useJobPolling';
 
 type RepPresetId =
@@ -494,9 +494,7 @@ export function AddNewRepresentation() {
 
       {/* Error */}
       {processing.stage === 'error' && (
-        <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl">
-          <p className="text-sm text-red-700 dark:text-red-300">{processing.message}</p>
-        </div>
+        <JobFailurePanel failure={job?.failure} error={processing.message} />
       )}
 
       {/* Success */}

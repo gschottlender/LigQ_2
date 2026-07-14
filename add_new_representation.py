@@ -180,8 +180,12 @@ def rep_meta_path(root: Path, rep_name: str) -> Path:
     return root / "reps" / f"{rep_name}.meta.json"
 
 
+def rep_data_path(root: Path, rep_name: str) -> Path:
+    return root / "reps" / f"{rep_name}.dat"
+
+
 def representation_exists(root: Path, rep_name: str) -> bool:
-    return rep_meta_path(root, rep_name).exists()
+    return rep_data_path(root, rep_name).is_file() and rep_meta_path(root, rep_name).is_file()
 
 
 def ensure_ligands_exist(root: Path) -> None:
@@ -388,6 +392,19 @@ def main() -> None:
             revision=args.revision,
             progress_callback=phase_progress,
         )
+        if not representation_exists(root, resolved_name):
+            missing = [
+                path.name
+                for path in (
+                    rep_data_path(root, resolved_name),
+                    rep_meta_path(root, resolved_name),
+                )
+                if not path.is_file()
+            ]
+            raise RuntimeError(
+                f"Representation '{resolved_name}' was not completed for '{root.name}'. "
+                f"Missing required file(s): {', '.join(missing)}. Run the representation build again."
+            )
         completed_work += n_ligands
 
     progress.emit(

@@ -36,7 +36,7 @@ function SectionHeader({ id, icon, title }: { id: string; icon: React.ReactNode;
       <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-teal-100 dark:bg-teal-900/40 text-[#0d5c6b] dark:text-teal-300 shrink-0">
         {icon}
       </div>
-      <h2 className="text-xl font-semibold font-dm-sans text-gray-800 dark:text-gray-100">{title}</h2>
+      <h2 className="text-lg sm:text-xl font-semibold font-dm-sans text-gray-800 dark:text-gray-100">{title}</h2>
     </div>
   );
 }
@@ -54,8 +54,8 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
 
 function Param({ name, children }: { name: string; children: React.ReactNode }) {
   return (
-    <div className="flex gap-3 py-2 border-b border-gray-100 dark:border-gray-700/60 last:border-b-0">
-      <span className="font-jetbrains-mono text-xs text-[#0d5c6b] dark:text-teal-300 shrink-0 pt-0.5 w-44">{name}</span>
+    <div className="flex flex-col gap-1 py-2 sm:flex-row sm:gap-3 border-b border-gray-100 dark:border-gray-700/60 last:border-b-0">
+      <span className="font-jetbrains-mono text-xs text-[#0d5c6b] dark:text-teal-300 shrink-0 pt-0.5 sm:w-44">{name}</span>
       <span className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">{children}</span>
     </div>
   );
@@ -109,7 +109,7 @@ function GlossaryItem({ term, definition }: { term: string; definition: string }
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-xl p-5 flex flex-col gap-3">
+    <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4 sm:p-5 flex flex-col gap-3">
       {children}
     </div>
   );
@@ -136,18 +136,18 @@ export function HelpPage() {
   };
 
   return (
-    <div className="flex h-[calc(100vh-80px)] overflow-hidden">
+    <div className="flex min-h-[calc(100vh-80px)] flex-col overflow-visible sm:h-[calc(100vh-80px)] sm:flex-row sm:overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-60 shrink-0 border-r border-gray-200 dark:border-gray-700/60 bg-gray-50 dark:bg-[#1a2330] overflow-y-auto py-6 px-4">
-        <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3 px-2">
+      <aside className="w-full shrink-0 border-b border-gray-200 bg-gray-50 px-3 py-3 dark:border-gray-700/60 dark:bg-[#1a2330] sm:w-60 sm:border-b-0 sm:border-r sm:px-4 sm:py-6 sm:overflow-y-auto">
+        <p className="hidden text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500 mb-3 px-2 sm:block">
           Contents
         </p>
-        <nav className="flex flex-col gap-0.5">
+        <nav className="flex gap-1 overflow-x-auto sm:flex-col sm:gap-0.5 sm:overflow-visible">
           {SECTIONS.map((s) => (
             <button
               key={s.id}
               onClick={() => scrollTo(s.id)}
-              className="flex items-center gap-2.5 px-2 py-2 rounded-lg text-left text-sm font-dm-sans
+              className="flex shrink-0 items-center gap-2.5 px-2 py-2 rounded-lg text-left text-sm font-dm-sans
                 text-gray-600 dark:text-gray-400 hover:text-[#0d5c6b] dark:hover:text-teal-300
                 hover:bg-teal-50 dark:hover:bg-teal-900/20 transition-colors cursor-pointer"
             >
@@ -159,7 +159,7 @@ export function HelpPage() {
       </aside>
 
       {/* Content */}
-      <main className="flex-1 overflow-y-auto py-10 px-10">
+      <main className="min-w-0 flex-1 overflow-visible px-4 py-6 sm:overflow-y-auto sm:px-10 sm:py-10">
         <div className="max-w-2xl mx-auto flex flex-col gap-12">
 
           {/* ── 1. Getting Started ── */}
@@ -402,7 +402,14 @@ export function HelpPage() {
                   </span>
                 </Step>
                 <Step n={6}>
-                  When complete, the new representation appears in the Search sidebar Representation dropdown.
+                  When complete, the representation has both a <strong>.dat</strong> and a{' '}
+                  <strong>.meta.json</strong> file in the selected database and in the internal{' '}
+                  <strong>pdb_chembl</strong> database. Only then does it appear in the Search sidebar.
+                  An incomplete representation stays hidden and can be processed again.
+                </Step>
+                <Step n={7}>
+                  If processing stops, a red panel identifies the failed step and shows the script error
+                  so you can correct the cause before retrying.
                 </Step>
               </div>
 
@@ -411,7 +418,7 @@ export function HelpPage() {
                   <Sparkles className="w-4 h-4 text-[#0d5c6b] dark:text-teal-300" />
                   Available presets
                 </div>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs font-dm-sans">
+                <div className="grid grid-cols-1 gap-x-4 gap-y-1 text-xs font-dm-sans sm:grid-cols-2">
                   {[
                     ['ECFP Morgan',       'RDKit', 'Tanimoto'],
                     ['MACCS',             'RDKit', 'Tanimoto'],
@@ -422,7 +429,7 @@ export function HelpPage() {
                     ['ChemBERTa (ZINC)',  'HuggingFace', 'Cosine'],
                     ['ChemBERTa (PubChem)', 'HuggingFace', 'Cosine'],
                   ].map(([name, type, metric]) => (
-                    <div key={name} className="flex items-center justify-between py-1 border-b border-gray-100 dark:border-gray-700/40">
+                    <div key={name} className="flex flex-wrap items-center justify-between gap-2 py-1 border-b border-gray-100 dark:border-gray-700/40">
                       <span className="text-gray-700 dark:text-gray-300 font-medium">{name}</span>
                       <div className="flex gap-1">
                         <InfoBadge label={type} color={type === 'RDKit' ? 'teal' : 'blue'} />

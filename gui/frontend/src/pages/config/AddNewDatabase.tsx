@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { ChevronDown, ChevronRight, FileUp, FolderOpen, Info, Loader2, Settings, Upload, X } from 'lucide-react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { api } from '../../lib/api';
-import { JobProgressPanel } from '../../components/JobProgressPanel';
+import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
 import { useJobPolling } from '../../hooks/useJobPolling';
 
 type FileExt = 'smi' | 'csv' | 'tsv' | 'parquet';
@@ -424,9 +424,7 @@ export function AddNewDatabase() {
 
       {/* Error */}
       {processing.stage === 'error' && (
-        <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl">
-          <p className="text-sm text-red-700 dark:text-red-300">{processing.message}</p>
-        </div>
+        <JobFailurePanel failure={job?.failure} error={processing.message} />
       )}
 
       {/* Success */}

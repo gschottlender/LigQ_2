@@ -298,9 +298,13 @@ not exposed to users), and returns directories that contain a `ligands.parquet`
 file.
 
 **`list_representations(db_name)`**  
-Lists all `.dat` files under `COMPOUND_DATA_DIR/{db_name}/reps/`. For each
-file, calls `get_metric_from_manifest()` to determine the similarity metric and
-loads its optional default cutoff from `search_threshold_defaults.json`.
+Lists only search-ready representations. A representation is search-ready when
+both `{name}.dat` and `{name}.meta.json` exist under the selected database's
+`reps/` directory and under `pdb_chembl/reps/`. Incomplete builds stay out of
+the search selector and can be submitted again from Add new representation.
+For each valid representation, calls `get_metric_from_manifest()` to determine
+the similarity metric and loads its optional default cutoff from
+`search_threshold_defaults.json`.
 The search sidebar rounds this default upward to two decimal places and exposes
 both cutoff controls in `0.01` increments; the shared pipeline value remains exact.
 
@@ -327,7 +331,9 @@ processes: dict[str, asyncio.subprocess.Process] = {}
 Access is serialized through an `asyncio.Lock`. The `Job` model (Pydantic,
 defined in `gui/backend/models/job.py`) stores: `job_id`, `job_type`,
 `status`, `progress_percent`, `progress_message`, structured `progress`, `warnings`,
-`completed_queries`, `all_queries`, `output_dir`, timestamps, and `error`.
+`completed_queries`, `all_queries`, `output_dir`, timestamps, `error`, and a
+structured `failure` containing the active step, step number, label, and final
+stderr message. The frontend renders this failure in red on the relevant job form.
 
 **State is not persisted.** Restarting uvicorn clears all in-memory job records.
 Past search results remain accessible on disk via the History mechanism (see

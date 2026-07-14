@@ -97,7 +97,9 @@ or `.parquet` file, and click **Process database**.
 
 **Add a molecular representation**
 Go to **Configure Search → Add new representation**, select a database and preset,
-and click **Process representation**.
+and click **Process representation**. It becomes searchable only after its `.dat`
+and `.meta.json` files exist in both the selected database and `pdb_chembl`.
+Incomplete representations are hidden from Search and can be processed again.
 
 **Restore a past search**
 Click **History** (top right of Visualize Results) and **Load** next to any
@@ -110,6 +112,8 @@ previous run.
 - The backend must be running before opening the frontend.
 - Jobs (search, build database, add representation) run as background processes
   and survive browser refreshes.
+- A failed job identifies the active step in a red status panel and includes the
+  last error reported by the underlying script.
 - Search minimum cutoffs use the representation-specific pipeline defaults when
   available, rounded upward to two decimal places. Unknown representations start
   at `0.9`; the maximum starts at `1.0`, and both controls use `0.01` increments.

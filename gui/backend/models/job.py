@@ -26,6 +26,14 @@ class JobProgress(BaseModel):
     eta_seconds: Optional[int] = None
 
 
+class JobFailure(BaseModel):
+    step: Optional[str] = None
+    label: str
+    step_index: Optional[int] = None
+    step_count: Optional[int] = None
+    message: str
+
+
 class Job(BaseModel):
     job_id: str
     job_type: str  # "search" | "build_database" | "add_representation"
@@ -40,6 +48,7 @@ class Job(BaseModel):
     output_dir: Optional[str] = None
     warnings: list[str] = Field(default_factory=list)
     error: Optional[str] = None
+    failure: Optional[JobFailure] = None
     completed_queries: list[str] = Field(default_factory=list)
     all_queries: list[str] = Field(default_factory=list)
     n_queries: Optional[int] = None

@@ -1,14 +1,16 @@
 import asyncio
 import json
-import re, os
+import os
+import re
 import sys
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from core.config import PIPELINE_ROOT
 from core import state
-from models.job import JobProgress, JobStatus
+from models.job import Job, JobFailure, JobProgress, JobStatus
 
 import logging
 logger = logging.getLogger(__name__)
@@ -31,6 +33,28 @@ def _parse_progress_event(line: str) -> JobProgress | None:
         return JobProgress.model_validate(payload)
     except (json.JSONDecodeError, ValueError, TypeError):
         return None
+
+
+def _build_job_failure(job: Job | None, message: str) -> tuple[JobFailure, str]:
+    progress = job.progress if job else None
+    label = progress.label if progress else (job.progress_message if job else "")
+    label = label or "Starting job"
+    failure = JobFailure(
+        step=progress.step if progress else None,
+        label=label,
+        step_index=progress.step_index if progress else None,
+        step_count=progress.step_count if progress else None,
+        message=message,
+    )
+    if failure.step_index is not None and failure.step_count is not None:
+        error = (
+            f"Failed at step {failure.step_index}/{failure.step_count}: "
+            f"{failure.label}. {message}"
+        )
+    else:
+        error = f"Failed while {failure.label.lower()}. {message}"
+    return failure, error
+
 
 async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
     """Poll search_results/ every 2 s and track completed query directories.
@@ -60,7 +84,13 @@ async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
         await state.update_job(job_id, **updates)
 
 
-async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output_dir: Optional[Path],) -> None:
+async def _tail_stdout(
+    job_id: str,
+    process: asyncio.subprocess.Process,
+    output_dir: Optional[Path],
+    stderr_tail: deque[str],
+    stderr_done: asyncio.Event,
+) -> None:
     warnings: list[str] = []
     has_structured_progress = False
 
@@ -156,6 +186,7 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
             break  # stdout esgotado normalmente
 
     await process.wait()
+    await stderr_done.wait()
     rc = process.returncode
     finished_at = datetime.now(timezone.utc)
     logger.info("[job %s] Process finished with return code: %s", job_id, rc)  
@@ -169,15 +200,16 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
     )
 
     if rc != 0:
+        detail = stderr_tail[-1] if stderr_tail else f"Process exited with code {rc}."
+        detail = detail[:1000]
+        failure, error = _build_job_failure(job, detail)
         await state.update_job(
             job_id,
             status=JobStatus.failed,
             finished_at=finished_at,
             elapsed_seconds=elapsed,
-            error=(
-                f"Process exited with code {rc}. "
-                f"Last message: {job.progress_message or '(no output)'}"
-            ),
+            error=error,
+            failure=failure,
         )
     else:
         new_status = (
@@ -239,20 +271,27 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
         async with state._lock:
             state.processes[job_id] = process
 
+        stderr_tail: deque[str] = deque(maxlen=50)
+        stderr_done = asyncio.Event()
+
         async def _tail_stderr(proc: asyncio.subprocess.Process) -> None:
             assert proc.stderr is not None
-            while True:
-                try:
-                    async for raw in proc.stderr:
-                        chunk = raw.decode("utf-8", errors="replace")
-                        for line in chunk.replace('\r', '\n').splitlines():
-                            line = line.strip()
-                            if line:
-                                logger.info("[job %s] STDERR: %s", job_id, line)
-                except ValueError:
-                    continue
-                else:
-                    break
+            try:
+                while True:
+                    try:
+                        async for raw in proc.stderr:
+                            chunk = raw.decode("utf-8", errors="replace")
+                            for line in chunk.replace('\r', '\n').splitlines():
+                                line = line.strip()
+                                if line:
+                                    stderr_tail.append(line)
+                                    logger.info("[job %s] STDERR: %s", job_id, line)
+                    except ValueError:
+                        continue
+                    else:
+                        break
+            finally:
+                stderr_done.set()
 
         stderr_task = asyncio.create_task(_tail_stderr(process))        
 
@@ -261,13 +300,16 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
             watcher = asyncio.create_task(_watch_fs(job_id, output_dir, n_queries))
 
         try:
-            await _tail_stdout(job_id, process, output_dir)
+            await _tail_stdout(job_id, process, output_dir, stderr_tail, stderr_done)
         finally:
-            stderr_task.cancel()
-            try:
+            if process.returncode is None:
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except asyncio.CancelledError:
+                    pass
+            else:
                 await stderr_task
-            except asyncio.CancelledError:
-                pass
 
             if watcher is not None:
                 watcher.cancel()
@@ -277,9 +319,14 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
                     pass
 
     except Exception as exc:
+        job = await state.get_job(job_id)
+        failure, error = _build_job_failure(job, str(exc))
         await state.update_job(
             job_id,
             status=JobStatus.failed,
             finished_at=datetime.now(timezone.utc),
-            error=str(exc),
+            error=error,
+            failure=failure,
         )
+        async with state._lock:
+            state.processes.pop(job_id, None)

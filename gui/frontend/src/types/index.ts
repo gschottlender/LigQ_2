@@ -103,6 +103,14 @@ export interface JobProgress {
   eta_seconds: number | null;
 }
 
+export interface JobFailure {
+  step: string | null;
+  label: string;
+  step_index: number | null;
+  step_count: number | null;
+  message: string;
+}
+
 export interface Job {
   job_id: string;
   job_type: 'search' | 'build_database' | 'add_representation';
@@ -117,6 +125,7 @@ export interface Job {
   output_dir: string | null;
   warnings: string[];
   error: string | null;
+  failure: JobFailure | null;
   completed_queries: string[];
   all_queries: string[];
   n_queries: number | null;
