@@ -11,9 +11,7 @@ import {
   Layers,
   MousePointerClick,
   Play,
-  Server,
   Sparkles,
-  Terminal,
 } from 'lucide-react';
 
 interface Section {
@@ -51,14 +49,6 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
       </div>
       <p className="text-sm font-dm-sans text-gray-700 dark:text-gray-300 leading-relaxed">{children}</p>
     </div>
-  );
-}
-
-function CodeBlock({ children }: { children: string }) {
-  return (
-    <pre className="bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 text-sm font-jetbrains-mono text-gray-700 dark:text-gray-300 overflow-x-auto">
-      {children}
-    </pre>
   );
 }
 
@@ -212,7 +202,9 @@ export function HelpPage() {
                   </Param>
                   <Param name="Min / Max cutoff">
                     Similarity threshold for predicted ligands. Only compounds with similarity inside this range
-                    are included (0.0 to 1.0).
+                    are included (0.0 to 1.0). The minimum uses the selected representation's pipeline default,
+                    rounded upward to two decimals; representations without a registered default start at 0.9.
+                    The maximum starts at 1.0, and both controls advance in 0.01 increments.
                   </Param>
                   <Param name="Input FASTA">
                     Click the folder icon to upload your <span className="font-jetbrains-mono text-xs">.fasta</span>,{' '}
@@ -234,8 +226,8 @@ export function HelpPage() {
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>
-                  Click <strong>Run Search</strong>. Results appear progressively as each query completes —
-                  you don't have to wait for the full job to finish.
+                  Click <strong>Run Search</strong>. The status panel shows the current step, processed items,
+                  ETA, and elapsed time. Results appear progressively as each query completes.
                 </Step>
                 <Step n={5}>
                   Collapse the sidebar with the{' '}
@@ -291,7 +283,7 @@ export function HelpPage() {
                     </Param>
                     <Param name="Known Bindings">
                       Ligands from PDB crystal structures or ChEMBL bioactivity records associated with the
-                      candidate proteins. Includes pChEMBL potency where available.
+                      candidate proteins. Includes pChEMBL potency and binding-site Pfam domains where available.
                     </Param>
                     <Param name="Predicted Ligands">
                       Compounds retrieved from the search database by structural similarity to known ligands.
@@ -367,8 +359,8 @@ export function HelpPage() {
                   only (e.g. <span className="font-jetbrains-mono text-xs">my_library</span>).
                 </Step>
                 <Step n={4}>
-                  Click <strong>Process database</strong> and wait for the progress bar to reach 100%. The
-                  default Morgan fingerprint representation is built automatically.
+                  Click <strong>Process database</strong>. The status panel reports indexing and fingerprint
+                  progress; the default Morgan representation is built automatically.
                 </Step>
                 <Step n={5}>
                   Once complete, the new database appears immediately in the Search sidebar dropdown.
@@ -404,7 +396,7 @@ export function HelpPage() {
                 </Step>
                 <Step n={5}>
                   Click <strong>Process representation</strong>. This computes fingerprints or embeddings for
-                  every compound in the database.
+                  every compound in the database while showing the active database, count, ETA, and elapsed time.
                   <span className="ml-1 text-amber-600 dark:text-amber-400">
                     RDKit fingerprints take minutes; HuggingFace embeddings may take several hours on large databases.
                   </span>

@@ -87,4 +87,37 @@ export interface RepresentationOption {
   label: string;
   metric: 'tanimoto' | 'cosine';
   databaseId: string;
+  defaultThreshold: number | null;
+}
+
+export interface JobProgress {
+  step: string;
+  label: string;
+  step_index: number;
+  step_count: number;
+  percent: number;
+  current: number | null;
+  total: number | null;
+  unit: string | null;
+  context: string | null;
+  eta_seconds: number | null;
+}
+
+export interface Job {
+  job_id: string;
+  job_type: 'search' | 'build_database' | 'add_representation';
+  status: JobStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  elapsed_seconds: number | null;
+  progress_message: string;
+  progress_percent: number | null;
+  progress: JobProgress | null;
+  output_dir: string | null;
+  warnings: string[];
+  error: string | null;
+  completed_queries: string[];
+  all_queries: string[];
+  n_queries: number | null;
 }

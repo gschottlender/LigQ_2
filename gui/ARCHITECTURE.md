@@ -175,6 +175,7 @@ args = [
     "--ligand-provider",      ligand_provider,
     "--search-representation", search_representation,
     "--search-metric",        search_metric,
+    "--progress-json",
 ]
 # Optional flags
 if search_threshold:    args += ["--search-threshold", str(search_threshold)]
@@ -192,6 +193,7 @@ args = [
     "build_compound_database.py",
     "--input-file",  str(upload_path),   # saved to UPLOADS_DIR with UUID name
     "--base-name",   base_name,
+    "--progress-json",
 ]
 # For CSV/TSV/Parquet only (not .smi):
 if suffix != ".smi":
@@ -207,6 +209,7 @@ args = [
     "--representation-type", body.representation_type,
     "--n-bits",              str(body.n_bits),
     "--rep-name",            body.rep_name,
+    "--progress-json",
 ]
 if rdkit:   args += ["--rdkit-fp-kind", body.rdkit_fp_kind]
 if hf:      args += ["--model-id", body.model_id]
@@ -223,36 +226,22 @@ else:
 ### Stdout parsing (`job_runner.py`)
 
 `_tail_stdout` reads the subprocess stdout line by line and updates the in-memory
-job record. Three regex patterns drive progress reporting:
+job record. GUI-launched scripts receive `--progress-json` and emit newline
+events prefixed with `LIGQ_PROGRESS `. Each JSON payload is validated as
+`JobProgress` and includes:
 
-**`_BLOCK3_RE`** — pipeline search-phase progress (search jobs only):
-
-```python
-_BLOCK3_RE = re.compile(r"Block 3: processed queries \d+-(\d+) / (\d+)")
+```text
+step, label, step_index, step_count, percent,
+current, total, unit, context, eta_seconds
 ```
 
-Maps to progress bands:
-- `block 1` in line → 10 %
-- `block 2` in line → 40 %
-- `block 3` in line → 50–99 % (proportional via `_BLOCK3_RE`)
+The frontend renders the current step, overall percentage, processed/total
+count, ETA, and elapsed time. Structured percentages are monotonic. A parsed
+`tqdm` line may enrich the current structured step with count and ETA, but it
+does not replace the script's overall percentage.
 
-**`_TQDM_RE`** — tqdm progress bars from fingerprint/embedding builds:
-
-```python
-_TQDM_RE = re.compile(r"(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[(\d+):(\d+)<(\d+):(\d+)")
-```
-
-Extracts percentage and ETA, formats as `"44% · ETA 8m30s"` in
-`progress_message`.
-
-**`_BUILDING_RE`** — representation build phase detection:
-
-```python
-_BUILDING_RE = re.compile(r"\[INFO\] Building representation '(.+?)' in: .+/compound_data/(.+)")
-```
-
-When the target is `pdb_chembl` (local compatibility pass), progress resets to
-52 % with a descriptive message.
+The previous block, tqdm, and representation-build regexes remain as a legacy
+fallback for scripts launched without structured events.
 
 **`_WARNING_TOKENS`** — any line containing `"warning"`, `"no domains found"`,
 `"no known ligands"`, or `"skipped"` is appended to the job's `warnings` list
@@ -263,8 +252,8 @@ and eventually results in `completed_with_warnings` status.
 
 For search jobs, `_watch_fs` runs as a parallel asyncio task. It polls the
 `search_results/` output directory every 2 seconds and updates
-`completed_queries` and `progress_percent` (50–99 % band) as per-query
-directories appear on disk.
+`completed_queries` as per-query directories appear on disk. It only estimates
+`progress_percent` when the job has not emitted structured progress.
 
 ---
 
@@ -293,7 +282,8 @@ environment variable is required.
 **`read_tsv_paginated(path, page, per_page, filters, sort_by, sort_dir)`**  
 Reads a TSV file with `pd.read_csv(path, sep="\t")`, applies column filters,
 sorts, and returns a page slice. Columns named `binding_sites` and `pdb_ids`
-are deserialized from their stored string representation into Python lists.
+are deserialized from Python-list, NumPy-style, comma-separated, or
+semicolon-separated strings into Python lists.
 `NaN` values are converted to `None` for JSON serialization.
 
 **`read_summary(output_dir)`**  
@@ -309,7 +299,10 @@ file.
 
 **`list_representations(db_name)`**  
 Lists all `.dat` files under `COMPOUND_DATA_DIR/{db_name}/reps/`. For each
-file, calls `get_metric_from_manifest()` to determine the similarity metric.
+file, calls `get_metric_from_manifest()` to determine the similarity metric and
+loads its optional default cutoff from `search_threshold_defaults.json`.
+The search sidebar rounds this default upward to two decimal places and exposes
+both cutoff controls in `0.01` increments; the shared pipeline value remains exact.
 
 **`get_metric_from_manifest(rep_path)`**  
 Checks the sidecar JSON in priority order:
@@ -333,7 +326,7 @@ processes: dict[str, asyncio.subprocess.Process] = {}
 
 Access is serialized through an `asyncio.Lock`. The `Job` model (Pydantic,
 defined in `gui/backend/models/job.py`) stores: `job_id`, `job_type`,
-`status`, `progress_percent`, `progress_message`, `warnings`,
+`status`, `progress_percent`, `progress_message`, structured `progress`, `warnings`,
 `completed_queries`, `all_queries`, `output_dir`, timestamps, and `error`.
 
 **State is not persisted.** Restarting uvicorn clears all in-memory job records.

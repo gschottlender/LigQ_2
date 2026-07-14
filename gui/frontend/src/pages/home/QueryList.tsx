@@ -46,7 +46,8 @@ export function QueryList({ results, selectedQueryId, onSelectQuery }: QueryList
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Queries</h2>
       </div>
 
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-170 text-sm">
         <thead>
           <tr className="bg-gray-50/80 dark:bg-gray-800/20">
             <th className={TH}>
@@ -142,6 +143,7 @@ export function QueryList({ results, selectedQueryId, onSelectQuery }: QueryList
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

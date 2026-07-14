@@ -16,7 +16,7 @@ This module provides:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Callable, Optional, Dict, List, Tuple
 
 import os
 import multiprocessing as mp
@@ -418,6 +418,7 @@ def build_ligand_index(
     compute_inchikey: bool = True,
     inchikey_n_jobs: Optional[int] = 4,
     inchikey_chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
     """
     Build the ligand index table (ligands.parquet) with a dense integer index.
@@ -469,31 +470,50 @@ def build_ligand_index(
         n_jobs = _resolve_inchikey_workers(inchikey_n_jobs)
         progress_desc = f"[{root.name}] InChIKey from SMILES"
 
+        total_smiles = len(smiles_values)
+        callback_interval = max(1, total_smiles // 200)
         if n_jobs == 1:
-            inchikeys = [
+            iterator = (
                 smiles_to_inchikey(smi)
-                for smi in tqdm(
-                    smiles_values,
-                    total=len(smiles_values),
-                    desc=progress_desc,
-                    unit="lig",
-                    dynamic_ncols=True,
-                    bar_format=_TQDM_BAR_FORMAT,
-                )
-            ]
+                for smi in smiles_values
+            )
         else:
             ctx = mp.get_context("fork")
             with ctx.Pool(processes=n_jobs) as pool:
-                inchikeys = list(
+                iterator = pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize)
+                inchikeys = []
+                for idx, value in enumerate(
                     tqdm(
-                        pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize),
-                        total=len(smiles_values),
+                        iterator,
+                        total=total_smiles,
                         desc=progress_desc,
                         unit="lig",
                         dynamic_ncols=True,
                         bar_format=_TQDM_BAR_FORMAT,
-                    )
-                )
+                    ),
+                    start=1,
+                ):
+                    inchikeys.append(value)
+                    if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                        progress_callback(idx, total_smiles)
+                iterator = None
+
+        if n_jobs == 1:
+            inchikeys = []
+            for idx, value in enumerate(
+                tqdm(
+                    iterator,
+                    total=total_smiles,
+                    desc=progress_desc,
+                    unit="lig",
+                    dynamic_ncols=True,
+                    bar_format=_TQDM_BAR_FORMAT,
+                ),
+                start=1,
+            ):
+                inchikeys.append(value)
+                if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                    progress_callback(idx, total_smiles)
 
         df["inchikey"] = inchikeys
 
@@ -519,6 +539,7 @@ def _build_packed_bit_representation(
     pool_initargs: tuple,
     pool_worker_fn,
     meta_extra: Dict[str, object],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """Shared parallel builder for packed bit-vector representations."""
     root = Path(root)
@@ -552,6 +573,7 @@ def _build_packed_bit_representation(
     failed_smiles = 0
 
     total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
     progress_desc = f"[{root.name}] Building '{name}'"
 
     with ctx.Pool(
@@ -559,14 +581,14 @@ def _build_packed_bit_representation(
         initializer=pool_initializer,
         initargs=pool_initargs,
     ) as pool:
-        for start in tqdm(
+        for batch_index, start in enumerate(tqdm(
             range(0, n, batch_size),
             total=total_batches,
             desc=progress_desc,
             unit="batch",
             dynamic_ncols=True,
             bar_format=_TQDM_BAR_FORMAT,
-        ):
+        ), start=1):
             end = min(start + batch_size, n)
             smiles_list = ligs.iloc[start:end]["smiles"].tolist()
 
@@ -575,6 +597,10 @@ def _build_packed_bit_representation(
 
             failed_smiles += int(sum(0 if ok else 1 for _, ok in packed_and_status))
             mm[start:end, :] = fps_packed
+            if progress_callback and (
+                batch_index == total_batches or batch_index % callback_batch_interval == 0
+            ):
+                progress_callback(end, n)
 
     mm.flush()
 
@@ -610,6 +636,7 @@ def build_morgan_representation(
     name: str = "morgan_1024_r2",
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """Compute parallel Morgan fingerprints and persist as packed bits."""
     _build_packed_bit_representation(
@@ -623,6 +650,7 @@ def build_morgan_representation(
         pool_initargs=(n_bits, radius),
         pool_worker_fn=_morgan_fp_packed_or_zero,
         meta_extra={"radius": int(radius), "fingerprint_type": "morgan"},
+        progress_callback=progress_callback,
     )
 
 
@@ -635,6 +663,7 @@ def build_rdkit_representation(
     name: Optional[str] = None,
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """
     Compute RDKit-based fingerprints in parallel and persist as packed bits.
@@ -674,6 +703,7 @@ def build_rdkit_representation(
         pool_initargs=(fp_kind, n_bits, radius),
         pool_worker_fn=_rdkit_fp_packed_or_zero,
         meta_extra={"fingerprint_type": fp_kind, "radius": int(radius)},
+        progress_callback=progress_callback,
     )
 
 
@@ -690,6 +720,7 @@ def build_huggingface_representation(
     pooling: str = "mean_attention_mask",
     trust_remote_code: bool = False,
     revision: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     root = Path(root)
     reps_dir = root / "reps"
@@ -791,15 +822,16 @@ def build_huggingface_representation(
     # Process ligands batch by batch
     # -----------------------------
     total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
     progress_desc = f"[{root.name}] Building '{name}'"
-    for start in tqdm(
+    for batch_index, start in enumerate(tqdm(
         range(0, n, batch_size),
         total=total_batches,
         desc=progress_desc,
         unit="batch",
         dynamic_ncols=True,
         bar_format=_TQDM_BAR_FORMAT,
-    ):
+    ), start=1):
         end = min(start + batch_size, n)
         batch_smiles = smiles_all[start:end]
         batch_n = end - start
@@ -837,6 +869,10 @@ def build_huggingface_representation(
                     embed_failures += 1
 
         mm[start:end, :] = emb_out
+        if progress_callback and (
+            batch_index == total_batches or batch_index % callback_batch_interval == 0
+        ):
+            progress_callback(end, n)
 
     mm.flush()
     elapsed_s = float(time.perf_counter() - t0)

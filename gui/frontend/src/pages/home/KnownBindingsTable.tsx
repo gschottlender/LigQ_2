@@ -27,7 +27,7 @@ const ALL_COLUMNS = [
 type ColId = (typeof ALL_COLUMNS)[number]['id'];
 
 const DEFAULT_VISIBLE: Set<ColId> = new Set([
-  'search_type', 'uniprot_id', 'chem_comp_id', 'source', 'smiles', 'pchembl',
+  'search_type', 'uniprot_id', 'chem_comp_id', 'source', 'smiles', 'pchembl', 'binding_sites',
 ]);
 
 const PAGE_SIZES = [10, 20, 50];

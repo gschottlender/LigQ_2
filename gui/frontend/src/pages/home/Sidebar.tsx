@@ -1,13 +1,17 @@
 import { Check, ChevronLeft, ChevronRight, FolderOpen, Info, Loader2, Play } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
+import { JobProgressPanel } from '../../components/JobProgressPanel';
+import type { JobProgress } from '../../types';
 
 interface SidebarProps {
   isRunning: boolean;
   progressPercent: number;
   progressMessage: string;
+  progress: JobProgress | null;
+  startedAt: string | null;
   onJobCreated: (jobId: string) => void;
 }
 
@@ -89,7 +93,7 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01 }: 
             const v = parseFloat(e.target.value);
             if (!isNaN(v) && v >= min && v <= max) onChange(v);
           }}
-          className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs text-center
+          className="w-24 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs text-center
             text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
         />
       </div>
@@ -117,6 +121,14 @@ function CheckboxField({ label, checked, onChange }: CheckboxFieldProps) {
 
 const VALID_AA_RE = /^[ACDEFGHIKLMNPQRSTVWYBZXU*]+$/i;
 
+function roundThresholdUp(value: number): number {
+  return Math.min(1, Math.ceil(value * 100 - 1e-9) / 100);
+}
+
+function representationDefault(value: number | null | undefined): number | null {
+  return value == null ? null : roundThresholdUp(value);
+}
+
 function validateFasta(text: string): string | null {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const hasHeader = lines.some((l) => l.startsWith('>'));
@@ -135,18 +147,26 @@ const VALIDATION_MESSAGES = {
   fasta: 'FASTA file is required.',
   kValue: 'K must be greater than 0.',
   noRepresentation: 'No representation available for the selected database.',
+  thresholdRange: 'Maximum cutoff must be greater than or equal to minimum cutoff.',
 };
 
-export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCreated }: SidebarProps) {
+export function Sidebar({
+  isRunning,
+  progressPercent,
+  progressMessage,
+  progress,
+  startedAt,
+  onJobCreated,
+}: SidebarProps) {
   const { databases, getRepresentationsForDatabase } = useDatabase();
   const [isOpen, setIsOpen] = useState(true);
   const [showButton, setShowButton] = useState(false);
 
-  const [databaseId, setDatabaseId] = useState(databases[0]?.id ?? '');
+  const [databaseId, setDatabaseId] = useState('');
   const [representationId, setRepresentationId] = useState('');
   const [fastaFile, setFastaFile] = useState<File | null>(null);
-  const [minCutoff, setMinCutoff] = useState(0.3);
-  const [maxCutoff, setMaxCutoff] = useState(0.85);
+  const [minCutoffValue, setMinCutoffValue] = useState<number | null>(null);
+  const [maxCutoff, setMaxCutoff] = useState(1);
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
   const [kValue, setKValue] = useState(5);
@@ -156,47 +176,33 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
   const [fastaError, setFastaError] = useState('');
   const [fastaValidating, setFastaValidating] = useState(false);
 
-  const [elapsed, setElapsed] = useState(0);
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fastaInputRef = useRef<HTMLInputElement>(null);
   const fastaValidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const availableReps = getRepresentationsForDatabase(databaseId);
+  const resolvedDatabaseId = databaseId || databases[0]?.id || '';
+  const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
+  const resolvedRepresentationId = availableReps.some((r) => r.id === representationId)
+    ? representationId
+    : availableReps[0]?.id ?? '';
+  const selectedRepresentation = availableReps.find((r) => r.id === resolvedRepresentationId);
+  const metric = selectedRepresentation?.metric ?? 'tanimoto';
+  const minCutoff = minCutoffValue
+    ?? representationDefault(selectedRepresentation?.defaultThreshold)
+    ?? 0.9;
 
-  // Sync databaseId when databases load
-  useEffect(() => {
-    if (databases.length > 0 && !databaseId) {
-      setDatabaseId(databases[0].id);
-    }
-  }, [databases, databaseId]);
+  const handleDatabaseChange = (nextDatabaseId: string) => {
+    const nextRepresentations = getRepresentationsForDatabase(nextDatabaseId);
+    const nextRepresentation = nextRepresentations[0];
+    setDatabaseId(nextDatabaseId);
+    setRepresentationId('');
+    setMinCutoffValue(representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff);
+  };
 
-  // Sync representationId when databaseId changes or reps load
-  useEffect(() => {
-    if (availableReps.length > 0 && !availableReps.find((r) => r.id === representationId)) {
-      setRepresentationId(availableReps[0].id);
-    }
-  }, [databaseId, availableReps, representationId]);
-
-  const metric = availableReps.find((r) => r.id === representationId)?.metric ?? 'tanimoto';
-
-  // Elapsed timer — only ticks when isRunning is true
-  useEffect(() => {
-    if (isRunning) {
-      setElapsed(0);
-      elapsedTimerRef.current = setInterval(() => setElapsed((p) => p + 1), 1000);
-    } else {
-      if (elapsedTimerRef.current) {
-        clearInterval(elapsedTimerRef.current);
-        elapsedTimerRef.current = null;
-      }
-    }
-    return () => {
-      if (elapsedTimerRef.current) {
-        clearInterval(elapsedTimerRef.current);
-        elapsedTimerRef.current = null;
-      }
-    };
-  }, [isRunning]);
+  const handleRepresentationChange = (nextRepresentationId: string) => {
+    const nextRepresentation = availableReps.find((rep) => rep.id === nextRepresentationId);
+    setRepresentationId(nextRepresentationId);
+    setMinCutoffValue(representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff);
+  };
 
   const handleFastaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -239,6 +245,7 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
     }
     if (methodNearestK && kValue <= 0) { setValidationError(VALIDATION_MESSAGES.kValue); return false; }
     if (availableReps.length === 0) { setValidationError(VALIDATION_MESSAGES.noRepresentation); return false; }
+    if (maxCutoff < minCutoff) { setValidationError(VALIDATION_MESSAGES.thresholdRange); return false; }
     setValidationError('');
     return true;
   };
@@ -249,8 +256,8 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
     try {
       const formData = new FormData();
       formData.append('fasta_file', fastaFile);
-      formData.append('ligand_provider', databaseId);
-      formData.append('search_representation', representationId);
+      formData.append('ligand_provider', resolvedDatabaseId);
+      formData.append('search_representation', resolvedRepresentationId);
       formData.append('search_metric', metric);
       formData.append('search_threshold', String(minCutoff));
       formData.append('search_threshold_max', String(maxCutoff));
@@ -293,19 +300,19 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
   const buttonDisabled = isRunning || isSubmitting;
 
   return (
-    <section className={`border-r border-gray-300 dark:border-gray-700 sticky top-0 h-full shrink-0 transition-all duration-300 ${isOpen ? 'w-72' : 'w-16'} dark:bg-[#1a2330]`}>
+    <section className={`relative w-full border-b sm:border-b-0 sm:border-r border-gray-300 dark:border-gray-700 sm:sticky top-0 h-auto sm:h-full sm:shrink-0 transition-all duration-300 ${isOpen ? 'sm:w-72' : 'sm:w-16'} dark:bg-[#1a2330]`}>
       <aside
-        className={`h-full transition-all duration-300 overflow-y-auto overflow-x-hidden
-          ${isOpen ? 'w-72 opacity-100' : 'w-0 opacity-0'}`}
+        className={`h-auto sm:h-full transition-all duration-300 overflow-visible sm:overflow-y-auto sm:overflow-x-hidden
+          ${isOpen ? 'w-full sm:w-72 opacity-100' : 'w-0 opacity-0'}`}
       >
-        <div className="p-5 w-72">
+        <div className="p-5 w-full sm:w-72">
           <div className="flex justify-between items-center mb-1">
             <p className="text-xs font-semibold tracking-widest text-gray-400 dark:text-gray-500 uppercase">
               Search Parameters
             </p>
             <button
               onClick={close}
-              className="border border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-400 p-2 rounded-lg cursor-pointer hover:border-gray-400 hover:text-gray-500 transition-colors"
+              className="hidden sm:block border border-gray-300 dark:border-gray-600 text-gray-400 dark:text-gray-400 p-2 rounded-lg cursor-pointer hover:border-gray-400 hover:text-gray-500 transition-colors"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -314,8 +321,8 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
           {/* Search database */}
           <SelectField
             label="Search database"
-            value={databaseId}
-            onChange={setDatabaseId}
+            value={resolvedDatabaseId}
+            onChange={handleDatabaseChange}
             info="The compound database to search for similar ligands."
             options={databases.map((db) => ({ value: db.id, label: db.label }))}
           />
@@ -323,8 +330,8 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
           {/* Representation */}
           <SelectField
             label="Representation"
-            value={representationId}
-            onChange={setRepresentationId}
+            value={resolvedRepresentationId}
+            onChange={handleRepresentationChange}
             info="Molecular representation used for similarity search."
             options={availableReps.map((r) => ({ value: r.id, label: r.label }))}
             disabled={availableReps.length === 0}
@@ -343,7 +350,7 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
             disabled
           />
 
-          <SliderField label="Minimum cutoff" value={minCutoff} onChange={setMinCutoff} />
+          <SliderField label="Minimum cutoff" value={minCutoff} onChange={setMinCutoffValue} />
           <SliderField label="Maximum cutoff" value={maxCutoff} onChange={setMaxCutoff} />
 
           {/* Input FASTA */}
@@ -431,31 +438,20 @@ export function Sidebar({ isRunning, progressPercent, progressMessage, onJobCrea
             }
           </button>
 
-          {/* Status bar */}
           {isRunning && (
-            <div className="mt-4 border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 rounded-xl p-3 flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <Loader2 className="w-3 h-3 text-blue-500 animate-spin shrink-0" />
-                <span className="text-xs text-blue-700 dark:text-blue-300 truncate">
-                  {progressMessage || 'Running…'} {progressPercent}%
-                </span>
-              </div>
-              <div className="h-1.5 bg-blue-200 dark:bg-blue-900 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">
-                Elapsed: {new Date(elapsed * 1000).toISOString().slice(11, 19)}
-              </div>
-            </div>
+            <JobProgressPanel
+              progress={progress}
+              fallbackPercent={progressPercent}
+              fallbackMessage={progressMessage || 'Running search'}
+              startedAt={startedAt}
+              compact
+            />
           )}
         </div>
       </aside>
 
       {showButton && (
-        <div className="absolute top-0 left-0 w-16 h-full flex flex-col items-center pt-5">
+        <div className="absolute top-0 left-0 w-16 h-full hidden sm:flex flex-col items-center pt-5">
           <button
             onClick={open}
             className="border border-gray-300 dark:border-gray-600 text-gray-400 p-2 rounded-lg cursor-pointer hover:border-gray-400 hover:text-gray-500 transition-colors"

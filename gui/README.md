@@ -29,7 +29,7 @@ gui/
   The GUI backend requires the following additional packages (already included in `environment.yml`):
   `fastapi`, `uvicorn`, `python-multipart`, `aiofiles`
   
-- Node.js 18+ and npm
+- Node.js 20.19+ or 22.12+ and npm (required by the current Vite version)
 
 ---
 
@@ -83,7 +83,8 @@ Open `http://localhost:5173` in your browser.
 **Run a search**
 1. Open **Visualize Results** in the top navigation.
 2. Upload a FASTA file, select a database and representation, choose search methods.
-3. Click **Run Search** — results appear progressively as each query completes.
+3. Click **Run Search** — the status panel shows the current pipeline step,
+   processed items, ETA, and elapsed time while results appear per query.
 
 **Inspect results**
 - Click a query row to load its results below.
@@ -109,6 +110,9 @@ previous run.
 - The backend must be running before opening the frontend.
 - Jobs (search, build database, add representation) run as background processes
   and survive browser refreshes.
+- Search minimum cutoffs use the representation-specific pipeline defaults when
+  available, rounded upward to two decimal places. Unknown representations start
+  at `0.9`; the maximum starts at `1.0`, and both controls use `0.01` increments.
 - Results are stored on disk under `results/` and can be reloaded at any time
   via the History panel.
 

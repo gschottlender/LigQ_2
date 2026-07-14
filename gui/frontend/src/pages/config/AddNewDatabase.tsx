@@ -2,10 +2,12 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { ChevronDown, ChevronRight, FileUp, FolderOpen, Info, Loader2, Settings, Upload, X } from 'lucide-react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { api } from '../../lib/api';
+import { JobProgressPanel } from '../../components/JobProgressPanel';
+import { useJobPolling } from '../../hooks/useJobPolling';
 
 type FileExt = 'smi' | 'csv' | 'tsv' | 'parquet';
 
-const SMILES_LINE_RE = /^[A-Za-z0-9()\[\]=#$+\-@/\\%.:\s*]+$/;
+const SMILES_LINE_RE = /^[A-Za-z0-9()[\]=#$+\-@/\\%.:\s*]+$/;
 
 function validateSmi(text: string): string | null {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 10);
@@ -25,7 +27,6 @@ function validateCsvTsv(text: string, sep: string): string | null {
 
 interface ProcessingState {
   stage: 'idle' | 'processing' | 'done' | 'error';
-  progress: number;
   message: string;
 }
 
@@ -90,7 +91,8 @@ export function AddNewDatabase() {
   const [smilesCol, setSmilesCol] = useState('');
   const [outputName, setOutputName] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', progress: 0, message: '' });
+  const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', message: '' });
+  const [jobId, setJobId] = useState<string | null>(null);
   const [showInfo, setShowInfo] = useState(false);
   const [fileError, setFileError] = useState('');
   const [fileInfo, setFileInfo] = useState('');
@@ -104,6 +106,20 @@ export function AddNewDatabase() {
       if (fileValidationTimerRef.current) clearTimeout(fileValidationTimerRef.current);
     };
   }, []);
+
+  const handleJobCompleted = useCallback(async () => {
+    setProcessing({ stage: 'done', message: '' });
+    await refetchDatabases();
+  }, [refetchDatabases]);
+
+  const handleJobFailed = useCallback((job: { error: string | null }) => {
+    setProcessing({ stage: 'error', message: job.error ?? 'Processing failed.' });
+  }, []);
+
+  const { job, resetJob } = useJobPolling(jobId, {
+    onCompleted: handleJobCompleted,
+    onFailed: handleJobFailed,
+  });
 
   const applyColumns = useCallback((cols: string[]) => {
     setDetectedColumns(cols);
@@ -220,7 +236,9 @@ export function AddNewDatabase() {
   const handleProcess = async () => {
     if (!validate() || !uploadedFile) return;
 
-    setProcessing({ stage: 'processing', progress: 0, message: 'Submitting job…' });
+    resetJob();
+    setJobId(null);
+    setProcessing({ stage: 'processing', message: 'Submitting job…' });
 
     try {
       const formData = new FormData();
@@ -232,35 +250,14 @@ export function AddNewDatabase() {
       }
 
       const { data } = await api.post<{ job_id: string }>('/jobs/build-database', formData);
-      const jobId = data.job_id;
-
-      const interval = setInterval(async () => {
-        try {
-          const { data: job } = await api.get(`/jobs/${jobId}`);
-          const percent: number = job.progress_percent ?? 0;
-          const message: string = job.progress_message || 'Processing…';
-
-          if (['completed', 'completed_with_warnings'].includes(job.status)) {
-            clearInterval(interval);
-            setProcessing({ stage: 'done', progress: 100, message: '' });
-            await refetchDatabases();
-          } else if (job.status === 'failed') {
-            clearInterval(interval);
-            setProcessing({ stage: 'error', progress: percent, message: job.error ?? 'Processing failed.' });
-          } else {
-            setProcessing({ stage: 'processing', progress: percent, message });
-          }
-        } catch {
-          // transient network error — keep polling
-        }
-      }, 3000);
+      setJobId(data.job_id);
     } catch (err: unknown) {
       const axiosErr = err as { response?: { status?: number; data?: { message?: string } } };
       if (axiosErr.response?.status === 409) {
-        setProcessing({ stage: 'error', progress: 0, message: `A database named "${outputName.trim()}" already exists.` });
+        setProcessing({ stage: 'error', message: `A database named "${outputName.trim()}" already exists.` });
       } else {
         const message = axiosErr.response?.data?.message ?? 'Failed to submit job.';
-        setProcessing({ stage: 'error', progress: 0, message });
+        setProcessing({ stage: 'error', message });
       }
     }
   };
@@ -273,7 +270,9 @@ export function AddNewDatabase() {
     setSmilesCol('');
     setOutputName('');
     setErrors({});
-    setProcessing({ stage: 'idle', progress: 0, message: '' });
+    setProcessing({ stage: 'idle', message: '' });
+    setJobId(null);
+    resetJob();
     setFileError('');
     setFileInfo('');
     setFileValidating(false);
@@ -414,20 +413,13 @@ export function AddNewDatabase() {
         }
       </button>
 
-      {/* Progress bar */}
-      {(processing.stage === 'processing' || processing.stage === 'done') && (
-        <div className="mt-4 flex flex-col gap-2">
-          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-[#0d5c6b] rounded-full transition-all duration-500"
-              style={{ width: `${processing.progress}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-            <span>{processing.message}</span>
-            <span>{processing.progress}%</span>
-          </div>
-        </div>
+      {processing.stage === 'processing' && (
+        <JobProgressPanel
+          progress={job?.progress}
+          fallbackPercent={job?.progress_percent ?? 0}
+          fallbackMessage={job?.progress_message || processing.message}
+          startedAt={job?.started_at}
+        />
       )}
 
       {/* Error */}

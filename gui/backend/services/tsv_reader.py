@@ -1,5 +1,6 @@
 import ast
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,15 +18,28 @@ def _nan_to_none(val: Any) -> Any:
 
 
 def _parse_list_value(v: Any) -> list:
+    if isinstance(v, (list, tuple, set)):
+        return [str(x).strip() for x in v if str(x).strip()]
     if not isinstance(v, str) or not v.strip():
         return []
     v = v.strip()
     if v.startswith("["):
+        quoted_values = re.findall(r"['\"]([^'\"]+)['\"]", v)
+        if quoted_values:
+            return [x.strip() for x in quoted_values if x.strip()]
         try:
-            return ast.literal_eval(v)
+            parsed = ast.literal_eval(v)
+            if isinstance(parsed, (list, tuple, set)):
+                return [str(x).strip() for x in parsed if str(x).strip()]
         except Exception:
             pass
-    return [x.strip() for x in v.split(";") if x.strip()]
+        inner = v[1:-1].strip()
+        return [
+            x.strip("'\"")
+            for x in re.split(r"[\s,;]+", inner)
+            if x.strip("'\"")
+        ]
+    return [x.strip() for x in re.split(r"[;,]", v) if x.strip()]
 
 
 def _clean_row(row: dict) -> dict:

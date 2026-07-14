@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { AlertTriangle, ChevronDown, ChevronRight, Info, Loader2, Settings, Upload } from 'lucide-react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
+import { JobProgressPanel } from '../../components/JobProgressPanel';
+import { useJobPolling } from '../../hooks/useJobPolling';
 
 type RepPresetId =
   | 'morgan'
@@ -128,7 +130,6 @@ const METRIC_HINTS: Record<'tanimoto' | 'cosine', string> = {
 
 interface ProcessingState {
   stage: 'idle' | 'processing' | 'done' | 'error';
-  progress: number;
   message: string;
 }
 
@@ -143,15 +144,6 @@ function getAutoName(preset: RepPreset, nBits: number, radius: number): string {
     case 'chemberta_zinc': return `chemberta_zinc_base_${nBits}`;
     case 'chemberta_pubchem': return `chemberta_pubchem_${nBits}`;
   }
-}
-
-function formatEta(startedAt: number, progress: number): string {
-  if (progress <= 0) return '';
-  const elapsed = (Date.now() - startedAt) / 1000;
-  const remaining = elapsed / (progress / 100) - elapsed;
-  if (remaining <= 0 || !isFinite(remaining)) return '';
-  if (remaining < 60) return `ETA: ${Math.round(remaining)}s`;
-  return `ETA: ${Math.round(remaining / 60)}m`;
 }
 
 function selectPreset(p: RepPreset, setNBits: (n: number) => void, setRadius: (r: number) => void) {
@@ -172,11 +164,24 @@ export function AddNewRepresentation() {
   const [revision, setRevision] = useState('');
   const [nJobs, setNJobs] = useState(-1);
   const [repName, setRepName] = useState('');
-  const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', progress: 0, message: '' });
-  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', message: '' });
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [submittedDbId, setSubmittedDbId] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  void startedAt;
+  const handleJobCompleted = useCallback(async () => {
+    setProcessing({ stage: 'done', message: '' });
+    if (submittedDbId) await refetchRepresentationsForDatabase(submittedDbId);
+  }, [refetchRepresentationsForDatabase, submittedDbId]);
+
+  const handleJobFailed = useCallback((job: { error: string | null }) => {
+    setProcessing({ stage: 'error', message: job.error ?? 'Processing failed.' });
+  }, []);
+
+  const { job, resetJob } = useJobPolling(jobId, {
+    onCompleted: handleJobCompleted,
+    onFailed: handleJobFailed,
+  });
 
   const preset = REP_PRESETS.find((p) => p.id === presetId)!;
   const isHuggingFace = preset.representation_type === 'huggingface';
@@ -195,9 +200,10 @@ export function AddNewRepresentation() {
   const handleProcess = async () => {
     if (!validate()) return;
 
-    const now = Date.now();
-    setStartedAt(now);
-    setProcessing({ stage: 'processing', progress: 0, message: 'Submitting job…' });
+    resetJob();
+    setJobId(null);
+    setSubmittedDbId(selectedDbId);
+    setProcessing({ stage: 'processing', message: 'Submitting job…' });
 
     try {
       const effectiveNBits = preset.fixed_n_bits ? preset.default_n_bits : nBits;
@@ -216,41 +222,12 @@ export function AddNewRepresentation() {
       if (!isHuggingFace) body.n_jobs = nJobs;
 
       const { data } = await api.post<{ job_id: string }>('/jobs/add-representation', body);
-      const jobId = data.job_id;
-
-      const interval = setInterval(async () => {
-        try {
-          const { data: job } = await api.get(`/jobs/${jobId}`);
-          const percent: number = job.progress_percent ?? 0;
-          const eta = formatEta(now, percent);
-          const baseMsg = 'Computing fingerprints for all compounds.';
-
-          if (['completed', 'completed_with_warnings'].includes(job.status)) {
-            clearInterval(interval);
-            setProcessing({ stage: 'done', progress: 100, message: '' });
-            setStartedAt(null);
-            await refetchRepresentationsForDatabase(selectedDbId);
-          } else if (job.status === 'failed') {
-            clearInterval(interval);
-            setProcessing({ stage: 'error', progress: percent, message: job.error ?? 'Processing failed.' });
-            setStartedAt(null);
-          } else {
-            setProcessing({
-              stage: 'processing',
-              progress: percent,
-              message: eta ? `${baseMsg} ${eta}` : baseMsg,
-            });
-          }
-        } catch {
-          // transient error — keep polling
-        }
-      }, 3000);
+      setJobId(data.job_id);
     } catch (err: unknown) {
       const message =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
         'Failed to submit job.';
-      setProcessing({ stage: 'error', progress: 0, message });
-      setStartedAt(null);
+      setProcessing({ stage: 'error', message });
     }
   };
 
@@ -499,25 +476,20 @@ export function AddNewRepresentation() {
         }
       </button>
 
-      {/* Progress */}
-      {(processing.stage === 'processing' || processing.stage === 'done') && (
-        <div className="mt-4 flex flex-col gap-2">
-          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-[#0d5c6b] rounded-full transition-all duration-500"
-              style={{ width: `${processing.progress}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-            <span>{processing.message}</span>
-            <span>{processing.progress}%</span>
-          </div>
+      {processing.stage === 'processing' && (
+        <>
+          <JobProgressPanel
+            progress={job?.progress}
+            fallbackPercent={job?.progress_percent ?? 0}
+            fallbackMessage={job?.progress_message || processing.message}
+            startedAt={job?.started_at}
+          />
           {isHuggingFace && processing.stage === 'processing' && (
             <p className="text-xs text-amber-500 dark:text-amber-400">
               Embedding models can take several hours on large databases.
             </p>
           )}
-        </div>
+        </>
       )}
 
       {/* Error */}

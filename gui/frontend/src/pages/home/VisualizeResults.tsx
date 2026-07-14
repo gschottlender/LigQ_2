@@ -4,7 +4,7 @@ import { Sidebar } from './Sidebar';
 import { MetricCards } from './MetricCards';
 import { QueryList } from './QueryList';
 import { ResultsPanel } from './ResultsPanel';
-import type { SearchState, QueryResult, JobStatus, SearchResultsSummary } from '../../types';
+import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, JobProgress } from '../../types';
 import type { SelectedItem } from './SelectedResultPanel';
 import { SelectedResultPanel } from './SelectedResultPanel';
 import { api } from '../../lib/api';
@@ -71,6 +71,8 @@ export function VisualizeResults() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
+  const [jobProgress, setJobProgress] = useState<JobProgress | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<string | null>(null);
   const [activeResultFolder, setActiveResultFolder] = useState<string | null>(null);
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -85,6 +87,8 @@ export function VisualizeResults() {
     setSelectedQueryId(null);
     setProgressPercent(0);
     setProgressMessage('');
+    setJobProgress(null);
+    setJobStartedAt(null);
     setActiveResultFolder(null);
   }, []);
 
@@ -151,12 +155,14 @@ export function VisualizeResults() {
     const poll = async () => {
       try {
         const [{ data: job }, summaryResult] = await Promise.all([
-          api.get(`/jobs/${jobId}`),
+          api.get<Job>(`/jobs/${jobId}`),
           api.get(`/jobs/${jobId}/summary`).catch(() => ({ data: { queries: [] } })),
         ]);
 
         setProgressPercent(job.progress_percent ?? 0);
         setProgressMessage(job.progress_message ?? '');
+        setJobProgress(job.progress ?? null);
+        setJobStartedAt(job.started_at ?? null);
         if (job.output_dir) {
           setActiveResultFolder((job.output_dir as string).split('/').pop() ?? null);
         }
@@ -260,15 +266,17 @@ export function VisualizeResults() {
   );
 
   return (
-    <section className="flex h-[calc(100vh-80px)] overflow-hidden">
+    <section className="flex flex-col sm:flex-row min-h-[calc(100vh-80px)] sm:h-[calc(100vh-80px)] overflow-visible sm:overflow-hidden">
       <Sidebar
         isRunning={searchState === 'running'}
         progressPercent={progressPercent}
         progressMessage={progressMessage}
+        progress={jobProgress}
+        startedAt={jobStartedAt}
         onJobCreated={handleJobCreated}
       />
 
-      <main className="flex-1 min-w-0 overflow-y-auto bg-[#f8f9fa] dark:bg-[#161c23] relative">
+      <main className="flex-1 min-w-0 min-h-96 overflow-visible sm:overflow-y-auto bg-[#f8f9fa] dark:bg-[#161c23] relative">
         {/* History button */}
         <div className="absolute top-4 right-3 z-20">
           <button
@@ -310,8 +318,8 @@ export function VisualizeResults() {
         )}
 
         {(searchState === 'running' || searchState === 'done') && results.length > 0 && (
-          <div className="p-6 flex flex-col gap-0">
-            <div className="flex items-center gap-3 mb-4 text-gray-700 dark:text-gray-200">
+          <div className="p-4 sm:p-6 flex flex-col gap-0">
+            <div className="flex items-center gap-3 mb-4 pr-28 text-gray-700 dark:text-gray-200">
             <FileDigit className='w-5 h-5'/>
               {activeResultFolder && (
                 <span

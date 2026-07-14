@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
+
+import pyarrow.parquet as pq
 
 from compound_processing.compound_helpers import (
     build_huggingface_representation,
     build_rdkit_representation,
 )
+from progress_reporting import ProgressEmitter
 
 
 DEFAULT_LOCAL_ROOT = Path("compound_data/pdb_chembl")
@@ -165,6 +168,11 @@ def parse_args() -> argparse.Namespace:
             "This is enabled automatically for legacy --base zinc behavior."
         ),
     )
+    parser.add_argument(
+        "--progress-json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -185,6 +193,38 @@ def ensure_ligands_exist(root: Path) -> None:
         )
 
 
+def resolve_representation_name(
+    representation_type: str,
+    rep_name: Optional[str],
+    rdkit_fp_kind: str,
+    n_bits: Optional[int],
+) -> str:
+    if rep_name:
+        return rep_name
+    if representation_type == "huggingface":
+        return "chemberta_zinc_base_768"
+    if representation_type != "rdkit":
+        raise ValueError(f"Unsupported representation_type: {representation_type}")
+    if rdkit_fp_kind == "maccs":
+        return "maccs_167"
+    if n_bits is None:
+        raise ValueError("--n-bits must be provided for RDKit fingerprints.")
+    if rdkit_fp_kind == "ap":
+        return f"atom_pair_{int(n_bits)}"
+    if rdkit_fp_kind == "topological_torsion":
+        return f"topological_torsion_{int(n_bits)}"
+    if rdkit_fp_kind == "rdkit":
+        return f"rdkit_daylight_{int(n_bits)}"
+    if rdkit_fp_kind == "morgan_feature":
+        return f"morgan_feature_{int(n_bits)}_r2"
+    raise ValueError(f"Unsupported rdkit_fp_kind: {rdkit_fp_kind}")
+
+
+def ligand_count(root: Path) -> int:
+    ensure_ligands_exist(root)
+    return int(pq.ParquetFile(root / "ligands.parquet").metadata.num_rows)
+
+
 def build_representation_if_needed(
     root: Path,
     representation_type: str,
@@ -200,28 +240,16 @@ def build_representation_if_needed(
     force: bool,
     trust_remote_code: bool,
     revision: Optional[str],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     ensure_ligands_exist(root)
 
-    resolved_name = rep_name
-    if not resolved_name:
-        if representation_type == "huggingface":
-            resolved_name = "chemberta_zinc_base_768"
-        elif representation_type == "rdkit":
-            if rdkit_fp_kind == "ap":
-                resolved_name = f"atom_pair_{int(n_bits)}"
-            elif rdkit_fp_kind == "topological_torsion":
-                resolved_name = f"topological_torsion_{int(n_bits)}"
-            elif rdkit_fp_kind == "rdkit":
-                resolved_name = f"rdkit_daylight_{int(n_bits)}"
-            elif rdkit_fp_kind == "morgan_feature":
-                resolved_name = f"morgan_feature_{int(n_bits)}_r2"
-            elif rdkit_fp_kind == "maccs":
-                resolved_name = "maccs_167"
-            else:
-                raise ValueError(f"Unsupported rdkit_fp_kind: {rdkit_fp_kind}")
-        else:
-            raise ValueError(f"Unsupported representation_type: {representation_type}")
+    resolved_name = resolve_representation_name(
+        representation_type,
+        rep_name,
+        rdkit_fp_kind,
+        n_bits,
+    )
 
     if representation_exists(root, resolved_name) and not force:
         print(f"[INFO] Representation '{resolved_name}' already exists in {root}. Skipping.")
@@ -239,6 +267,7 @@ def build_representation_if_needed(
             pooling=pooling,
             trust_remote_code=trust_remote_code,
             revision=revision,
+            progress_callback=progress_callback,
         )
     elif representation_type == "rdkit":
         if n_bits is None:
@@ -251,6 +280,7 @@ def build_representation_if_needed(
             name=resolved_name,
             n_jobs=n_jobs,
             chunksize=chunksize,
+            progress_callback=progress_callback,
         )
     else:
         raise ValueError(f"Unsupported representation_type: {representation_type}")
@@ -258,6 +288,7 @@ def build_representation_if_needed(
 
 def main() -> None:
     args = parse_args()
+    progress = ProgressEmitter(enabled=args.progress_json)
 
     output_dir = Path(args.output_dir).resolve()
     local_root = output_dir / DEFAULT_LOCAL_ROOT
@@ -276,31 +307,74 @@ def main() -> None:
         primary_root = zinc_root if args.base == "zinc" else local_root
 
     ensure_local_compatible = bool(args.ensure_local_compatible or using_legacy_zinc)
-
-    # 1) Build on selected base
-    build_representation_if_needed(
-        root=primary_root,
-        representation_type=args.representation_type,
-        rep_name=args.rep_name,
-        model_id=args.model_id,
-        n_bits=args.n_bits,
-        batch_size=args.batch_size,
-        max_length=args.max_length,
-        pooling=args.pooling,
-        rdkit_fp_kind=args.rdkit_fp_kind,
-        n_jobs=args.n_jobs,
-        chunksize=args.chunksize,
-        force=args.force,
-        trust_remote_code=args.trust_remote_code,
-        revision=args.revision,
+    resolved_name = resolve_representation_name(
+        args.representation_type,
+        args.rep_name,
+        args.rdkit_fp_kind,
+        args.n_bits,
     )
 
-    # 2) Optionally ensure same representation exists in local base
+    requested_builds: list[tuple[Path, bool]] = [(primary_root, args.force)]
     if ensure_local_compatible and primary_root != local_root:
+        requested_builds.append((local_root, False))
+
+    pending_builds: list[tuple[Path, bool, int]] = []
+    for root, force in requested_builds:
+        ensure_ligands_exist(root)
+        if representation_exists(root, resolved_name) and not force:
+            print(f"[INFO] Representation '{resolved_name}' already exists in {root}. Skipping.")
+            continue
+        pending_builds.append((root, force, ligand_count(root)))
+
+    step_count = len(pending_builds) + 2
+    progress.emit(
+        step="preparing",
+        label="Preparing representation build",
+        step_index=1,
+        step_count=step_count,
+        percent=1,
+        context=resolved_name,
+    )
+
+    total_work = sum(n for _, _, n in pending_builds)
+    completed_work = 0
+    for phase_index, (root, force, n_ligands) in enumerate(pending_builds, start=2):
+        initial_label = (
+            f"Loading model for {root.name}"
+            if args.representation_type == "huggingface"
+            else f"Computing fingerprints for {root.name}"
+        )
+        initial_percent = 5 + round(completed_work / max(total_work, 1) * 90)
+        progress.emit(
+            step=f"building_{root.name}",
+            label=initial_label,
+            step_index=phase_index,
+            step_count=step_count,
+            percent=initial_percent,
+            current=0,
+            total=n_ligands,
+            unit="compounds",
+            context=root.name,
+        )
+
+        def phase_progress(current: int, total: int, *, _root=root, _completed=completed_work) -> None:
+            overall_current = _completed + current
+            progress.emit(
+                step=f"building_{_root.name}",
+                label=f"Computing '{resolved_name}' for {_root.name}",
+                step_index=phase_index,
+                step_count=step_count,
+                percent=5 + round(overall_current / max(total_work, 1) * 90),
+                current=current,
+                total=total,
+                unit="compounds",
+                context=_root.name,
+            )
+
         build_representation_if_needed(
-            root=local_root,
+            root=root,
             representation_type=args.representation_type,
-            rep_name=args.rep_name,
+            rep_name=resolved_name,
             model_id=args.model_id,
             n_bits=args.n_bits,
             batch_size=args.batch_size,
@@ -309,10 +383,21 @@ def main() -> None:
             rdkit_fp_kind=args.rdkit_fp_kind,
             n_jobs=args.n_jobs,
             chunksize=args.chunksize,
-            force=False,
+            force=force,
             trust_remote_code=args.trust_remote_code,
             revision=args.revision,
+            progress_callback=phase_progress,
         )
+        completed_work += n_ligands
+
+    progress.emit(
+        step="finalizing",
+        label="Finalizing representation",
+        step_index=step_count,
+        step_count=step_count,
+        percent=99,
+        context=resolved_name,
+    )
 
 
 if __name__ == "__main__":

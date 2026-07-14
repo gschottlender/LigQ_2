@@ -1,0 +1,9 @@
+{
+  "chemberta_zinc_base_768": 0.936140,
+  "rdkit_1024": 0.930324,
+  "maccs": 0.831169,
+  "ap_rdkit": 0.767087,
+  "morgan_feature_1024_r2": 0.509451,
+  "topological_torsion_rdkit_1024": 0.502932,
+  "morgan_1024_r2": 0.415094
+}

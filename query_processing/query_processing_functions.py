@@ -7,6 +7,7 @@ import shutil as pyshutil
 import subprocess
 import urllib.request
 from pathlib import Path
+from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -1734,6 +1735,7 @@ def build_query_ligand_results(
     predicted_score_col: str | None = None,
     predicted_threshold_min: float | None = None,
     predicted_threshold_max: float | None = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
     """
     Sequential wrapper for Block 3.
@@ -1761,6 +1763,7 @@ def build_query_ligand_results(
         predicted_score_col=predicted_score_col,
         predicted_threshold_min=predicted_threshold_min,
         predicted_threshold_max=predicted_threshold_max,
+        progress_callback=progress_callback,
     )
 
 
@@ -1781,6 +1784,7 @@ def build_query_ligand_results_parallel(
     predicted_score_col: str | None = None,
     predicted_threshold_min: float | None = None,
     predicted_threshold_max: float | None = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
     """
     Parallel Block 3 with query chunking (per-query ligand collapse).
@@ -1988,6 +1992,8 @@ def build_query_ligand_results_parallel(
                 drop_duplicates=drop_duplicates,
             )
             summary_rows.append(summary_row)
+            if progress_callback:
+                progress_callback(len(summary_rows), n_total)
 
         print(f"[INFO] Block 3: processed queries {start + 1}-{end} / {n_total}")
 

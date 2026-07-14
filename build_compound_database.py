@@ -11,6 +11,7 @@ from compound_processing.compound_helpers import (
     build_ligand_index,
     build_morgan_representation,
 )
+from progress_reporting import ProgressEmitter
 
 
 COMMON_ID_COLUMNS = [
@@ -127,6 +128,7 @@ def build_compound_database(
     default_rep_batch_size: int = 10000,
     default_rep_n_jobs: int | None = None,
     default_rep_chunksize: int = 500,
+    progress: ProgressEmitter | None = None,
 ) -> Path:
     input_path = Path(input_file)
     if not input_path.is_file():
@@ -135,6 +137,15 @@ def build_compound_database(
     root = Path(output_dir) / "compound_data" / base_name
     root.mkdir(parents=True, exist_ok=True)
 
+    if progress:
+        progress.emit(
+            step="reading_input",
+            label="Reading compound file",
+            step_index=1,
+            step_count=4,
+            percent=1,
+            context=base_name,
+        )
     raw_df = _read_table(input_file=input_path, file_format=file_format, delimiter=delimiter)
     final_ligs = normalize_compound_table(
         df=raw_df,
@@ -142,7 +153,67 @@ def build_compound_database(
         smiles_column=smiles_column,
     )
 
-    build_ligand_index(final_ligs=final_ligs, root=root)
+    n_ligands = len(final_ligs)
+    if progress:
+        progress.emit(
+            step="indexing_compounds",
+            label="Generating InChIKeys and ligand index",
+            step_index=2,
+            step_count=4,
+            percent=5,
+            current=0,
+            total=n_ligands,
+            unit="compounds",
+            context=base_name,
+        )
+
+    def index_progress(current: int, total: int) -> None:
+        if progress:
+            progress.emit(
+                step="indexing_compounds",
+                label="Generating InChIKeys and ligand index",
+                step_index=2,
+                step_count=4,
+                percent=5 + round(current / total * 45),
+                current=current,
+                total=total,
+                unit="compounds",
+                context=base_name,
+            )
+
+    build_ligand_index(
+        final_ligs=final_ligs,
+        root=root,
+        progress_callback=index_progress,
+    )
+
+    if progress:
+        progress.emit(
+            step="building_fingerprints",
+            label="Computing Morgan fingerprints",
+            step_index=3,
+            step_count=4,
+            percent=52,
+            current=0,
+            total=n_ligands,
+            unit="compounds",
+            context=base_name,
+        )
+
+    def fingerprint_progress(current: int, total: int) -> None:
+        if progress:
+            progress.emit(
+                step="building_fingerprints",
+                label="Computing Morgan fingerprints",
+                step_index=3,
+                step_count=4,
+                percent=52 + round(current / total * 45),
+                current=current,
+                total=total,
+                unit="compounds",
+                context=base_name,
+            )
+
     build_morgan_representation(
         root=root,
         n_bits=1024,
@@ -151,7 +222,17 @@ def build_compound_database(
         name="morgan_1024_r2",
         n_jobs=default_rep_n_jobs,
         chunksize=default_rep_chunksize,
+        progress_callback=fingerprint_progress,
     )
+    if progress:
+        progress.emit(
+            step="finalizing",
+            label="Finalizing compound database",
+            step_index=4,
+            step_count=4,
+            percent=99,
+            context=base_name,
+        )
     return root
 
 
@@ -216,11 +297,17 @@ def parse_args() -> argparse.Namespace:
         default=500,
         help="Chunk size for multiprocessing imap during the default Morgan build.",
     )
+    parser.add_argument(
+        "--progress-json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    progress = ProgressEmitter(enabled=args.progress_json)
     root = build_compound_database(
         input_file=args.input_file,
         output_dir=args.output_dir,
@@ -232,6 +319,7 @@ def main() -> None:
         default_rep_batch_size=args.default_rep_batch_size,
         default_rep_n_jobs=args.default_rep_n_jobs,
         default_rep_chunksize=args.default_rep_chunksize,
+        progress=progress,
     )
     print(f"[INFO] Compound database created at: {root}")
 

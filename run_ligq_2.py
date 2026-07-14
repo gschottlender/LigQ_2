@@ -39,6 +39,7 @@ from query_processing.results_tables import (
 )
 from query_processing.ligand_providers import build_provider
 from query_processing.predicted_cache import ensure_provider_cache
+from progress_reporting import ProgressEmitter
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -99,15 +100,9 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
     ],
 ]
 
-DEFAULT_SEARCH_THRESHOLDS_BY_REPRESENTATION = {
-    "chemberta_zinc_base_768": 0.936140,
-    "rdkit_1024": 0.930324,
-    "maccs": 0.831169,
-    "ap_rdkit": 0.767087,
-    "morgan_feature_1024_r2": 0.509451,
-    "topological_torsion_rdkit_1024": 0.502932,
-    "morgan_1024_r2": 0.415094,
-}
+DEFAULT_SEARCH_THRESHOLDS_BY_REPRESENTATION = json.loads(
+    Path(__file__).with_name("search_threshold_defaults.json").read_text()
+)
 
 
 def _required_base_paths(provider_name: str, include_bsi_models: bool = False) -> list[str]:
@@ -448,11 +443,17 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--progress-json",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    progress = ProgressEmitter(enabled=args.progress_json)
     resolve_search_threshold(args)
 
     if args.bsi_threshold < 0.0 or args.bsi_threshold > 1.0:
@@ -497,6 +498,58 @@ def main() -> None:
     use_nearest_k = args.use_nearest_k_flag or not methods_explicit
     use_domains = args.use_domains_flag
 
+    progress_steps = [
+        ("base_data", "Preparing base data"),
+        ("complementary_databases", "Preparing search databases"),
+        ("reading_queries", "Reading query sequences"),
+    ]
+    if use_sequence or use_nearest_k or use_domains:
+        progress_steps.append(("blast_search", "Running sequence search"))
+    if use_domains or use_nearest_k:
+        progress_steps.append(("domain_search", "Running Pfam domain search"))
+    progress_steps.extend(
+        [
+            ("candidate_selection", "Selecting candidate proteins"),
+            ("known_bindings", "Loading known ligand bindings"),
+        ]
+    )
+    if not args.known_only:
+        progress_steps.append(("predicted_cache", "Preparing predicted ligands"))
+    progress_steps.extend(
+        [
+            ("query_results", "Building per-query results"),
+            ("finalizing", "Finalizing search results"),
+        ]
+    )
+    progress_positions = {key: idx for idx, (key, _) in enumerate(progress_steps, start=1)}
+    progress_labels = dict(progress_steps)
+    progress_count = len(progress_steps)
+
+    def report_search_progress(
+        step: str,
+        *,
+        current: int | None = None,
+        total: int | None = None,
+        unit: str | None = None,
+    ) -> None:
+        step_index = progress_positions[step]
+        start_percent = max(1, round((step_index - 1) / progress_count * 98))
+        end_percent = min(98, round(step_index / progress_count * 98))
+        percent = start_percent
+        if current is not None and total:
+            percent = start_percent + round(current / total * (end_percent - start_percent))
+        progress.emit(
+            step=step,
+            label=progress_labels[step],
+            step_index=step_index,
+            step_count=progress_count,
+            percent=percent,
+            current=current,
+            total=total,
+            unit=unit,
+        )
+
+    report_search_progress("base_data")
     ensure_base_data_from_hf(
         data_dir=data_dir,
         repo_id=args.hf_repo_id,
@@ -509,6 +562,7 @@ def main() -> None:
     if use_domains or use_nearest_k or (not args.known_only and args.bsi):
         ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
 
+    report_search_progress("complementary_databases")
     print("[INFO] Preparing complementary databases...")
     prepare_complementary_databases(
         data_dir=data_dir,
@@ -521,6 +575,7 @@ def main() -> None:
     temp_results_dir = ensure_dir(temp_results_dir)
     output_dir = ensure_dir(output_dir)
 
+    report_search_progress("reading_queries")
     df_queries = parse_query_fasta(input_fasta)
 
     df_candidates_seq = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
@@ -531,6 +586,7 @@ def main() -> None:
     df_hmmer = pd.DataFrame()
 
     if use_sequence or use_nearest_k or use_domains:
+        report_search_progress("blast_search")
         blast_max_target_seqs = args.max_hits
         if use_nearest_k or use_domains:
             blast_max_target_seqs = max(
@@ -568,6 +624,7 @@ def main() -> None:
             candidates_filename="candidate_proteins_nearest_k_ranked.tsv",
         )
     if use_domains or use_nearest_k:
+        report_search_progress("domain_search")
         df_hmmer = run_hmmer_domain_search(
             query_fasta=input_fasta,
             data_dir=data_dir,
@@ -576,6 +633,7 @@ def main() -> None:
             n_workers=args.n_workers,
         )
 
+    report_search_progress("candidate_selection")
     if use_nearest_k:
         df_candidates_nearest_k = filter_nearest_k_candidates_by_query_domains(
             df_candidates_nearest_k=df_candidates_nearest_k_ranked,
@@ -606,6 +664,7 @@ def main() -> None:
         data_dir=data_dir,
     )
 
+    report_search_progress("known_bindings")
     known_db = ensure_known_binding_table(
         data_dir=data_dir,
         force_rebuild=args.force_rebuild_known_binding,
@@ -627,6 +686,7 @@ def main() -> None:
             ]
         )
     else:
+        report_search_progress("predicted_cache")
         provider = build_provider(
             provider_name=args.ligand_provider,
             data_dir=data_dir,
@@ -658,6 +718,7 @@ def main() -> None:
 
     predicted_threshold_min = args.bsi_threshold if args.bsi else args.search_threshold
     predicted_threshold_max = None if args.bsi else args.search_threshold_max
+    report_search_progress("query_results", current=0, total=len(df_queries), unit="queries")
     summary_df = build_query_ligand_results_parallel(
         df_queries=df_queries,
         df_candidates_all=df_candidates_all,
@@ -674,8 +735,15 @@ def main() -> None:
         predicted_score_col=predicted_score_col,
         predicted_threshold_min=predicted_threshold_min,
         predicted_threshold_max=predicted_threshold_max,
+        progress_callback=lambda current, total: report_search_progress(
+            "query_results",
+            current=current,
+            total=total,
+            unit="queries",
+        ),
     )
 
+    report_search_progress("finalizing")
     print("[INFO] Pipeline completed successfully.")
     print(f"[INFO] Global summary shape: {summary_df.shape}")
     print(f"[INFO] Results written under: {output_dir}")

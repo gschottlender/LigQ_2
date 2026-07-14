@@ -84,7 +84,7 @@ export function MetricCards({ summaries, results }: MetricCardsProps) {
       : 'from PDB & ChEMBL';
 
   return (
-    <div className="flex gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
       <Card
         title="Queries"
         value={summaries.length}

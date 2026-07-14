@@ -78,6 +78,17 @@ async def start_search(
 
     if search_threshold is not None and not (0.0 <= search_threshold <= 1.0):
         return _err("invalid_threshold", "search_threshold must be between 0.0 and 1.0.")
+    if search_threshold_max is not None and not (0.0 <= search_threshold_max <= 1.0):
+        return _err("invalid_threshold_max", "search_threshold_max must be between 0.0 and 1.0.")
+    if (
+        search_threshold is not None
+        and search_threshold_max is not None
+        and search_threshold_max < search_threshold
+    ):
+        return _err(
+            "invalid_threshold_range",
+            "search_threshold_max must be greater than or equal to search_threshold.",
+        )
 
     if use_nearest_k and nearest_k < 1:
         return _err("invalid_nearest_k", "nearest_k must be >= 1 when use_nearest_k is true.")
@@ -99,6 +110,7 @@ async def start_search(
         "--ligand-provider", ligand_provider,
         "--search-representation", search_representation,
         "--search-metric", search_metric,
+        "--progress-json",
     ]
     if search_threshold is not None:
         args += ["--search-threshold", str(search_threshold)]
@@ -170,6 +182,7 @@ async def build_database(
         str(PIPELINE_ROOT / "build_compound_database.py"),
         "--input-file", str(upload_path),
         "--base-name", base_name,
+        "--progress-json",
     ]
     if suffix != ".smi":
         args += ["--id-column", id_column, "--smiles-column", smiles_column]
@@ -216,6 +229,7 @@ async def add_representation(
         "--representation-type", body.representation_type,
         "--n-bits", str(body.n_bits),
         "--rep-name", body.rep_name,
+        "--progress-json",
     ]
     if body.representation_type == "rdkit" and body.rdkit_fp_kind:
         args += ["--rdkit-fp-kind", body.rdkit_fp_kind]

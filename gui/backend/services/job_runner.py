@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re, os
 import sys
 from datetime import datetime, timezone
@@ -7,7 +8,7 @@ from typing import Optional
 
 from core.config import PIPELINE_ROOT
 from core import state
-from models.job import JobStatus
+from models.job import JobProgress, JobStatus
 
 import logging
 logger = logging.getLogger(__name__)
@@ -19,12 +20,23 @@ _TQDM_RE = re.compile(r"(\d+)%\|.*?\|\s*(\d+)/(\d+)\s*\[(\d+):(\d+)<(\d+):(\d+)"
 _WARNING_TOKENS = ("warning", "no domains found", "no known ligands", "skipped")
 
 _BUILDING_RE = re.compile(r"\[INFO\] Building representation '(.+?)' in: .+/compound_data/(.+)")
+_PROGRESS_PREFIX = "LIGQ_PROGRESS "
+
+
+def _parse_progress_event(line: str) -> JobProgress | None:
+    if not line.startswith(_PROGRESS_PREFIX):
+        return None
+    try:
+        payload = json.loads(line[len(_PROGRESS_PREFIX):])
+        return JobProgress.model_validate(payload)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
-    """Poll search_results/ every 2 s and push incremental progress_percent updates.
+    """Poll search_results/ every 2 s and track completed query directories.
 
-    Maps completed-query-dir count to the 50–99 % band so the earlier BLAST/HMMER
-    stage progress (10 % and 40 %) is never overwritten going backwards.
+    For legacy jobs without structured events, completed queries also map to the
+    50-99 percent band.
     """
     sr_dir = output_dir / "search_results"
     while True:
@@ -41,7 +53,7 @@ async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
             "status": JobStatus.partial_results,
             "completed_queries": completed,
         }
-        if n_queries > 0:
+        if n_queries > 0 and job.progress is None:
             pct = 50 + int(len(completed) / n_queries * 49)
             if pct > (job.progress_percent or 0):
                 updates["progress_percent"] = pct
@@ -50,6 +62,7 @@ async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
 
 async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output_dir: Optional[Path],) -> None:
     warnings: list[str] = []
+    has_structured_progress = False
 
     assert process.stdout is not None
     while True:
@@ -63,14 +76,32 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
 
                     logger.info("[job %s] %s", job_id, line)
 
-                    updates: dict = {"progress_message": line}
+                    progress = _parse_progress_event(line)
+                    if progress is not None:
+                        has_structured_progress = True
+                        current_job = await state.get_job(job_id)
+                        pct = max(current_job.progress_percent or 0, progress.percent) if current_job else progress.percent
+                        if pct != progress.percent:
+                            progress = progress.model_copy(update={"percent": pct})
+                        await state.update_job(
+                            job_id,
+                            progress=progress,
+                            progress_percent=pct,
+                            progress_message=progress.label,
+                        )
+                        continue
+
+                    updates: dict = {}
                     lower = line.lower()
 
-                    if "block 1" in lower:
+                    if not has_structured_progress:
+                        updates["progress_message"] = line
+
+                    if not has_structured_progress and "block 1" in lower:
                         updates["progress_percent"] = 10
-                    elif "block 2" in lower:
+                    elif not has_structured_progress and "block 2" in lower:
                         updates["progress_percent"] = 40
-                    elif "block 3" in lower:
+                    elif not has_structured_progress and "block 3" in lower:
                         m3 = _BLOCK3_RE.search(line)
                         if m3:
                             end_num, total_num = int(m3.group(1)), int(m3.group(2))
@@ -81,14 +112,26 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
                     m_tqdm = _TQDM_RE.search(line)
                     if m_tqdm:
                         pct = int(m_tqdm.group(1))
-                        if pct < 100:
-                            eta_min = int(m_tqdm.group(6))
-                            eta_sec = int(m_tqdm.group(7))
+                        current = int(m_tqdm.group(2))
+                        total = int(m_tqdm.group(3))
+                        eta_min = int(m_tqdm.group(6))
+                        eta_sec = int(m_tqdm.group(7))
+                        if has_structured_progress:
+                            current_job = await state.get_job(job_id)
+                            if current_job and current_job.progress:
+                                updates["progress"] = current_job.progress.model_copy(
+                                    update={
+                                        "current": current,
+                                        "total": total,
+                                        "eta_seconds": eta_min * 60 + eta_sec,
+                                    }
+                                )
+                        elif pct < 100:
                             eta_str = f"{eta_min}m{eta_sec:02d}s" if eta_min > 0 else f"{eta_sec}s"
                             updates["progress_percent"] = pct
                             updates["progress_message"] = f"{pct}% · ETA {eta_str}"
 
-                    m_building = _BUILDING_RE.search(line)
+                    m_building = _BUILDING_RE.search(line) if not has_structured_progress else None
                     if m_building:
                         rep_name = m_building.group(1)
                         db_name = m_building.group(2)
@@ -103,7 +146,8 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
                         warnings = [*warnings, line]
                         updates["warnings"] = warnings
 
-                    await state.update_job(job_id, **updates)
+                    if updates:
+                        await state.update_job(job_id, **updates)
 
         except ValueError as e:
             logger.warning("[job %s] ValueError (line too long): %s", job_id, str(e))
@@ -145,6 +189,17 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
             if sr_dir.exists():
                 completed_queries = [d.name for d in sr_dir.iterdir() if d.is_dir()]
 
+        completed_progress = None
+        if job.progress is not None:
+            completed_progress = job.progress.model_copy(
+                update={
+                    "step": "completed",
+                    "label": "Completed",
+                    "step_index": job.progress.step_count,
+                    "percent": 100,
+                    "eta_seconds": 0,
+                }
+            )
         await state.update_job(
             job_id,
             status=new_status,
@@ -153,6 +208,7 @@ async def _tail_stdout( job_id: str, process: asyncio.subprocess.Process, output
             warnings=warnings,
             completed_queries=completed_queries,
             progress_percent=100,
+            progress=completed_progress,
         )
 
     async with state._lock:

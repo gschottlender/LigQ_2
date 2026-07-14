@@ -6,11 +6,11 @@ export const MOCK_DATABASES: Database[] = [
 ];
 
 export const MOCK_REPRESENTATIONS: RepresentationOption[] = [
-  { id: 'morgan_1024_r2', label: 'Morgan 1024 radius 2 (default)', metric: 'tanimoto', databaseId: 'zinc' },
-  { id: 'morgan_2048_r3', label: 'Morgan 2048 radius 3', metric: 'tanimoto', databaseId: 'zinc' },
-  { id: 'maccs_166', label: 'MACCS 166 bits', metric: 'tanimoto', databaseId: 'zinc' },
-  { id: 'morgan_1024_r2_lotus', label: 'Morgan 1024 radius 2', metric: 'tanimoto', databaseId: 'lotus' },
-  { id: 'chemberta_lotus', label: 'ChemBERTa-77M-MTR', metric: 'cosine', databaseId: 'lotus' },
+  { id: 'morgan_1024_r2', label: 'Morgan 1024 radius 2 (default)', metric: 'tanimoto', databaseId: 'zinc', defaultThreshold: 0.415094 },
+  { id: 'morgan_2048_r3', label: 'Morgan 2048 radius 3', metric: 'tanimoto', databaseId: 'zinc', defaultThreshold: null },
+  { id: 'maccs_166', label: 'MACCS 166 bits', metric: 'tanimoto', databaseId: 'zinc', defaultThreshold: null },
+  { id: 'morgan_1024_r2_lotus', label: 'Morgan 1024 radius 2', metric: 'tanimoto', databaseId: 'lotus', defaultThreshold: null },
+  { id: 'chemberta_lotus', label: 'ChemBERTa-77M-MTR', metric: 'cosine', databaseId: 'lotus', defaultThreshold: null },
 ];
 
 export const MOCK_RESULTS: QueryResult[] = [

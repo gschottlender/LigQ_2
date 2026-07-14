@@ -16,7 +16,9 @@ const DatabaseContext = createContext<DatabaseContextValue | null>(null);
 
 async function fetchRepsForDb(name: string): Promise<RepresentationOption[]> {
   try {
-    const { data } = await api.get<{ representations: { name: string; metric: 'tanimoto' | 'cosine' }[] }>(
+    const { data } = await api.get<{
+      representations: { name: string; metric: 'tanimoto' | 'cosine'; default_threshold?: number | null }[];
+    }>(
       `/databases/${name}/representations`,
     );
     return data.representations.map((rep): RepresentationOption => ({
@@ -24,6 +26,7 @@ async function fetchRepsForDb(name: string): Promise<RepresentationOption[]> {
       label: rep.name,
       metric: rep.metric,
       databaseId: name,
+      defaultThreshold: rep.default_threshold ?? null,
     }));
   } catch {
     return [];

@@ -13,6 +13,19 @@ class JobStatus(str, Enum):
     failed = "failed"
 
 
+class JobProgress(BaseModel):
+    step: str
+    label: str
+    step_index: int = 1
+    step_count: int = 1
+    percent: int = 0
+    current: Optional[int] = None
+    total: Optional[int] = None
+    unit: Optional[str] = None
+    context: Optional[str] = None
+    eta_seconds: Optional[int] = None
+
+
 class Job(BaseModel):
     job_id: str
     job_type: str  # "search" | "build_database" | "add_representation"
@@ -23,6 +36,7 @@ class Job(BaseModel):
     elapsed_seconds: Optional[float] = None
     progress_message: str = ""
     progress_percent: Optional[int] = None
+    progress: Optional[JobProgress] = None
     output_dir: Optional[str] = None
     warnings: list[str] = Field(default_factory=list)
     error: Optional[str] = None

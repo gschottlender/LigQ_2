@@ -1,9 +1,18 @@
 import json
 from pathlib import Path
-from core.config import COMPOUND_DATA_DIR
+from core.config import COMPOUND_DATA_DIR, PIPELINE_ROOT
 
 _FINGERPRINT_TYPES = {"morgan", "rdkit", "maccs", "topological", "atompair", "avalon", "ecfp", "fcfp"}
 _COSINE_KEYWORDS = {"chemberta", "huggingface", "bert", "transformer", "embedding", "molformer"}
+_THRESHOLD_DEFAULTS_PATH = PIPELINE_ROOT / "search_threshold_defaults.json"
+
+
+def load_search_threshold_defaults() -> dict[str, float]:
+    try:
+        data = json.loads(_THRESHOLD_DEFAULTS_PATH.read_text())
+        return {str(name): float(value) for name, value in data.items()}
+    except (OSError, ValueError, TypeError):
+        return {}
 
 
 def get_metric_from_manifest(rep_path: Path) -> str:
@@ -54,8 +63,13 @@ def list_representations(db_name: str) -> list[dict]:
     reps_dir = COMPOUND_DATA_DIR / db_name / "reps"
     if not reps_dir.exists():
         return []
+    defaults = load_search_threshold_defaults()
     return [
-        {"name": f.stem, "metric": get_metric_from_manifest(f)}
+        {
+            "name": f.stem,
+            "metric": get_metric_from_manifest(f),
+            "default_threshold": defaults.get(f.stem),
+        }
         for f in sorted(reps_dir.iterdir())
         if f.is_file() and f.suffix == ".dat"
     ]
