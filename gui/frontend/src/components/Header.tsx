@@ -19,18 +19,18 @@ export function Header(){
         <header className="h-20 px-3 sm:px-6 py-4 border-b border-gray-300 flex items-center justify-between gap-2 dark:text-white dark:bg-[#1a2330]">
             <div className="flex items-center gap-2">
                 <img src="/favicon.svg" className="w-9 h-9 sm:w-10 sm:h-10"/>
-                <p className="hidden md:block text-2xl font-semibold font-dm-sans"> LigQ_2 </p>
+                <p className="hidden md:block text-2xl font-semibold font-dm-sans"> LigQ 2 </p>
             </div>
 
             <nav className="bg-gray-200 dark:bg-gray-700 p-1 rounded-[10px] flex items-center gap-0 sm:gap-2">
-                <NavLink to="/configure" className={navLinkClass} title="Configure Search">
+                <NavLink to="/configure" className={navLinkClass} title="Manage Resources">
                     <Settings className="w-4 h-4"/>
-                    <p className="hidden sm:block text-sm font-dm-sans"> Configure Search</p>
+                    <p className="hidden sm:block text-sm font-dm-sans">Manage Resources</p>
                 </NavLink>
 
-                <NavLink to="/" className={navLinkClass} title="Visualize Results">
+                <NavLink to="/" className={navLinkClass} title="Run Search">
                     <Search className="w-4 h-4 hover:text-gray-400"/>
-                    <p className="hidden sm:block text-sm font-dm-sans">Visualize Results</p>
+                    <p className="hidden sm:block text-sm font-dm-sans">Run Search</p>
                 </NavLink>
             </nav>
             <div className="flex items-center gap-1 sm:gap-4">

@@ -12,7 +12,7 @@ export function ConfigureSearch() {
     <div className="min-h-[calc(100vh-56px)] bg-[#f8f9fa] dark:bg-[#161c23] p-8">
       <div className="max-w-3xl mx-auto">
         <h1 className="text-xl font-semibold font-dm-sans text-gray-800 dark:text-gray-100 mb-1">
-          Configure Search
+          Manage Resources
         </h1>
         <p className="text-sm text-gray-400 dark:text-gray-500 mb-6">
           Manage compound databases and molecular representations.

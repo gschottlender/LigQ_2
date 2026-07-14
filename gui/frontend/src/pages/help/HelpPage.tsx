@@ -179,7 +179,7 @@ export function HelpPage() {
             <SectionHeader id="running-search" icon={<Play className="w-4 h-4" />} title="Running a Search" />
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
-                Click <strong className="text-gray-700 dark:text-gray-200">Visualize Results</strong> in the top
+                Click <strong className="text-gray-700 dark:text-gray-200">Run Search</strong> in the top
                 navigation bar to access the search interface.
               </p>
 
@@ -322,7 +322,7 @@ export function HelpPage() {
               </p>
               <div className="flex flex-col gap-2">
                 <Step n={1}>
-                  Click the <strong>History</strong> button at the top right of the Visualize Results view.
+                  Click the <strong>History</strong> button at the top right of the Run Search view.
                 </Step>
                 <Step n={2}>
                   A dropdown lists all past runs, each identified by a job ID and timestamp.
@@ -345,7 +345,7 @@ export function HelpPage() {
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                 Any compound file you own can be imported and searched. Go to{' '}
-                <strong className="text-gray-700 dark:text-gray-200">Configure Search → Add new database</strong>.
+                <strong className="text-gray-700 dark:text-gray-200">Manage Resources → Add new database</strong>.
               </p>
               <div className="flex flex-col gap-2">
                 <Step n={1}>
@@ -380,7 +380,7 @@ export function HelpPage() {
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                 Each database can have multiple representations. Adding more representations lets you search with
                 different similarity metrics. Go to{' '}
-                <strong className="text-gray-700 dark:text-gray-200">Configure Search → Add new representation</strong>.
+                <strong className="text-gray-700 dark:text-gray-200">Manage Resources → Add new representation</strong>.
               </p>
               <div className="flex flex-col gap-2">
                 <Step n={1}>Select the database you want to add the representation to.</Step>

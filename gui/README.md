@@ -81,7 +81,7 @@ Open `http://localhost:5173` in your browser.
 ## Basic workflow
 
 **Run a search**
-1. Open **Visualize Results** in the top navigation.
+1. Open **Run Search** in the top navigation.
 2. Upload a FASTA file, select a database and representation, choose search methods.
 3. Click **Run Search** — the status panel shows the current pipeline step,
    processed items, ETA, and elapsed time while results appear per query.
@@ -92,17 +92,17 @@ Open `http://localhost:5173` in your browser.
 - Click any compound to open the detail panel with 2D structure, Download SDF, and 3D Viewer.
 
 **Add a compound database**
-Go to **Configure Search → Add new database**, upload a `.smi`, `.csv`, `.tsv`,
+Go to **Manage Resources → Add new database**, upload a `.smi`, `.csv`, `.tsv`,
 or `.parquet` file, and click **Process database**.
 
 **Add a molecular representation**
-Go to **Configure Search → Add new representation**, select a database and preset,
+Go to **Manage Resources → Add new representation**, select a database and preset,
 and click **Process representation**. It becomes searchable only after its `.dat`
 and `.meta.json` files exist in both the selected database and `pdb_chembl`.
 Incomplete representations are hidden from Search and can be processed again.
 
 **Restore a past search**
-Click **History** (top right of Visualize Results) and **Load** next to any
+Click **History** (top right of Run Search) and **Load** next to any
 previous run.
 
 ---
