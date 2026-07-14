@@ -144,16 +144,14 @@ asyncio.create_subprocess_exec(
     stderr=asyncio.subprocess.PIPE,
     cwd=str(PIPELINE_ROOT),  # repository root as working directory
     limit=1024 * 1024 * 10,  # 10 MB line buffer
-    env={
-        **os.environ,
-        "PYTHONUNBUFFERED": "1",   # prevent stdout buffering
-        "FORCE_COLOR": "0",        # suppress ANSI escape codes in tqdm
-    },
+    env=_subprocess_env(),  # unbuffered output + Conda runtime libraries
 )
 ```
 
 Using `sys.executable` ensures the subprocess inherits the same conda
 environment that uvicorn was started in, without any activation step.
+`_subprocess_env()` also prepends `CONDA_PREFIX/lib` to `LD_LIBRARY_PATH`, so
+compiled packages such as RDKit load the C++ runtime shipped with that environment.
 
 ### Script called per job type
 
@@ -496,4 +494,6 @@ integration requirements:
 The backend uses `sys.executable` (the uvicorn interpreter) to launch pipeline
 scripts. This means the conda environment must be activated when uvicorn starts.
 `PYTHONUNBUFFERED=1` is injected into every subprocess environment to ensure
-pipeline stdout is not buffered and reaches `_tail_stdout` in real time.
+pipeline stdout is not buffered and reaches `_tail_stdout` in real time. When
+`CONDA_PREFIX` is available, its `lib/` directory is preferred for compiled
+dependencies; stderr ANSI sequences are removed before failures reach the GUI.

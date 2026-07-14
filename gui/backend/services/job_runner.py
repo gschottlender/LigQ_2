@@ -23,6 +23,20 @@ _WARNING_TOKENS = ("warning", "no domains found", "no known ligands", "skipped")
 
 _BUILDING_RE = re.compile(r"\[INFO\] Building representation '(.+?)' in: .+/compound_data/(.+)")
 _PROGRESS_PREFIX = "LIGQ_PROGRESS "
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0"}
+    conda_prefix = env.get("CONDA_PREFIX")
+    if conda_prefix:
+        conda_lib = Path(conda_prefix) / "lib"
+        if conda_lib.is_dir():
+            existing = env.get("LD_LIBRARY_PATH", "")
+            env["LD_LIBRARY_PATH"] = (
+                f"{conda_lib}{os.pathsep}{existing}" if existing else str(conda_lib)
+            )
+    return env
 
 
 def _parse_progress_event(line: str) -> JobProgress | None:
@@ -266,7 +280,7 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
             stderr=asyncio.subprocess.PIPE,
             cwd=str(PIPELINE_ROOT),
             limit=1024 * 1024 * 10,
-            env={**os.environ, "PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0"},
+            env=_subprocess_env(),
         )
         async with state._lock:
             state.processes[job_id] = process
@@ -284,7 +298,7 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
                             for line in chunk.replace('\r', '\n').splitlines():
                                 line = line.strip()
                                 if line:
-                                    stderr_tail.append(line)
+                                    stderr_tail.append(_ANSI_ESCAPE_RE.sub("", line))
                                     logger.info("[job %s] STDERR: %s", job_id, line)
                     except ValueError:
                         continue

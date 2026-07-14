@@ -20,7 +20,7 @@ from models.job import Job, JobProgress, JobStatus
 from core import state
 from services import fs_inspector
 from services.fs_inspector import load_search_threshold_defaults, representation_files_complete
-from services.job_runner import _build_job_failure, _parse_progress_event, run_job
+from services.job_runner import _build_job_failure, _parse_progress_event, _subprocess_env, run_job
 from services.tsv_reader import _parse_list_value, read_tsv_paginated
 
 from progress_reporting import PROGRESS_PREFIX, ProgressEmitter
@@ -144,6 +144,18 @@ def test_job_failure_identifies_the_active_step() -> None:
     assert failure.step_count == 4
     assert failure.message == "RuntimeError: representation build stopped"
     assert error.startswith("Failed at step 2/4: Computing fingerprints for custom.")
+
+
+def test_subprocess_env_prefers_conda_libraries(tmp_path: Path, monkeypatch) -> None:
+    conda_prefix = tmp_path / "conda-env"
+    conda_lib = conda_prefix / "lib"
+    conda_lib.mkdir(parents=True)
+    monkeypatch.setenv("CONDA_PREFIX", str(conda_prefix))
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/lib")
+
+    env = _subprocess_env()
+
+    assert env["LD_LIBRARY_PATH"] == f"{conda_lib}:/existing/lib"
 
 
 def test_failed_process_captures_stderr_for_the_active_step() -> None:
