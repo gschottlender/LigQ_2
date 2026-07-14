@@ -432,7 +432,7 @@ flowchart LR
 |---|---|---|
 | `VisualizeResults.tsx` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/summary`, `GET /api/results` | Manages search state, polling interval, history panel |
 | `Sidebar.tsx` | `POST /api/jobs/search` | Submits `multipart/form-data`; reads database/representation lists from `DatabaseContext` |
-| `QueryList.tsx` | — | Receives query data from `VisualizeResults` via props |
+| `QueryList.tsx` | — | Receives query data from `VisualizeResults`; uses a bounded, independently scrollable table with a sticky status header |
 | `MetricCards.tsx` | — | Aggregates counts from the summary data passed via props |
 | `ResultsPanel.tsx` | `GET /api/jobs/{id}/queries/{qid}/protein-ranking`, `/known-ligands`, `/predicted-ligands` | Fetches on tab change and pagination events |
 | `AddNewDatabase.tsx` | `POST /api/files/upload`, `POST /api/jobs/build-database`, `GET /api/jobs/{id}` | Polls job until terminal; calls `refetchDatabases()` on completion |

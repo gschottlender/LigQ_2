@@ -234,6 +234,10 @@ export function HelpPage() {
                   <span className="font-jetbrains-mono text-xs bg-gray-100 dark:bg-gray-800 px-1 rounded">{'<'}</span>{' '}
                   button on its right edge to get more screen space for results.
                 </Step>
+                <Step n={6}>
+                  The query list keeps its header visible and scrolls independently when many sequences are
+                  present. Selecting a completed query moves directly to its results panel.
+                </Step>
               </div>
             </div>
           </section>

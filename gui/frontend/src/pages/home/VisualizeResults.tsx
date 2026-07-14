@@ -13,6 +13,7 @@ import { api } from '../../lib/api';
 type ResultTab = 'protein_ranking' | 'known_bindings' | 'predicted_ligands';
 
 const TERMINAL_STATUSES: JobStatus[] = ['completed', 'completed_with_warnings', 'failed'];
+const QUERY_HAS_RESULTS: JobStatus[] = ['partial_results', 'completed', 'completed_with_warnings'];
 
 interface HistoryEntry {
   result_id: string;
@@ -82,6 +83,7 @@ export function VisualizeResults() {
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const historyPanelRef = useRef<HTMLDivElement>(null);
+  const resultsPanelRef = useRef<HTMLDivElement>(null);
 
   const handleJobCreated = useCallback((id: string) => {
     setJobId(id);
@@ -214,7 +216,14 @@ export function VisualizeResults() {
   const handleSelectQuery = useCallback((qseqid: string, tab?: ResultTab) => {
     setSelectedQueryId(qseqid);
     setActiveResultTab(tab ?? 'protein_ranking');
-  }, []);
+
+    const query = results.find((result) => result.summary.qseqid === qseqid);
+    if (query && QUERY_HAS_RESULTS.includes(query.status)) {
+      window.requestAnimationFrame(() => {
+        resultsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+  }, [results]);
 
   const selectedResult = results.find((r) => r.summary.qseqid === selectedQueryId) ?? null;
 
@@ -354,14 +363,16 @@ export function VisualizeResults() {
               onSelectQuery={handleSelectQuery}
             />
             {selectedResult && (
-              <ResultsPanel
-                queryResult={selectedResult}
-                activeTab={activeResultTab}
-                onTabChange={setActiveResultTab}
-                selectedItem={selectedItem}
-                onSelectItem={setSelectedItem}
-                jobId={jobId ?? ''}
-              />
+              <div ref={resultsPanelRef} className="scroll-mt-4">
+                <ResultsPanel
+                  queryResult={selectedResult}
+                  activeTab={activeResultTab}
+                  onTabChange={setActiveResultTab}
+                  selectedItem={selectedItem}
+                  onSelectItem={setSelectedItem}
+                  jobId={jobId ?? ''}
+                />
+              </div>
             )}
           </div>
         )}

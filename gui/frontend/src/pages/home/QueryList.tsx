@@ -42,14 +42,22 @@ const TH = "px-5 py-2.5 text-left text-xs font-dm-sans font-semibold uppercase t
 export function QueryList({ results, selectedQueryId, onSelectQuery }: QueryListProps) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mt-6">
-      <div className="px-5 py-3 border-b border-gray-100 dark:border-gray-600">
+      <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-100 dark:border-gray-600">
         <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Queries</h2>
+        <span className="text-xs text-gray-400 dark:text-gray-500">
+          {results.length.toLocaleString()} total
+        </span>
       </div>
 
-      <div className="overflow-x-auto">
+      <div
+        className="max-h-[26rem] overflow-auto sm:max-h-[30rem]"
+        role="region"
+        aria-label="Query statuses"
+        tabIndex={0}
+      >
       <table className="w-full min-w-170 text-sm">
-        <thead>
-          <tr className="bg-gray-50/80 dark:bg-gray-800/20">
+        <thead className="sticky top-0 z-10">
+          <tr className="bg-gray-50 dark:bg-gray-800 shadow-[0_1px_0_0_rgba(229,231,235,1)] dark:shadow-[0_1px_0_0_rgba(75,85,99,1)]">
             <th className={TH}>
               Query
             </th>
