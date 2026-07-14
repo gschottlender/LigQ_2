@@ -309,8 +309,9 @@ both cutoff controls in `0.01` increments; the shared pipeline value remains exa
 **`get_metric_from_manifest(rep_path)`**  
 Checks the sidecar JSON in priority order:
 1. `{name}.meta.json` alongside the `.dat` file → reads `search_metric` key
-   (explicit), then falls back to `fingerprint_type` (known RDKit types →
-   `tanimoto`, anything else → `cosine`).
+   (explicit), then identifies fingerprint metadata (`fingerprint_type` or
+   `packed_bits: true`) as `tanimoto` and embedding metadata (`model_id` or
+   `packed_bits: false`) as `cosine`.
 2. `manifest.json` in the same directory (alternative layout).
 3. Name-based keyword heuristic as a last resort (e.g. `chemberta` → `cosine`).
 

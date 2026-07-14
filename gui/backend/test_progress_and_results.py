@@ -19,7 +19,11 @@ if str(BACKEND_ROOT) not in sys.path:
 from models.job import Job, JobProgress, JobStatus
 from core import state
 from services import fs_inspector
-from services.fs_inspector import load_search_threshold_defaults, representation_files_complete
+from services.fs_inspector import (
+    get_metric_from_manifest,
+    load_search_threshold_defaults,
+    representation_files_complete,
+)
 from services.job_runner import _build_job_failure, _parse_progress_event, _subprocess_env, run_job
 from services.tsv_reader import _parse_list_value, read_tsv_paginated
 
@@ -76,6 +80,32 @@ def test_progress_parser_rejects_non_events_and_invalid_json() -> None:
 def test_gui_threshold_defaults_match_pipeline_defaults_file() -> None:
     assert load_search_threshold_defaults() == EXPECTED_THRESHOLDS
     assert json.loads((ROOT / "search_threshold_defaults.json").read_text()) == EXPECTED_THRESHOLDS
+
+
+def test_metric_detection_uses_representation_metadata(tmp_path: Path) -> None:
+    rep_path = tmp_path / "representation.dat"
+    rep_path.write_bytes(b"representation")
+    meta_path = rep_path.with_suffix(".meta.json")
+
+    for fingerprint_type in (
+        "morgan",
+        "morgan_feature",
+        "ap",
+        "topological_torsion",
+        "rdkit",
+        "maccs",
+    ):
+        meta_path.write_text(json.dumps({"fingerprint_type": fingerprint_type}))
+        assert get_metric_from_manifest(rep_path) == "tanimoto"
+
+    meta_path.write_text(json.dumps({"packed_bits": True, "dtype": "uint8"}))
+    assert get_metric_from_manifest(rep_path) == "tanimoto"
+
+    meta_path.write_text(json.dumps({"model_id": "seyonec/ChemBERTa-zinc-base-v1"}))
+    assert get_metric_from_manifest(rep_path) == "cosine"
+
+    meta_path.write_text(json.dumps({"search_metric": "tanimoto", "model_id": "ignored"}))
+    assert get_metric_from_manifest(rep_path) == "tanimoto"
 
 
 def _write_representation(root: Path, name: str, *, data: bool = True, meta: bool = True) -> None:

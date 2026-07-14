@@ -610,6 +610,7 @@ def _build_packed_bit_representation(
     meta = {
         "name": name,
         "file": f"{name}.dat",
+        "search_metric": "tanimoto",
         "dtype": "uint8",
         "dim": int(n_bits),
         "packed_bits": True,
@@ -881,6 +882,7 @@ def build_huggingface_representation(
     meta: Dict = {
         "name": name,
         "file": f"{name}.dat",
+        "search_metric": "cosine",
         "dtype": "float16",
         "dim": int(dim),
         "packed_bits": False,

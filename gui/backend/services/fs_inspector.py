@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 from core.config import COMPOUND_DATA_DIR, PIPELINE_ROOT
 
-_FINGERPRINT_TYPES = {"morgan", "rdkit", "maccs", "topological", "atompair", "avalon", "ecfp", "fcfp"}
 _COSINE_KEYWORDS = {"chemberta", "huggingface", "bert", "transformer", "embedding", "molformer"}
 _THRESHOLD_DEFAULTS_PATH = PIPELINE_ROOT / "search_threshold_defaults.json"
 
@@ -20,9 +19,9 @@ def get_metric_from_manifest(rep_path: Path) -> str:
 
     Checks, in order:
       1. ``search_metric`` key in the JSON sidecar (future-proof explicit field).
-      2. ``fingerprint_type`` in the sidecar — known FP types → tanimoto, anything
-         else (embeddings) → cosine.
-      3. Name-based keyword heuristic as last resort.
+      2. Fingerprint metadata (``fingerprint_type`` or packed bits) → tanimoto.
+      3. Embedding metadata (``model_id`` or unpacked vectors) → cosine.
+      4. Name-based keyword heuristic as last resort.
 
     The sidecar is ``{stem}.meta.json`` alongside the ``.dat`` file (actual layout)
     or ``manifest.json`` inside a representation sub-directory (alternative layout).
@@ -35,12 +34,12 @@ def get_metric_from_manifest(rep_path: Path) -> str:
         if meta.exists():
             try:
                 data = json.loads(meta.read_text())
-                if "search_metric" in data:
-                    return str(data["search_metric"])
-                fp_type = data.get("fingerprint_type", "").lower()
-                if fp_type in _FINGERPRINT_TYPES:
+                explicit_metric = str(data.get("search_metric", "")).lower()
+                if explicit_metric in {"tanimoto", "cosine"}:
+                    return explicit_metric
+                if data.get("fingerprint_type") or data.get("packed_bits") is True:
                     return "tanimoto"
-                if fp_type:
+                if data.get("model_id") or data.get("packed_bits") is False:
                     return "cosine"
             except Exception:
                 pass
