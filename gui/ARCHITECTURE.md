@@ -66,7 +66,9 @@ clients or hardcoded URLs.
 | `GET` | `/api/jobs/{job_id}/summary` | `VisualizeResults.tsx` |
 
 The search form is submitted as `multipart/form-data` (FASTA file + form
-fields). The response contains a `job_id` that the frontend stores in state.
+fields). BSI mode adds `use_bsi=true` and `bsi_threshold` (default `0.98`);
+structural mode sends `search_threshold` and `search_threshold_max` instead.
+The response contains a `job_id` that the frontend stores in state.
 
 #### Result tables
 
@@ -176,13 +178,21 @@ args = [
     "--progress-json",
 ]
 # Optional flags
-if search_threshold:    args += ["--search-threshold", str(search_threshold)]
-if search_threshold_max: args += ["--search-threshold-max", str(search_threshold_max)]
+if use_bsi:
+    args += ["--bsi", "--bsi-threshold", str(bsi_threshold)]
+else:
+    if search_threshold: args += ["--search-threshold", str(search_threshold)]
+    if search_threshold_max: args += ["--search-threshold-max", str(search_threshold_max)]
 if use_sequence:        args.append("--sequence")
 if use_nearest_k:       args += ["--nearest_k", "--nearest-k", str(nearest_k)]
 if use_domains:         args.append("--domains")
 if known_only:          args.append("--known-only")
 ```
+
+For BSI searches the backend treats the browser values as advisory and forces
+`morgan_1024_r2` plus the CLI-compatible `tanimoto` metric argument; the BSI
+provider itself reports `bsi_score`. The GUI default BSI cutoff is `0.98`, and
+the structural minimum/maximum cutoff arguments are omitted.
 
 #### `build_database`
 
@@ -305,6 +315,10 @@ the similarity metric and loads its optional default cutoff from
 `search_threshold_defaults.json`.
 The search sidebar rounds this default upward to two decimal places and exposes
 both cutoff controls in `0.01` increments; the shared pipeline value remains exact.
+When BSI is enabled, the sidebar fixes the representation to `morgan_1024_r2`,
+shows `BSI Score`, uses a separate minimum cutoff initialized to `0.98`, and
+disables the maximum cutoff at `1.0`. Disabling BSI restores the structural
+representation, metric, and cutoff state.
 
 **`get_metric_from_manifest(rep_path)`**  
 Checks the sidecar JSON in priority order:

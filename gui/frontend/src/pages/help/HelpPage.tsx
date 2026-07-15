@@ -30,6 +30,26 @@ const SECTIONS: Section[] = [
   { id: 'glossary',           label: 'Glossary',                  icon: <BookOpen className="w-4 h-4" /> },
 ];
 
+const BSI_SUPPORTED_FAMILIES = [
+  { id: 'PF00001', name: '7 transmembrane receptor (rhodopsin family)' },
+  { id: 'PF00002', name: '7 transmembrane receptor (Secretin family)' },
+  { id: 'PF00026', name: 'Eukaryotic aspartyl protease' },
+  { id: 'PF00067', name: 'Cytochrome P450' },
+  { id: 'PF00069', name: 'Protein kinase domain' },
+  { id: 'PF00089', name: 'Trypsin' },
+  { id: 'PF00104', name: 'Ligand-binding domain of nuclear hormone receptor' },
+  { id: 'PF00112', name: 'Papain family cysteine protease' },
+  { id: 'PF00135', name: 'Carboxylesterase family' },
+  { id: 'PF00194', name: 'Eukaryotic-type carbonic anhydrase' },
+  { id: 'PF00209', name: 'Sodium:neurotransmitter symporter family' },
+  { id: 'PF00233', name: "3'5'-cyclic nucleotide phosphodiesterase" },
+  { id: 'PF00413', name: 'Matrixin' },
+  { id: 'PF00520', name: 'Ion transport protein' },
+  { id: 'PF00850', name: 'Histone deacetylase domain' },
+  { id: 'PF01094', name: 'Receptor family ligand binding region' },
+  { id: 'PF07714', name: 'Protein tyrosine and serine/threonine kinase' },
+];
+
 function SectionHeader({ id, icon, title }: { id: string; icon: React.ReactNode; title: string }) {
   return (
     <div id={id} className="flex items-center gap-3 mb-4 scroll-mt-24">
@@ -200,11 +220,33 @@ export function HelpPage() {
                     <InfoBadge label="Tanimoto" color="teal" /> for binary fingerprints,{' '}
                     <InfoBadge label="Cosine" color="blue" /> for embeddings.
                   </Param>
+                  <Param name="BSI">
+                    Enables the Bioactivity Similarity Index for protein families with a trained Pfam-specific
+                    model. BSI fixes the representation to{' '}
+                    <span className="font-jetbrains-mono text-xs">morgan_1024_r2</span> and reports a learned{' '}
+                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity.
+                    <span className="mt-2 block">
+                      <strong className="font-semibold text-gray-700 dark:text-gray-300">
+                        Supported protein families:
+                      </strong>
+                      <span className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                        {BSI_SUPPORTED_FAMILIES.map((family) => (
+                          <span key={family.id}>
+                            <span className="font-jetbrains-mono text-xs text-[#0d5c6b] dark:text-teal-300">
+                              {family.id}
+                            </span>{' '}
+                            — {family.name}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                  </Param>
                   <Param name="Min / Max cutoff">
                     Similarity threshold for predicted ligands. Only compounds with similarity inside this range
                     are included (0.0 to 1.0). The minimum uses the selected representation's pipeline default,
                     rounded upward to two decimals; representations without a registered default start at 0.9.
-                    The maximum starts at 1.0, and both controls advance in 0.01 increments.
+                    The maximum starts at 1.0, and both controls advance in 0.01 increments. In BSI mode, the
+                    minimum starts at 0.98 and remains adjustable, while the maximum is fixed at 1.0.
                   </Param>
                   <Param name="Input FASTA">
                     Click the folder icon to upload your <span className="font-jetbrains-mono text-xs">.fasta</span>,{' '}
@@ -222,7 +264,7 @@ export function HelpPage() {
               </Card>
 
               <div className="flex flex-col gap-2">
-                <Step n={1}>Select your database, representation, and similarity cutoffs.</Step>
+                <Step n={1}>Select your database, representation, and similarity cutoffs, or enable BSI.</Step>
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>

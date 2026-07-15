@@ -17,6 +17,10 @@ from services.job_runner import run_job
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
+BSI_REPRESENTATION = "morgan_1024_r2"
+BSI_CLI_METRIC = "tanimoto"
+BSI_DEFAULT_THRESHOLD = 0.98
+
 
 def _err(code: str, message: str, status_code: int = 400, details=None):
     return JSONResponse(
@@ -46,6 +50,52 @@ def _get_fasta_query_ids(content: bytes) -> list[str]:
     return ids
 
 
+def _build_search_args(
+    *,
+    fasta_path: Path,
+    output_dir: Path,
+    ligand_provider: str,
+    search_representation: str,
+    search_metric: str,
+    search_threshold: float | None,
+    search_threshold_max: float | None,
+    use_sequence: bool,
+    use_nearest_k: bool,
+    nearest_k: int,
+    use_domains: bool,
+    known_only: bool,
+    use_bsi: bool,
+    bsi_threshold: float,
+) -> list[str]:
+    effective_representation = BSI_REPRESENTATION if use_bsi else search_representation
+    effective_metric = BSI_CLI_METRIC if use_bsi else search_metric
+    args: list[str] = [
+        str(PIPELINE_ROOT / "run_ligq_2.py"),
+        "--input-fasta", str(fasta_path),
+        "--output-dir", str(output_dir),
+        "--ligand-provider", ligand_provider,
+        "--search-representation", effective_representation,
+        "--search-metric", effective_metric,
+        "--progress-json",
+    ]
+    if use_bsi:
+        args += ["--bsi", "--bsi-threshold", str(bsi_threshold)]
+    else:
+        if search_threshold is not None:
+            args += ["--search-threshold", str(search_threshold)]
+        if search_threshold_max is not None:
+            args += ["--search-threshold-max", str(search_threshold_max)]
+    if use_sequence:
+        args.append("--sequence")
+    if use_nearest_k:
+        args += ["--nearest_k", "--nearest-k", str(nearest_k)]
+    if use_domains:
+        args.append("--domains")
+    if known_only:
+        args.append("--known-only")
+    return args
+
+
 # ─── Search ───────────────────────────────────────────────────────────────────
 
 
@@ -63,6 +113,8 @@ async def start_search(
     nearest_k: int = Form(5),
     use_domains: bool = Form(False),
     known_only: bool = Form(False),
+    use_bsi: bool = Form(False),
+    bsi_threshold: float = Form(BSI_DEFAULT_THRESHOLD),
 ):
     content = await fasta_file.read()
     if not content or not _valid_fasta(content):
@@ -73,29 +125,42 @@ async def start_search(
     if not database_exists(ligand_provider):
         return _err("database_not_found", f"Ligand provider '{ligand_provider}' not found.")
 
-    if not representation_is_search_ready(ligand_provider, search_representation):
+    effective_representation = BSI_REPRESENTATION if use_bsi else search_representation
+    if not representation_is_search_ready(ligand_provider, effective_representation):
         return _err(
             "representation_not_ready",
             (
-                f"Representation '{search_representation}' is incomplete. Both its .dat and "
+                f"Representation '{effective_representation}' is incomplete. Both its .dat and "
                 f".meta.json files must exist for '{ligand_provider}' and 'pdb_chembl'. "
                 "Add the representation again before searching."
             ),
         )
 
-    if search_threshold is not None and not (0.0 <= search_threshold <= 1.0):
-        return _err("invalid_threshold", "search_threshold must be between 0.0 and 1.0.")
-    if search_threshold_max is not None and not (0.0 <= search_threshold_max <= 1.0):
-        return _err("invalid_threshold_max", "search_threshold_max must be between 0.0 and 1.0.")
-    if (
-        search_threshold is not None
-        and search_threshold_max is not None
-        and search_threshold_max < search_threshold
-    ):
-        return _err(
-            "invalid_threshold_range",
-            "search_threshold_max must be greater than or equal to search_threshold.",
-        )
+    if use_bsi:
+        if not (0.0 <= bsi_threshold <= 1.0):
+            return _err("invalid_bsi_threshold", "bsi_threshold must be between 0.0 and 1.0.")
+        if known_only:
+            return _err(
+                "incompatible_search_modes",
+                "BSI and known-only mode cannot be enabled together.",
+            )
+    else:
+        if search_threshold is not None and not (0.0 <= search_threshold <= 1.0):
+            return _err("invalid_threshold", "search_threshold must be between 0.0 and 1.0.")
+        if search_threshold_max is not None and not (0.0 <= search_threshold_max <= 1.0):
+            return _err(
+                "invalid_threshold_max",
+                "search_threshold_max must be between 0.0 and 1.0.",
+            )
+        if (
+            search_threshold is not None
+            and search_threshold_max is not None
+            and search_threshold_max < search_threshold
+        ):
+            return _err(
+                "invalid_threshold_range",
+                "search_threshold_max must be greater than or equal to search_threshold.",
+            )
 
     if use_nearest_k and nearest_k < 1:
         return _err("invalid_nearest_k", "nearest_k must be >= 1 when use_nearest_k is true.")
@@ -110,27 +175,22 @@ async def start_search(
     output_dir_rel = f"results/{stem}_{timestamp}"
     output_dir = PIPELINE_ROOT / output_dir_rel
 
-    args: list[str] = [
-        str(PIPELINE_ROOT / "run_ligq_2.py"),
-        "--input-fasta", str(fasta_path),
-        "--output-dir", str(output_dir),
-        "--ligand-provider", ligand_provider,
-        "--search-representation", search_representation,
-        "--search-metric", search_metric,
-        "--progress-json",
-    ]
-    if search_threshold is not None:
-        args += ["--search-threshold", str(search_threshold)]
-    if search_threshold_max is not None:
-        args += ["--search-threshold-max", str(search_threshold_max)]
-    if use_sequence:
-        args.append("--sequence")
-    if use_nearest_k:
-        args += ["--nearest_k", "--nearest-k", str(nearest_k)]
-    if use_domains:
-        args.append("--domains")
-    if known_only:
-        args.append("--known-only")
+    args = _build_search_args(
+        fasta_path=fasta_path,
+        output_dir=output_dir,
+        ligand_provider=ligand_provider,
+        search_representation=search_representation,
+        search_metric=search_metric,
+        search_threshold=search_threshold,
+        search_threshold_max=search_threshold_max,
+        use_sequence=use_sequence,
+        use_nearest_k=use_nearest_k,
+        nearest_k=nearest_k,
+        use_domains=use_domains,
+        known_only=known_only,
+        use_bsi=use_bsi,
+        bsi_threshold=bsi_threshold,
+    )
 
     job = Job(
         job_id=job_id,

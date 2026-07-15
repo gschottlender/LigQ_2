@@ -82,7 +82,7 @@ Open `http://localhost:5173` in your browser.
 
 **Run a search**
 1. Open **Run Search** in the top navigation.
-2. Upload a FASTA file, select a database and representation, choose search methods.
+2. Upload a FASTA file, select a database and representation, optionally enable BSI, and choose search methods.
 3. Click **Run Search** — the status panel shows the current pipeline step,
    processed items, ETA, and elapsed time while results appear per query.
 
@@ -117,6 +117,10 @@ previous run.
 - Search minimum cutoffs use the representation-specific pipeline defaults when
   available, rounded upward to two decimal places. Unknown representations start
   at `0.9`; the maximum starts at `1.0`, and both controls use `0.01` increments.
+- Enabling BSI fixes the representation to `morgan_1024_r2`, displays `BSI Score`
+  as the metric, and starts the minimum cutoff at `0.98`. The maximum remains
+  visible but fixed at `1.0`. BSI predictions are limited to protein families
+  with a trained Pfam-specific model.
 - Results are stored on disk under `results/` and can be reloaded at any time
   via the History panel.
 
