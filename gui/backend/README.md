@@ -53,6 +53,8 @@ Interactive docs are served at `http://localhost:8000/api/docs`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
+| GET | `/api/setup/status` | Inspect default-data readiness, required download size, and free disk space |
+| POST | `/api/setup/download` | Start or reconnect to the default-data setup job |
 | GET | `/api/databases` | List available compound databases |
 | GET | `/api/databases/{name}/representations` | List representations for a database |
 | GET | `/api/databases/{name}/columns` | Columns of an uploaded file (by temp ID) |
@@ -93,6 +95,11 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
 ## Notes
 
 - Jobs are stored in memory — state is lost on server restart.
+- Initial setup is launched through `prepare_ligq_2_data.py`. It downloads only
+  missing files from `gschottlender/LigQ_2` directly into `databases/`, includes
+  the reusable default Morgan/Tanimoto ZINC predicted-ligand cache and the BSI
+  models, and emits aggregate downloaded-byte and completed-file counters through
+  the same structured progress events used by other GUI jobs.
 - Uploaded files land in `gui/backend/uploads/` and can be deleted after the job finishes.
 - Result endpoints are read-only except `DELETE /api/results`, which permanently
   removes inactive search output folders while preserving queued or running jobs.

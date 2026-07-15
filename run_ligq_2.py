@@ -50,7 +50,7 @@ def ensure_dir(path: str | Path) -> Path:
 
 DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
-    "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.3"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.4"
 )
 LEGACY_DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
@@ -713,6 +713,12 @@ def main() -> None:
             proteins_needed=proteins_needed,
             force_rebuild_cache=args.force_rebuild_predicted_cache,
             load_dataframe=False,
+            progress_callback=lambda current, total: report_search_progress(
+                "predicted_cache",
+                current=current,
+                total=total,
+                unit="proteins",
+            ),
         )
         predicted_score_col = getattr(provider, "score_column", None)
 

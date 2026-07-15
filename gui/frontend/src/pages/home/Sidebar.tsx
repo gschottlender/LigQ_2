@@ -231,7 +231,7 @@ export function Sidebar({
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
   const [kValue, setKValue] = useState(5);
-  const [methodDomain, setMethodDomain] = useState(true);
+  const [methodDomain, setMethodDomain] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [fastaError, setFastaError] = useState('');

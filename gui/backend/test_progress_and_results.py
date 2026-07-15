@@ -54,6 +54,10 @@ def test_progress_emitter_produces_backend_job_progress(capsys) -> None:
         unit="compounds",
         context="test_database",
         eta_seconds=15,
+        downloaded_bytes=1_500_000_000,
+        download_total_bytes=5_934_643_835,
+        completed_files=12,
+        total_files=58,
     )
 
     line = capsys.readouterr().out.strip()
@@ -70,6 +74,10 @@ def test_progress_emitter_produces_backend_job_progress(capsys) -> None:
     assert progress.unit == "compounds"
     assert progress.context == "test_database"
     assert progress.eta_seconds == 15
+    assert progress.downloaded_bytes == 1_500_000_000
+    assert progress.download_total_bytes == 5_934_643_835
+    assert progress.completed_files == 12
+    assert progress.total_files == 58
 
 
 def test_progress_parser_rejects_non_events_and_invalid_json() -> None:

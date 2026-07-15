@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -159,6 +159,7 @@ def build_predicted_binding_data_incremental(
     provider,
     known_binding: pd.DataFrame,
     resume: bool = True,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> None:
     """Provider-agnostic incremental writer for per-protein predicted ligands."""
     cache_dir = Path(cache_dir)
@@ -197,19 +198,26 @@ def build_predicted_binding_data_incremental(
             writer.write_table(pf.read_row_group(rg_idx))
 
     total = len(proteins_to_process)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
     with tqdm(total=total, desc="Predicted proteins", unit="protein") as pbar:
+        def advance_progress(current: int) -> None:
+            pbar.update(1)
+            pbar.set_postfix(completadas=current, faltan=max(total - current, 0))
+            if progress_callback is not None:
+                progress_callback(current, total)
+
         for i, prot in enumerate(proteins_to_process, start=1):
             if prot in processed_proteins:
-                pbar.update(1)
-                pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
+                advance_progress(i)
                 continue
 
             ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
             if ligands is None or ligands.empty:
                 processed_proteins.add(prot)
                 _write_processed_index()
-                pbar.update(1)
-                pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
+                advance_progress(i)
                 continue
 
             ligands = ligands.copy()
@@ -227,8 +235,7 @@ def build_predicted_binding_data_incremental(
             processed_proteins.add(prot)
             _write_processed_index()
 
-            pbar.update(1)
-            pbar.set_postfix(completadas=i, faltan=max(total - i, 0))
+            advance_progress(i)
 
     if writer is not None:
         writer.close()

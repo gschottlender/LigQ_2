@@ -78,6 +78,30 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
+## First-time setup
+
+When the default LigQ 2 data is absent, the frontend displays **Initial setup
+required** before exposing the search interface. It reads the required file
+sizes from the official Hugging Face dataset, shows the missing download size
+and available space on the database disk, and disables installation when space
+is insufficient.
+
+Click **Download and prepare data** to start a background setup job. The job
+installs only missing files directly under `databases/`, reports progress in the
+browser as both downloaded GB/total GB and completed files/total files, and can
+resume after a failed or interrupted download. The complete GUI-ready dataset
+currently contains 63 required files totaling approximately 6.95 GB (6.47 GiB),
+including default ZINC/PDB-ChEMBL data, BLAST/Pfam resources, the reusable
+Morgan/Tanimoto ZINC predicted-ligand cache with minimum coverage `0.4`, and the
+supported BSI models. The live Hugging Face metadata remains the source of truth
+if the repository changes.
+
+Keep the backend running during this operation. When setup finishes, the
+frontend automatically reloads the available databases and opens the normal
+application.
+
+---
+
 ## Basic workflow
 
 **Run a search**
@@ -116,6 +140,9 @@ are preserved.
   and survive browser refreshes.
 - A failed job identifies the active step in a red status panel and includes the
   last error reported by the underlying script.
+- During **Preparing predicted ligands**, the status panel reports processed
+  candidate proteins as `X / total`; proteins already available in the compatible
+  cache are included in the initial count.
 - Search minimum cutoffs use the representation-specific pipeline defaults when
   available, rounded upward to two decimal places. Unknown representations start
   at `0.9`; the frontend enforces lower bounds of `0.2` for Tanimoto and `0.75`

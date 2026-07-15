@@ -101,6 +101,10 @@ export interface JobProgress {
   unit: string | null;
   context: string | null;
   eta_seconds: number | null;
+  downloaded_bytes: number | null;
+  download_total_bytes: number | null;
+  completed_files: number | null;
+  total_files: number | null;
 }
 
 export interface JobFailure {
@@ -113,7 +117,7 @@ export interface JobFailure {
 
 export interface Job {
   job_id: string;
-  job_type: 'search' | 'build_database' | 'add_representation';
+  job_type: 'setup' | 'search' | 'build_database' | 'add_representation';
   status: JobStatus;
   created_at: string;
   started_at: string | null;
@@ -129,4 +133,22 @@ export interface Job {
   completed_queries: string[];
   all_queries: string[];
   n_queries: number | null;
+}
+
+export interface SetupStatus {
+  ready: boolean;
+  state: 'ready' | 'required' | 'downloading';
+  repo_id: string;
+  revision: string;
+  required_download_bytes: number;
+  total_required_bytes: number;
+  available_bytes: number;
+  enough_space: boolean;
+  required_file_count: number;
+  total_file_count: number;
+  missing_paths: string[];
+  size_source: 'huggingface' | 'repository_snapshot';
+  metadata_error: string | null;
+  job_id: string | null;
+  job_status: JobStatus | null;
 }

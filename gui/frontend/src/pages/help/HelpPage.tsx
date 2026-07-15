@@ -191,6 +191,20 @@ export function HelpPage() {
                 FASTA file, and the system finds structurally similar proteins in PDB/ChEMBL, collects their known
                 ligands, and retrieves compounds from external databases with high molecular similarity.
               </p>
+              <Card>
+                <div className="flex items-center gap-2 text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200">
+                  <Database className="w-4 h-4 text-[#0d5c6b] dark:text-teal-300" />
+                  First-time initialization
+                </div>
+                <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
+                  If the default reference data is missing, LigQ 2 displays an initialization screen before the
+                  search interface. It calculates the required download from the official Hugging Face files,
+                  shows the available disk space, and installs only missing resources after you confirm. Keep the
+                  backend running while the background job downloads ZINC/PDB-ChEMBL data, BLAST/Pfam resources,
+                  the reusable default predicted-ligand cache, and supported BSI models. Databases become available
+                  automatically when setup completes.
+                </p>
+              </Card>
             </div>
           </section>
 
@@ -281,7 +295,9 @@ export function HelpPage() {
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>
                   Click <strong>Run Search</strong>. The status panel shows the current step, processed items,
-                  ETA, and elapsed time. Results appear progressively as each query completes.
+                  ETA, and elapsed time. During predicted-ligand preparation it also reports processed candidate
+                  proteins as X / total, including compatible cached proteins in the initial count. Results appear
+                  progressively as each query completes.
                 </Step>
                 <Step n={5}>
                   Collapse the sidebar with the{' '}

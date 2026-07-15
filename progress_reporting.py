@@ -29,6 +29,10 @@ class ProgressEmitter:
         unit: str | None = None,
         context: str | None = None,
         eta_seconds: int | None = None,
+        downloaded_bytes: int | None = None,
+        download_total_bytes: int | None = None,
+        completed_files: int | None = None,
+        total_files: int | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -52,5 +56,9 @@ class ProgressEmitter:
             "unit": unit,
             "context": context,
             "eta_seconds": eta_seconds,
+            "downloaded_bytes": None if downloaded_bytes is None else int(downloaded_bytes),
+            "download_total_bytes": None if download_total_bytes is None else int(download_total_bytes),
+            "completed_files": None if completed_files is None else int(completed_files),
+            "total_files": None if total_files is None else int(total_files),
         }
         print(f"{PROGRESS_PREFIX}{json.dumps(event, separators=(',', ':'))}", flush=True)

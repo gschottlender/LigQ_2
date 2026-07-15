@@ -23,8 +23,8 @@ LigQ 2 has three layers:
                      │  asyncio.create_subprocess_exec
 ┌────────────────────▼────────────────────────────────────┐
 │  Pipeline  (repository root)                            │
-│  run_ligq_2.py · build_compound_database.py             │
-│  add_new_representation.py                              │
+│  prepare_ligq_2_data.py · run_ligq_2.py                 │
+│  build_compound_database.py · add_new_representation.py │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -97,6 +97,27 @@ Responses are `application/zip` streams.
 | `GET` | `/api/databases` | `DatabaseContext.tsx` (on mount) |
 | `GET` | `/api/databases/{name}/representations` | `DatabaseContext.tsx` |
 
+#### Initial setup
+
+| Method | Endpoint | Caller |
+|---|---|---|
+| `GET` | `/api/setup/status` | `InitialSetupGate.tsx` (on mount and after completion) |
+| `POST` | `/api/setup/download` | `InitialSetupGate.tsx` |
+| `GET` | `/api/jobs/{job_id}` | `InitialSetupGate.tsx` (1-second polling) |
+
+The setup gate remains in front of all application views while required default
+data is missing. Status inspection obtains the required file list and sizes from
+the Hugging Face repository, compares it with `databases/`, and reports both the
+remaining download and free space on that filesystem. After a successful job,
+`DatabaseContext.refetchDatabases()` makes the newly installed ZINC database and
+representations available without a page reload.
+
+While the setup job is active, its structured progress includes aggregate
+`downloaded_bytes`/`download_total_bytes` and
+`completed_files`/`total_files`. Byte callbacks from concurrent Hugging Face
+downloads are throttled before being emitted, while every completed file forces
+an immediate update.
+
 #### File upload
 
 | Method | Endpoint | Caller |
@@ -160,9 +181,17 @@ compiled packages such as RDKit load the C++ runtime shipped with that environme
 
 | Job type | Script |
 |---|---|
+| `setup` | `prepare_ligq_2_data.py` |
 | `search` | `run_ligq_2.py` |
 | `build_database` | `build_compound_database.py` |
 | `add_representation` | `add_new_representation.py` |
+
+The setup script uses Hugging Face metadata to select only missing required
+files and downloads them with `local_dir=databases`. This avoids overwriting
+existing local data and avoids retaining a second full copy in the user's global
+Hugging Face cache. Its required set includes the default structural-search
+resources, the compatible Morgan/Tanimoto ZINC predicted-ligand cache with
+minimum coverage `0.4`, and the Pfam-specific BSI models exposed by the GUI.
 
 ### Argument construction (`gui/backend/routers/jobs.py`)
 
@@ -241,13 +270,19 @@ events prefixed with `LIGQ_PROGRESS `. Each JSON payload is validated as
 
 ```text
 step, label, step_index, step_count, percent,
-current, total, unit, context, eta_seconds
+current, total, unit, context, eta_seconds,
+downloaded_bytes, download_total_bytes, completed_files, total_files
 ```
 
 The frontend renders the current step, overall percentage, processed/total
 count, ETA, and elapsed time. Structured percentages are monotonic. A parsed
 `tqdm` line may enrich the current structured step with count and ETA, but it
 does not replace the script's overall percentage.
+
+During `predicted_cache`, `ensure_provider_cache()` reports cached requested
+proteins as the initial count and `build_predicted_binding_data_incremental()`
+advances the structured event after every remaining protein. The existing CLI
+`Predicted proteins` tqdm display remains available independently on stderr.
 
 The previous block, tqdm, and representation-build regexes remain as a legacy
 fallback for scripts launched without structured events.

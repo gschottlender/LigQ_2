@@ -38,3 +38,9 @@ async def delete_job(job_id: str) -> bool:
 
 def get_all_jobs() -> list[Job]:
     return sorted(jobs.values(), key=lambda j: j.created_at, reverse=True)
+
+
+async def get_latest_job_by_type(job_type: str) -> Optional[Job]:
+    async with _lock:
+        matching = [job for job in jobs.values() if job.job_type == job_type]
+        return max(matching, key=lambda job: job.created_at, default=None)

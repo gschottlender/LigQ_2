@@ -69,14 +69,23 @@ Default behavior:
 - Downloads missing default-ready base data from Hugging Face. For the default
   `zinc` provider this includes the required ZINC ligand table and
   `morgan_1024_r2` representation.
-- Downloads the optional precomputed ZINC predicted-ligand cache only when base
-  data has to be downloaded and `--skip-hf-predicted-cache` is not set. If base
-  data already exists locally but no compatible predicted cache exists, LigQ_2
-  computes the missing cache entries on demand.
+- Downloads the precomputed Morgan/Tanimoto ZINC predicted-ligand cache with
+  minimum coverage `0.4` when base data has to be downloaded and
+  `--skip-hf-predicted-cache` is not set. Compatible stricter searches reuse it;
+  if no compatible cache exists, LigQ_2 computes missing entries on demand.
 
 The automatic Hugging Face download path is default-ready for `zinc`. Custom
 providers are loaded from local `databases/compound_data/<provider>/` directories
 and are not created by `run_ligq_2.py`.
+
+The web application provides a dedicated first-time setup before search. When
+the default data is absent, it reports the live required download size and free
+space, then runs `prepare_ligq_2_data.py` as a background job. This installs only
+missing default files directly under `databases/`, including the reusable
+Morgan/Tanimoto ZINC predicted-ligand cache and the BSI family models exposed by
+the frontend. During installation the GUI reports downloaded bytes against the
+complete data size and completed files against the 63-file manifest, then
+refreshes the available GUI databases on completion.
 
 ### Known ligands only
 
@@ -144,7 +153,9 @@ ID becomes the output directory name under `search_results/`.
 
 No mandatory global precomputation step is required for predicted ligands.
 Predictions are computed only for candidate proteins needed by the current run
-and cached for reuse.
+and cached for reuse. Structured search progress reports the number of requested
+candidate proteins already cached and advances after each remaining protein is
+processed during the predicted-ligand step.
 
 ## Candidate Protein Modes
 
@@ -291,7 +302,7 @@ The cache is designed for large runs:
 
 A cache generated with a lower minimum threshold can serve stricter later
 queries if provider, method, and database fingerprint match. For example, the
-optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.3` can
+Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.4` can
 serve the current default `morgan_1024_r2` threshold `0.415094`.
 
 Use `--force-rebuild-predicted-cache` to discard and regenerate the compatible

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.config import ALLOWED_ORIGINS, PIPELINE_ROOT, UPLOADS_DIR
-from routers import databases, files, jobs, results
+from routers import databases, files, jobs, results, setup
 
 import logging
 
@@ -28,6 +28,7 @@ app.include_router(jobs.router)
 app.include_router(results.router)
 app.include_router(results.history_router)
 app.include_router(files.router)
+app.include_router(setup.router)
 
 
 @app.get("/api/health")
