@@ -78,6 +78,41 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
+## Running with Docker
+
+Docker provides the same frontend, API, and scientific pipeline in a CPU
+`linux/amd64` deployment. It works with Docker Engine on Linux and Docker
+Desktop on Windows (WSL2) or macOS. The native Conda/Node workflow above remains
+available and uses the same default repository paths.
+
+From the repository root:
+
+```bash
+# Build locally, or use `docker compose pull` for published GHCR images.
+docker compose build
+docker compose up -d
+```
+
+Open `http://localhost:8080`. The first visit detects missing databases and
+offers the same **Initial setup required** download flow. Data and job history
+are kept in Docker volumes; files placed in `work/` are shared with the host.
+
+Useful helpers are available for both shells:
+
+```bash
+./docker/ligq.sh status
+./docker/ligq.sh logs
+./docker/ligq.sh stop
+./docker/ligq.sh cli --input-fasta /work/query.fasta --output-dir /work/results
+```
+
+On Windows PowerShell, use `docker\ligq.ps1` with the same commands. Set
+`LIGQ_WEB_PORT` in `.env` if port 8080 is already occupied, and set `HF_TOKEN`
+only when Hugging Face authentication is required. The CPU image is intentionally
+separate from `environment.yml`; no CUDA or NVIDIA runtime is needed.
+
+---
+
 ## First-time setup
 
 When the default LigQ 2 data is absent, the frontend displays **Initial setup

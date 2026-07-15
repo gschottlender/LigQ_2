@@ -1,0 +1,25 @@
+name: base
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - pip
+  - blast=2.17
+  - hmmer=3.4
+  - rdkit=2025.09
+  - numpy=2.3
+  - pandas=2.3
+  - pyarrow=22
+  - tqdm=4.67
+  - requests=2.32
+  - huggingface_hub=0.36
+  - transformers=4.57
+  - fastapi>=0.110
+  - uvicorn>=0.27
+  - python-multipart>=0.0.9
+  - aiofiles>=23
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.9.1+cpu
+      - hf-xet==1.2.0

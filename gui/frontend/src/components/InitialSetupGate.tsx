@@ -7,7 +7,7 @@ import { Header } from './Header';
 import { JobFailurePanel, JobProgressPanel } from './JobProgressPanel';
 
 
-const TERMINAL_STATUSES = ['completed', 'completed_with_warnings', 'failed'];
+const TERMINAL_STATUSES = ['completed', 'completed_with_warnings', 'failed', 'cancelled', 'interrupted'];
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 GB';
@@ -67,7 +67,7 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setJob(data);
         if (TERMINAL_STATUSES.includes(data.status)) {
-          if (data.status === 'failed') {
+          if (['failed', 'cancelled', 'interrupted'].includes(data.status)) {
             setError(data.error || data.failure?.message || 'Initial setup failed.');
             setJobId(null);
           } else {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Job } from '../types';
 import { api } from '../lib/api';
 
-const TERMINAL_STATUSES = new Set(['completed', 'completed_with_warnings', 'failed']);
+const TERMINAL_STATUSES = new Set(['completed', 'completed_with_warnings', 'failed', 'cancelled', 'interrupted']);
 
 interface JobPollingOptions {
   onCompleted?: (job: Job) => void | Promise<void>;
@@ -31,7 +31,7 @@ export function useJobPolling(jobId: string | null, options: JobPollingOptions =
         if (!settled && TERMINAL_STATUSES.has(data.status)) {
           settled = true;
           if (interval) clearInterval(interval);
-          if (data.status === 'failed') failedRef.current?.(data);
+          if (['failed', 'cancelled', 'interrupted'].includes(data.status)) failedRef.current?.(data);
           else await completedRef.current?.(data);
         }
       } catch {

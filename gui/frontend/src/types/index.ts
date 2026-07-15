@@ -8,7 +8,9 @@ export type JobStatus =
   | 'partial_results'
   | 'completed'
   | 'completed_with_warnings'
-  | 'failed';
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
 
 export interface SearchResultsSummary {
   qseqid: string;

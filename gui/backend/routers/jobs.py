@@ -1,19 +1,23 @@
+from __future__ import annotations
+
 import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
-from core.config import PIPELINE_ROOT, UPLOADS_DIR
+from core.config import DATABASES_DIR, PIPELINE_ROOT, RESULTS_DIR, TEMP_RESULTS_DIR, UPLOADS_DIR
 from core import state
-from models.job import AddRepresentationRequest, Job, JobStatus
+from models.job import AddRepresentationRequest, Job, JobFailure, JobStatus
 from services.fs_inspector import (
     database_exists,
     representation_is_search_ready,
 )
-from services.job_runner import run_job
+from services.job_runner import enqueue_job, terminate_job_process
+from services.uploads import UploadTooLargeError, inspect_fasta, save_upload_stream
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -57,8 +61,8 @@ def _build_search_args(
     ligand_provider: str,
     search_representation: str,
     search_metric: str,
-    search_threshold: float | None,
-    search_threshold_max: float | None,
+    search_threshold: Optional[float],
+    search_threshold_max: Optional[float],
     use_sequence: bool,
     use_nearest_k: bool,
     nearest_k: int,
@@ -76,6 +80,8 @@ def _build_search_args(
         "--ligand-provider", ligand_provider,
         "--search-representation", effective_representation,
         "--search-metric", effective_metric,
+        "--data-dir", str(DATABASES_DIR),
+        "--temp-results-dir", str(TEMP_RESULTS_DIR / fasta_path.stem),
         "--progress-json",
     ]
     if use_bsi:
@@ -101,13 +107,12 @@ def _build_search_args(
 
 @router.post("/search", status_code=201)
 async def start_search(
-    background_tasks: BackgroundTasks,
     fasta_file: UploadFile = File(...),
     ligand_provider: str = Form(...),
     search_representation: str = Form(...),
     search_metric: str = Form(...),
-    search_threshold: float | None = Form(None),
-    search_threshold_max: float | None = Form(None),
+    search_threshold: Optional[float] = Form(None),
+    search_threshold_max: Optional[float] = Form(None),
     use_sequence: bool = Form(True),
     use_nearest_k: bool = Form(True),
     nearest_k: int = Form(5),
@@ -116,12 +121,6 @@ async def start_search(
     use_bsi: bool = Form(False),
     bsi_threshold: float = Form(BSI_DEFAULT_THRESHOLD),
 ):
-    content = await fasta_file.read()
-    if not content or not _valid_fasta(content):
-        return _err("invalid_fasta", "FASTA file is empty or contains no valid sequences.")
-    all_queries = _get_fasta_query_ids(content)
-    n_queries = len(all_queries)
-
     if not database_exists(ligand_provider):
         return _err("database_not_found", f"Ligand provider '{ligand_provider}' not found.")
 
@@ -168,12 +167,25 @@ async def start_search(
     job_id = str(uuid.uuid4())
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     fasta_path = UPLOADS_DIR / f"{job_id}.fasta"
-    fasta_path.write_bytes(content)
+    try:
+        uploaded_bytes = await save_upload_stream(fasta_file, fasta_path)
+    except UploadTooLargeError as exc:
+        return _err("file_too_large", str(exc), status_code=413)
+    if uploaded_bytes == 0:
+        fasta_path.unlink(missing_ok=True)
+        return _err("invalid_fasta", "FASTA file is empty or contains no valid sequences.")
+
+    valid_fasta, all_queries = inspect_fasta(fasta_path)
+    if not valid_fasta:
+        fasta_path.unlink(missing_ok=True)
+        return _err("invalid_fasta", "FASTA file is empty or contains no valid sequences.")
+    n_queries = len(all_queries)
 
     stem = re.sub(r"[^\w-]", "_", Path(fasta_file.filename or "queries").stem)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir_rel = f"results/{stem}_{timestamp}"
-    output_dir = PIPELINE_ROOT / output_dir_rel
+    result_name = f"{stem}_{timestamp}"
+    output_dir_rel = f"results/{result_name}"
+    output_dir = RESULTS_DIR / result_name
 
     args = _build_search_args(
         fasta_path=fasta_path,
@@ -202,7 +214,7 @@ async def start_search(
         n_queries=n_queries,
     )
     await state.set_job(job)
-    background_tasks.add_task(run_job, job_id, args, output_dir, n_queries)
+    await enqueue_job(job_id, args, output_dir, n_queries)
 
     return {"job_id": job_id, "status": "queued", "output_dir": output_dir_rel}
 
@@ -212,7 +224,6 @@ async def start_search(
 
 @router.post("/build-database", status_code=201)
 async def build_database(
-    background_tasks: BackgroundTasks,
     input_file: UploadFile = File(...),
     base_name: str = Form(...),
     id_column: str = Form(""),
@@ -243,11 +254,18 @@ async def build_database(
     job_id = str(uuid.uuid4())
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     upload_path = UPLOADS_DIR / f"{job_id}{suffix}"
-    upload_path.write_bytes(await input_file.read())
+    try:
+        uploaded_bytes = await save_upload_stream(input_file, upload_path)
+    except UploadTooLargeError as exc:
+        return _err("file_too_large", str(exc), status_code=413)
+    if uploaded_bytes == 0:
+        upload_path.unlink(missing_ok=True)
+        return _err("empty_file", "The uploaded compound file is empty.")
 
     args: list[str] = [
         str(PIPELINE_ROOT / "build_compound_database.py"),
         "--input-file", str(upload_path),
+        "--output-dir", str(DATABASES_DIR),
         "--base-name", base_name,
         "--progress-json",
     ]
@@ -261,7 +279,7 @@ async def build_database(
         created_at=datetime.now(timezone.utc),
     )
     await state.set_job(job)
-    background_tasks.add_task(run_job, job_id, args)
+    await enqueue_job(job_id, args)
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -271,7 +289,6 @@ async def build_database(
 
 @router.post("/add-representation", status_code=201)
 async def add_representation(
-    background_tasks: BackgroundTasks,
     body: AddRepresentationRequest,
 ):
     if not database_exists(body.base_name):
@@ -292,7 +309,7 @@ async def add_representation(
 
     args: list[str] = [
         str(PIPELINE_ROOT / "add_new_representation.py"),
-        "--output-dir", "databases",
+        "--output-dir", str(DATABASES_DIR),
         "--representation-type", body.representation_type,
         "--n-bits", str(body.n_bits),
         "--rep-name", body.rep_name,
@@ -321,7 +338,7 @@ async def add_representation(
         created_at=datetime.now(timezone.utc),
     )
     await state.set_job(job)
-    background_tasks.add_task(run_job, job_id, args)
+    await enqueue_job(job_id, args)
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -330,7 +347,7 @@ async def add_representation(
 
 
 @router.get("")
-async def list_jobs(limit: int = 20, job_type: str | None = None):
+async def list_jobs(limit: int = 20, job_type: Optional[str] = None):
     all_jobs = state.get_all_jobs()
     if job_type:
         all_jobs = [j for j in all_jobs if j.job_type == job_type]
@@ -356,8 +373,25 @@ async def cancel_job(job_id: str):
             404,
             detail={"error": "job_not_found", "message": f"Job '{job_id}' not found.", "details": None},
         )
-    async with state._lock:
-        proc = state.processes.get(job_id)
-        if proc:
-            proc.terminate()
-    await state.delete_job(job_id)
+    if job.status in {
+        JobStatus.completed,
+        JobStatus.completed_with_warnings,
+        JobStatus.failed,
+        JobStatus.cancelled,
+        JobStatus.interrupted,
+    }:
+        return
+
+    now = datetime.now(timezone.utc)
+    message = "The job was cancelled by the user."
+    await state.update_job(
+        job_id,
+        status=JobStatus.cancelled,
+        finished_at=now,
+        elapsed_seconds=(
+            (now - job.started_at).total_seconds() if job.started_at else None
+        ),
+        error=message,
+        failure=JobFailure(label="Cancelled", message=message),
+    )
+    await terminate_job_process(job_id)

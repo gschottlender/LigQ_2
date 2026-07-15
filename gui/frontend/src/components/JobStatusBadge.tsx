@@ -1,4 +1,4 @@
-import { AlertCircle, AlertTriangle, CheckCircle, Clock, Layers, Loader2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Ban, CheckCircle, Clock, Layers, Loader2, Power } from 'lucide-react';
 import type { JobStatus } from '../types';
 
 interface JobStatusBadgeProps {
@@ -54,6 +54,20 @@ const CONFIG: Record<
     borderClass: 'border-red-200 dark:border-red-700',
     icon: <AlertCircle className="w-3.5 h-3.5 shrink-0" />,
   },
+  cancelled: {
+    label: 'Cancelled',
+    bgClass: 'bg-gray-100 dark:bg-gray-700/60',
+    textClass: 'text-gray-600 dark:text-gray-300 font-dm-sans',
+    borderClass: 'border-gray-300 dark:border-gray-600',
+    icon: <Ban className="w-3.5 h-3.5 shrink-0" />,
+  },
+  interrupted: {
+    label: 'Interrupted',
+    bgClass: 'bg-orange-50 dark:bg-orange-900/20',
+    textClass: 'text-orange-700 dark:text-orange-400 font-dm-sans',
+    borderClass: 'border-orange-200 dark:border-orange-700',
+    icon: <Power className="w-3.5 h-3.5 shrink-0" />,
+  },
 };
 
 export function JobStatusBadge({ status, progressPercent, compact = false, errorMessage }: JobStatusBadgeProps) {
@@ -76,7 +90,7 @@ export function JobStatusBadge({ status, progressPercent, compact = false, error
     </span>
   );
 
-  if (status === 'failed' && errorMessage) {
+  if (['failed', 'cancelled', 'interrupted'].includes(status) && errorMessage) {
     return (
       <div className="flex items-center gap-2">
         {badge}

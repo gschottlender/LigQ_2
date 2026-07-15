@@ -3,12 +3,12 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from core import state
 from models.job import Job, JobStatus
-from services.job_runner import run_job
+from services.job_runner import enqueue_job
 from services.setup_service import inspect_setup_status, is_default_setup_ready, setup_job_args
 
 
@@ -31,7 +31,7 @@ async def setup_status():
 
 
 @router.post("/download", status_code=201)
-async def start_setup_download(background_tasks: BackgroundTasks):
+async def start_setup_download():
     latest = await _latest_setup_job()
     if latest and latest.status in ACTIVE_STATUSES:
         return JSONResponse(
@@ -57,5 +57,5 @@ async def start_setup_download(background_tasks: BackgroundTasks):
         created_at=datetime.now(timezone.utc),
     )
     await state.set_job(job)
-    background_tasks.add_task(run_job, job_id, setup_job_args())
+    await enqueue_job(job_id, setup_job_args())
     return {"job_id": job_id, "status": JobStatus.queued.value}

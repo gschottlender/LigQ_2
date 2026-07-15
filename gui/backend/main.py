@@ -2,8 +2,20 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from core.config import ALLOWED_ORIGINS, PIPELINE_ROOT, UPLOADS_DIR
+from contextlib import asynccontextmanager
+
+from core import state
+from core.config import (
+    ALLOWED_ORIGINS,
+    DATABASES_DIR,
+    PIPELINE_ROOT,
+    RESULTS_DIR,
+    STATE_DIR,
+    TEMP_RESULTS_DIR,
+    UPLOADS_DIR,
+)
 from routers import databases, files, jobs, results, setup
+from services.job_runner import start_worker, stop_worker
 
 import logging
 
@@ -13,7 +25,32 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 
-app = FastAPI(title="LigQ 2 API", version="0.1.0", docs_url="/api/docs", redoc_url="/api/redoc")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    for directory in (
+        DATABASES_DIR,
+        RESULTS_DIR,
+        UPLOADS_DIR,
+        TEMP_RESULTS_DIR,
+        STATE_DIR,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    await state.initialize()
+    await start_worker()
+    try:
+        yield
+    finally:
+        await stop_worker()
+
+
+app = FastAPI(
+    title="LigQ 2 API",
+    version="0.2.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,11 +71,6 @@ app.include_router(setup.router)
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "pipeline_root": str(PIPELINE_ROOT)}
-
-
-@app.on_event("startup")
-async def startup():
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @app.exception_handler(Exception)

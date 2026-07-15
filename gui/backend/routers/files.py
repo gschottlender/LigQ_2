@@ -4,6 +4,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from core.config import UPLOADS_DIR
 from services.fs_inspector import read_file_columns
+from services.uploads import UploadTooLargeError, save_upload_stream
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -26,7 +27,17 @@ async def upload_file(file: UploadFile = File(...)):
     file_id = str(uuid.uuid4())
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     dest = UPLOADS_DIR / f"{file_id}{suffix}"
-    dest.write_bytes(await file.read())
+    try:
+        await save_upload_stream(file, dest)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            413,
+            detail={
+                "error": "file_too_large",
+                "message": str(exc),
+                "details": None,
+            },
+        ) from exc
 
     columns: list[str] = []
     if suffix != ".smi":

@@ -11,6 +11,8 @@ class JobStatus(str, Enum):
     completed = "completed"
     completed_with_warnings = "completed_with_warnings"
     failed = "failed"
+    cancelled = "cancelled"
+    interrupted = "interrupted"
 
 
 class JobProgress(BaseModel):

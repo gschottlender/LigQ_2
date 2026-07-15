@@ -94,12 +94,19 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
 
 ## Notes
 
-- Jobs are stored in memory — state is lost on server restart.
+- Heavy jobs run through a single FIFO queue. Job metadata is persisted in
+  `gui/backend/state/jobs.sqlite3`; completed history survives restarts and
+  unfinished work is marked `interrupted` when the backend starts again.
+- Runtime paths can be overridden with the `LIGQ_PIPELINE_ROOT`,
+  `LIGQ_DATABASES_DIR`, `LIGQ_RESULTS_DIR`, `LIGQ_UPLOADS_DIR`,
+  `LIGQ_TEMP_RESULTS_DIR`, and `LIGQ_STATE_DIR` environment variables. Native
+  execution keeps the repository paths as defaults.
 - Initial setup is launched through `prepare_ligq_2_data.py`. It downloads only
   missing files from `gschottlender/LigQ_2` directly into `databases/`, includes
   the reusable default Morgan/Tanimoto ZINC predicted-ligand cache and the BSI
   models, and emits aggregate downloaded-byte and completed-file counters through
   the same structured progress events used by other GUI jobs.
-- Uploaded files land in `gui/backend/uploads/` and can be deleted after the job finishes.
+- Uploaded files are streamed to `gui/backend/uploads/` with a default 20 GiB
+  limit configurable through `LIGQ_MAX_UPLOAD_BYTES`.
 - Result endpoints are read-only except `DELETE /api/results`, which permanently
   removes inactive search output folders while preserving queued or running jobs.

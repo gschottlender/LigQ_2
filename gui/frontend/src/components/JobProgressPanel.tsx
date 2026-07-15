@@ -133,7 +133,10 @@ export function JobProgressPanel({
 
 export function JobFailurePanel({ failure, error, compact = false }: JobFailurePanelProps) {
   const hasStepNumber = failure?.step_index != null && failure.step_count != null;
-  const title = hasStepNumber
+  const isStopped = failure?.label === 'Cancelled' || failure?.label === 'Interrupted';
+  const title = isStopped
+    ? failure.label
+    : hasStepNumber
     ? `Failed at Step ${failure.step_index}/${failure.step_count}`
     : 'Job failed';
   const message = failure?.message || error || 'The process stopped unexpectedly.';

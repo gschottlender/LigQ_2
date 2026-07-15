@@ -14,7 +14,13 @@ import { Tooltip } from '../../components/Tooltip';
 
 type ResultTab = 'protein_ranking' | 'known_bindings' | 'predicted_ligands';
 
-const TERMINAL_STATUSES: JobStatus[] = ['completed', 'completed_with_warnings', 'failed'];
+const TERMINAL_STATUSES: JobStatus[] = [
+  'completed',
+  'completed_with_warnings',
+  'failed',
+  'cancelled',
+  'interrupted',
+];
 const QUERY_HAS_RESULTS: JobStatus[] = ['partial_results', 'completed', 'completed_with_warnings'];
 
 interface HistoryEntry {
