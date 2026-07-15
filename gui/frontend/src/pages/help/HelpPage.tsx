@@ -224,7 +224,10 @@ export function HelpPage() {
                     Enables the Bioactivity Similarity Index for protein families with a trained Pfam-specific
                     model. BSI fixes the representation to{' '}
                     <span className="font-jetbrains-mono text-xs">morgan_1024_r2</span> and reports a learned{' '}
-                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity.
+                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity. To avoid
+                    prohibitively expensive domain-wide expansion, BSI mode supports only{' '}
+                    <InfoBadge label="Sequence" color="teal" /> and{' '}
+                    <InfoBadge label="Nearest K" color="blue" />; Domain is cleared and disabled.
                     <span className="mt-2 block">
                       <strong className="font-semibold text-gray-700 dark:text-gray-300">
                         Supported protein families:
@@ -245,20 +248,29 @@ export function HelpPage() {
                     Similarity threshold for predicted ligands. Only compounds with similarity inside this range
                     are included (0.0 to 1.0). The minimum uses the selected representation's pipeline default,
                     rounded upward to two decimals; representations without a registered default start at 0.9.
-                    The maximum starts at 1.0, and both controls advance in 0.01 increments. In BSI mode, the
-                    minimum starts at 0.98 and remains adjustable, while the maximum is fixed at 1.0.
+                    In the frontend, the minimum cannot be lowered below 0.20 for Tanimoto representations or
+                    0.75 for Cosine representations. The maximum starts at 1.0, and both controls advance in
+                    0.01 increments. In BSI mode, the minimum starts at 0.98, cannot be lowered below 0.97, and
+                    remains adjustable up to 1.0; the maximum is fixed at 1.0.
                   </Param>
                   <Param name="Input FASTA">
                     Click the folder icon to upload your <span className="font-jetbrains-mono text-xs">.fasta</span>,{' '}
                     <span className="font-jetbrains-mono text-xs">.fa</span>, or{' '}
                     <span className="font-jetbrains-mono text-xs">.faa</span> file.
-                    Each sequence in the file becomes one query.
+                    Each sequence in the file becomes one query. The frontend counts sequences immediately and
+                    displays the count alongside the current maximum. Files above the default limit of 200 are
+                    blocked from submission.
                   </Param>
                   <Param name="Method">
                     Check one or more search strategies:{' '}
                     <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
-                    <InfoBadge label="Nearest K" color="blue" /> (set K),{' '}
+                    <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
                     <InfoBadge label="Domain" color="amber" /> (HMMER).
+                  </Param>
+                  <Param name="Advanced options">
+                    Change the maximum number of FASTA sequences accepted by the frontend. The default is 200,
+                    and any positive integer can be used. Increasing this limit can make searches take
+                    substantially longer to complete.
                   </Param>
                 </div>
               </Card>
@@ -372,11 +384,15 @@ export function HelpPage() {
                 <Step n={3}>
                   Click <strong>Load</strong> next to any run to restore its full results instantly.
                 </Step>
+                <Step n={4}>
+                  To free disk space, click <strong>Clear history</strong> at the bottom of the panel and confirm
+                  the permanent deletion. Results belonging to an active search are preserved.
+                </Step>
               </div>
               <p className="text-xs font-dm-sans text-gray-400 dark:text-gray-500">
                 Results are stored under{' '}
                 <span className="font-jetbrains-mono">results/{'<job_id>'}/search_results/</span> in the
-                project directory.
+                project directory. Clearing history cannot be undone.
               </p>
             </div>
           </section>

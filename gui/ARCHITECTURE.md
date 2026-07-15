@@ -118,6 +118,7 @@ building a database.
 | Method | Endpoint | Caller |
 |---|---|---|
 | `GET` | `/api/results` | `VisualizeResults.tsx` (History panel) |
+| `DELETE` | `/api/results` | `VisualizeResults.tsx` (Clear history confirmation) |
 
 ### Polling strategy
 
@@ -314,11 +315,22 @@ For each valid representation, calls `get_metric_from_manifest()` to determine
 the similarity metric and loads its optional default cutoff from
 `search_threshold_defaults.json`.
 The search sidebar rounds this default upward to two decimal places and exposes
-both cutoff controls in `0.01` increments; the shared pipeline value remains exact.
+both cutoff controls in `0.01` increments. It applies frontend-only minimums of
+`0.2` for Tanimoto representations and `0.75` for Cosine representations; the
+shared pipeline and backend validation remain unchanged.
+The browser also counts FASTA headers after upload and compares the count with a
+frontend-only configurable maximum (`200` by default). Files above the current
+limit remain visible but cannot be submitted until the user raises the value in
+the collapsible Advanced options section or uploads a smaller file. This limit is
+not part of the API contract; increasing it may significantly extend job runtime.
+The Nearest K numeric control is likewise constrained only in the frontend to
+integer values from `1` through `15`; the API and CLI remain unchanged.
 When BSI is enabled, the sidebar fixes the representation to `morgan_1024_r2`,
-shows `BSI Score`, uses a separate minimum cutoff initialized to `0.98`, and
-disables the maximum cutoff at `1.0`. Disabling BSI restores the structural
-representation, metric, and cutoff state.
+shows `BSI Score`, uses a separate minimum cutoff initialized to `0.98` and
+bounded below at `0.97`, and disables the maximum cutoff at `1.0`. It also clears
+and disables Domain search, leaving Sequence and Nearest K as the only selectable
+methods. This method restriction is frontend-only. Disabling BSI restores the
+structural representation, metric, cutoff, and Domain controls.
 
 **`get_metric_from_manifest(rep_path)`**  
 Checks the sidecar JSON in priority order:
@@ -359,6 +371,12 @@ section 6).
 `GET /api/results` (handled by `history_router` in
 `gui/backend/routers/results.py`) scans `RESULTS_DIR` on disk and returns
 folder metadata without loading any TSV content.
+
+`DELETE /api/results` permanently removes inactive result directories. Before
+deleting, the backend derives protected output paths from queued, running, and
+partial search jobs in memory. The response lists deleted, protected, and failed
+folders so the frontend can refresh History without hiding partial failures. The
+frontend exposes this operation only after a destructive-action confirmation.
 
 When the frontend loads a past result, it calls
 `GET /api/jobs/{result_folder_name}/summary`. The helper
@@ -444,7 +462,7 @@ flowchart LR
 
 | Component | API calls | Notes |
 |---|---|---|
-| `VisualizeResults.tsx` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/summary`, `GET /api/results` | Manages search state, polling interval, history panel |
+| `VisualizeResults.tsx` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/summary`, `GET`/`DELETE /api/results` | Manages search state, polling interval, history panel, and confirmed history deletion |
 | `Sidebar.tsx` | `POST /api/jobs/search` | Submits `multipart/form-data`; reads database/representation lists from `DatabaseContext` |
 | `QueryList.tsx` | — | Receives query data from `VisualizeResults`; uses a bounded, independently scrollable table with a sticky status header |
 | `MetricCards.tsx` | — | Aggregates counts from the summary data passed via props |

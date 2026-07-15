@@ -69,6 +69,8 @@ Interactive docs are served at `http://localhost:8000/api/docs`.
 | GET | `/api/jobs/{job_id}/queries/{query_id}/predicted-ligands` | Predicted ligands table |
 | GET | `/api/jobs/{job_id}/download` | Download all TSVs as ZIP |
 | GET | `/api/jobs/{job_id}/queries/{query_id}/download` | Download one query's TSVs as ZIP |
+| GET | `/api/results` | List stored search result folders |
+| DELETE | `/api/results` | Delete inactive search result folders after frontend confirmation |
 
 ## Polling pattern (frontend)
 
@@ -92,4 +94,5 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
 
 - Jobs are stored in memory — state is lost on server restart.
 - Uploaded files land in `gui/backend/uploads/` and can be deleted after the job finishes.
-- The backend never modifies pipeline output files — it only reads them.
+- Result endpoints are read-only except `DELETE /api/results`, which permanently
+  removes inactive search output folders while preserving queued or running jobs.

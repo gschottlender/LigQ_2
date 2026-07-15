@@ -103,7 +103,9 @@ Incomplete representations are hidden from Search and can be processed again.
 
 **Restore a past search**
 Click **History** (top right of Run Search) and **Load** next to any
-previous run.
+previous run. Use **Clear history** at the bottom of the panel to permanently
+delete stored result folders after confirming the action; active search outputs
+are preserved.
 
 ---
 
@@ -116,13 +118,23 @@ previous run.
   last error reported by the underlying script.
 - Search minimum cutoffs use the representation-specific pipeline defaults when
   available, rounded upward to two decimal places. Unknown representations start
-  at `0.9`; the maximum starts at `1.0`, and both controls use `0.01` increments.
+  at `0.9`; the frontend enforces lower bounds of `0.2` for Tanimoto and `0.75`
+  for Cosine representations. The maximum starts at `1.0`, and both controls use
+  `0.01` increments.
+- After FASTA validation, the sidebar displays the sequence count and the current
+  frontend limit. The default maximum is `200`; larger files are blocked until
+  the limit is increased under **Advanced options**. Large multi-sequence inputs
+  can substantially increase total search time.
+- The frontend restricts the Nearest K value to integers from `1` through `15`.
 - Enabling BSI fixes the representation to `morgan_1024_r2`, displays `BSI Score`
-  as the metric, and starts the minimum cutoff at `0.98`. The maximum remains
-  visible but fixed at `1.0`. BSI predictions are limited to protein families
-  with a trained Pfam-specific model.
+  as the metric, and starts the minimum cutoff at `0.98`, with a lower bound of
+  `0.97`. The maximum remains visible but fixed at `1.0`. BSI predictions are
+  limited to protein families with a trained Pfam-specific model. In the GUI,
+  BSI allows only Sequence and Nearest K search; Domain is cleared and disabled
+  to avoid prohibitively slow domain-wide expansion.
 - Results are stored on disk under `results/` and can be reloaded at any time
-  via the History panel.
+  via the History panel. Clearing history permanently removes inactive result
+  folders to free disk space.
 
 ## Att gitignore
 

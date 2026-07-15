@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Clock, FileDigit, FolderOpen, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { AlertTriangle, Clock, FileDigit, FolderOpen, Loader2, Trash2, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { MetricCards } from './MetricCards';
 import { QueryList } from './QueryList';
@@ -9,6 +10,7 @@ import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, Jo
 import type { SelectedItem } from './SelectedResultPanel';
 import { SelectedResultPanel } from './SelectedResultPanel';
 import { api } from '../../lib/api';
+import { Tooltip } from '../../components/Tooltip';
 
 type ResultTab = 'protein_ranking' | 'known_bindings' | 'predicted_ligands';
 
@@ -21,6 +23,13 @@ interface HistoryEntry {
   n_queries: number;
   queries: string[];
   status: 'completed' | 'partial';
+}
+
+interface ClearHistoryResponse {
+  deleted_count: number;
+  deleted_results: string[];
+  skipped_active: string[];
+  failed_results: string[];
 }
 
 function toSummary(q: Record<string, unknown>): SearchResultsSummary {
@@ -82,6 +91,9 @@ export function VisualizeResults() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
+  const [historyClearing, setHistoryClearing] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const resultsPanelRef = useRef<HTMLDivElement>(null);
 
@@ -135,8 +147,46 @@ export function VisualizeResults() {
     }
   }, []);
 
+  const handleClearHistory = useCallback(async () => {
+    setHistoryClearing(true);
+    setHistoryError(null);
+    try {
+      const { data } = await api.delete<ClearHistoryResponse>('/results');
+      await fetchHistory();
+
+      if (activeResultFolder && data.deleted_results.includes(activeResultFolder)) {
+        setResults([]);
+        setSelectedQueryId(null);
+        setSelectedItem(null);
+        setJobId(null);
+        setSearchState('idle');
+        setActiveResultTab('protein_ranking');
+        setActiveResultFolder(null);
+        setProgressPercent(0);
+        setProgressMessage('');
+        setJobProgress(null);
+        setJobFailure(null);
+        setJobError(null);
+        setJobStartedAt(null);
+      }
+
+      setShowClearHistoryConfirm(false);
+      if (data.failed_results.length > 0) {
+        setHistoryError(`Could not delete ${data.failed_results.length} result folder(s).`);
+      }
+    } catch (error: unknown) {
+      const message =
+        (error as { response?: { data?: { message?: string } } })?.response?.data?.message
+        ?? 'Search history could not be cleared. Please try again.';
+      setHistoryError(message);
+    } finally {
+      setHistoryClearing(false);
+    }
+  }, [activeResultFolder, fetchHistory]);
+
   // ── Auto-load most recent result on mount ─────────────────────────────────
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchHistory().then((entries) => {
       if (entries.length > 0) {
         loadResultFromDisk(entries[0].result_id);
@@ -147,7 +197,7 @@ export function VisualizeResults() {
 
   // ── Close history panel on outside click ─────────────────────────────────
   useEffect(() => {
-    if (!showHistory) return;
+    if (!showHistory || showClearHistoryConfirm) return;
     const handler = (e: MouseEvent) => {
       if (historyPanelRef.current && !historyPanelRef.current.contains(e.target as Node)) {
         setShowHistory(false);
@@ -155,7 +205,19 @@ export function VisualizeResults() {
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showHistory]);
+  }, [showClearHistoryConfirm, showHistory]);
+
+  useEffect(() => {
+    if (!showClearHistoryConfirm) return;
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !historyClearing) {
+        setShowClearHistoryConfirm(false);
+        setHistoryError(null);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [historyClearing, showClearHistoryConfirm]);
 
   // ── Polling effect ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -280,8 +342,105 @@ export function VisualizeResults() {
           </div>
         ))}
       </div>
+
+      <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-700/60">
+        <div className="flex justify-end">
+          <Tooltip content="Permanently deletes stored search results to free disk space. Active searches are preserved." position="left">
+            <button
+              type="button"
+              disabled={historyLoading || historyClearing || history.length === 0}
+              onClick={() => {
+                setHistoryError(null);
+                setShowClearHistoryConfirm(true);
+              }}
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-1.5
+                text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed
+                disabled:opacity-40 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Clear history
+            </button>
+          </Tooltip>
+        </div>
+        {historyError && !showClearHistoryConfirm && (
+          <p className="mt-2 text-right text-xs text-red-500 dark:text-red-400">{historyError}</p>
+        )}
+      </div>
     </div>
   );
+
+  const ClearHistoryDialog = showClearHistoryConfirm
+    ? createPortal(
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 backdrop-blur-[1px]"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !historyClearing) {
+              setShowClearHistoryConfirm(false);
+              setHistoryError(null);
+            }
+          }}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="clear-history-title"
+            aria-describedby="clear-history-description"
+            className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl
+              dark:border-gray-700 dark:bg-gray-800"
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600
+                dark:bg-red-950/50 dark:text-red-400">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 id="clear-history-title" className="text-base font-semibold text-gray-800 dark:text-gray-100">
+                  Clear search history?
+                </h2>
+                <p id="clear-history-description" className="mt-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                  This permanently deletes all stored search result folders and cannot be undone. Results from
+                  an active search will be preserved.
+                </p>
+              </div>
+            </div>
+
+            {historyError && (
+              <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                {historyError}
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={historyClearing}
+                onClick={() => {
+                  setShowClearHistoryConfirm(false);
+                  setHistoryError(null);
+                }}
+                className="cursor-pointer rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600
+                  transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50
+                  dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={historyClearing}
+                onClick={handleClearHistory}
+                className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold
+                  text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {historyClearing && <Loader2 className="h-4 w-4 animate-spin" />}
+                Clear history
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )
+    : null;
 
   return (
     <section className="flex flex-col sm:flex-row min-h-[calc(100vh-80px)] sm:h-[calc(100vh-80px)] overflow-visible sm:overflow-hidden">
@@ -384,6 +543,7 @@ export function VisualizeResults() {
           onClose={() => setSelectedItem(null)}
         />
       )}
+      {ClearHistoryDialog}
     </section>
   );
 }
