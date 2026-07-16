@@ -148,6 +148,8 @@ application.
 **Inspect results**
 - Click a query row to load its results below.
 - Switch between **Protein Ranking**, **Known Bindings**, and **Predicted Ligands** tabs.
+- Protein Ranking includes only proteins that contribute at least one retained
+  known or predicted ligand after per-query deduplication.
 - Click any compound to open the detail panel with 2D structure, Download SDF, and 3D Viewer.
 
 **Add a compound database**

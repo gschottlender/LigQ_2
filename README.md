@@ -217,9 +217,9 @@ Default representation and metric:
 
 For each recovered candidate protein, LigQ_2 uses its curated PDB/ChEMBL
 ligands as query compounds and searches the selected provider database for
-similar or BSI-compatible ligands. Candidate proteins without curated known
-ligands can still appear in `protein_ranking.tsv`, but they cannot seed a
-predicted-ligand search.
+similar or BSI-compatible ligands. `protein_ranking.tsv` retains only proteins
+that contribute at least one known or predicted ligand after per-query ligand
+deduplication; proteins without a retained ligand are excluded.
 
 Supported provider types:
 
@@ -396,7 +396,8 @@ Per-query directory, when the query has candidates or ligand results:
 
 Per-query files are written only when they contain information:
 
-- `protein_ranking.tsv` is written when candidate proteins are recovered.
+- `protein_ranking.tsv` is written when a per-query result directory exists;
+  it can be empty when recovered candidates contribute no retained ligands.
 - `known_ligands.tsv` is written when known ligands are found.
 - `predicted_ligands.tsv` is written when predicted ligands are found.
 - `predicted_ligands.tsv` is always absent in `--known-only` mode.
@@ -406,15 +407,17 @@ If a query has no recovered candidates and no ligands, it remains represented in
 
 ### `protein_ranking.tsv`
 
-Ranks candidate proteins recovered for the query.
+Ranks recovered proteins that contribute at least one retained known or
+predicted ligand for the query.
 
 - Sequence and nearest-K candidates are ranked by BLAST evidence.
 - Domain candidates with BLAST evidence are ranked above domain-only candidates.
 - Domain-only candidates are ranked by Pfam/HMMER evidence.
 - `n_shared_domains` reports shared Pfam domains when available.
 
-This table is informational; it does not change ligand retrieval or cache
-behavior.
+Proteins whose ligands are all removed by filtering or assigned to a
+higher-ranked protein during duplicate-ligand collapse are excluded. The table
+does not change ligand retrieval or cache behavior.
 
 ### `known_ligands.tsv`
 
@@ -439,7 +442,8 @@ evidence priority is `sequence`, then `nearest_k`, then `domain`.
 
 ### `search_results_summary.tsv`
 
-The summary reports per-query counts split by candidate source:
+The summary reports per-query counts split by candidate source. Protein counts
+refer to the ligand-contributing proteins retained in `protein_ranking.tsv`:
 
 - `n_proteins_sequence`, `n_proteins_nearest_k`, `n_proteins_domain`
 - `n_known_ligands_sequence`, `n_known_ligands_nearest_k`,

@@ -293,7 +293,7 @@ export function ProteinRankingTable({ data }: ProteinRankingTableProps) {
       <div className="flex items-start gap-2 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-700 rounded-xl text-xs text-blue-700 dark:text-blue-300">
         <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
         <span>
-          Candidate proteins ranked by BLAST evidence. Domain-only candidates are ranked by Pfam/HMMER score.
+          Proteins contributing at least one retained ligand, ranked by BLAST evidence. Domain-only proteins are ranked by Pfam/HMMER score.
           <span className="text-blue-400 dark:text-blue-200"> This table is informational and does not affect ligand retrieval.</span>
         </span>
       </div>
