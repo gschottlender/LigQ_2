@@ -441,6 +441,10 @@ export function HelpPage() {
                   progress; the default Morgan representation is built automatically.
                 </Step>
                 <Step n={5}>
+                  To stop a long job, click <strong>Cancel</strong> and confirm. LigQ 2 terminates the workers,
+                  removes the incomplete staging database, and keeps the form ready for another attempt.
+                </Step>
+                <Step n={6}>
                   Once complete, the new database appears immediately in the Search sidebar dropdown.
                 </Step>
               </div>
@@ -461,7 +465,9 @@ export function HelpPage() {
                 <Step n={2}>
                   Choose a <strong>Representation type</strong>:{' '}
                   <InfoBadge label="RDKit fingerprint" color="teal" /> or{' '}
-                  <InfoBadge label="HuggingFace embedding" color="blue" />
+                  <InfoBadge label="HuggingFace embedding" color="blue" />. ChemBERTa embedding generation
+                  is enabled only when the graphical application detects a usable CUDA GPU. This restriction
+                  does not apply to command-line workflows.
                 </Step>
                 <Step n={3}>
                   Choose a <strong>Representation preset</strong>. The recommended metric (Tanimoto or Cosine)
@@ -476,16 +482,21 @@ export function HelpPage() {
                   Click <strong>Process representation</strong>. This computes fingerprints or embeddings for
                   every compound in the database while showing the active database, count, ETA, and elapsed time.
                   <span className="ml-1 text-amber-600 dark:text-amber-400">
-                    RDKit fingerprints take minutes; HuggingFace embeddings may take several hours on large databases.
+                    RDKit fingerprints take minutes; HuggingFace embeddings require a CUDA GPU in the graphical interface.
                   </span>
                 </Step>
                 <Step n={6}>
+                  While the job is queued or running, click <strong>Cancel</strong> and confirm to stop it.
+                  Incomplete files from the active phase are removed. A representation copy that already
+                  completed successfully is kept, so a future retry only builds the missing compatible copy.
+                </Step>
+                <Step n={7}>
                   When complete, the representation has both a <strong>.dat</strong> and a{' '}
                   <strong>.meta.json</strong> file in the selected database and in the internal{' '}
                   <strong>pdb_chembl</strong> database. Only then does it appear in the Search sidebar.
                   An incomplete representation stays hidden and can be processed again.
                 </Step>
-                <Step n={7}>
+                <Step n={8}>
                   If processing stops, a red panel identifies the failed step and shows the script error
                   so you can correct the cause before retrying.
                 </Step>

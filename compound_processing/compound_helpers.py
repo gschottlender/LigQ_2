@@ -21,6 +21,7 @@ from typing import Callable, Optional, Dict, List, Tuple
 import os
 import multiprocessing as mp
 import json
+import re
 import time
 from contextlib import nullcontext
 import numpy as np
@@ -47,6 +48,55 @@ _RDKIT_FP_WORKER_CFG: Dict[str, int | str] = {
 }
 
 _TQDM_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+_STAGING_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _representation_output_paths(
+    reps_dir: Path,
+    name: str,
+    staging_token: Optional[str],
+) -> tuple[Path, Path, Path, Path, Optional[Path]]:
+    """Resolve final and job-scoped representation paths.
+
+    GUI resource jobs write to partial files and publish a complete data/meta
+    pair only after computation succeeds. The publishing marker makes the
+    two-file promotion recoverable if the process is cancelled between the
+    atomic renames.
+    """
+    final_data = reps_dir / f"{name}.dat"
+    final_meta = reps_dir / f"{name}.meta.json"
+    if staging_token is None:
+        return final_data, final_meta, final_data, final_meta, None
+    if not _STAGING_TOKEN_RE.fullmatch(staging_token):
+        raise ValueError("staging_token must contain only letters, digits, underscores, and hyphens.")
+
+    partial_data = reps_dir / f".{name}.dat.partial.{staging_token}"
+    partial_meta = reps_dir / f".{name}.meta.json.partial.{staging_token}"
+    publishing_marker = reps_dir / f".{name}.publishing.{staging_token}"
+    partial_data.unlink(missing_ok=True)
+    partial_meta.unlink(missing_ok=True)
+    publishing_marker.unlink(missing_ok=True)
+    return final_data, final_meta, partial_data, partial_meta, publishing_marker
+
+
+def _publish_representation_pair(
+    *,
+    final_data: Path,
+    final_meta: Path,
+    staged_data: Path,
+    staged_meta: Path,
+    publishing_marker: Optional[Path],
+) -> None:
+    if publishing_marker is None:
+        return
+
+    publishing_marker.write_text(
+        json.dumps({"data": final_data.name, "meta": final_meta.name}),
+        encoding="utf-8",
+    )
+    os.replace(staged_data, final_data)
+    os.replace(staged_meta, final_meta)
+    publishing_marker.unlink()
 
 # ---------------------------------------------------------------------------
 # 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
@@ -540,6 +590,7 @@ def _build_packed_bit_representation(
     pool_worker_fn,
     meta_extra: Dict[str, object],
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """Shared parallel builder for packed bit-vector representations."""
     root = Path(root)
@@ -559,7 +610,9 @@ def _build_packed_bit_representation(
         n_jobs = max(1, min(int(n_jobs), cpu_avail))
 
     n_bytes = (n_bits + 7) // 8
-    data_path = reps_dir / f"{name}.dat"
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
 
     mm = np.memmap(
         data_path,
@@ -603,6 +656,7 @@ def _build_packed_bit_representation(
                 progress_callback(end, n)
 
     mm.flush()
+    del mm
 
     elapsed_s = float(time.perf_counter() - t0)
     ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
@@ -624,9 +678,15 @@ def _build_packed_bit_representation(
     }
     meta.update(meta_extra)
 
-    meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
 
 
 def build_morgan_representation(
@@ -638,6 +698,7 @@ def build_morgan_representation(
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """Compute parallel Morgan fingerprints and persist as packed bits."""
     _build_packed_bit_representation(
@@ -652,6 +713,7 @@ def build_morgan_representation(
         pool_worker_fn=_morgan_fp_packed_or_zero,
         meta_extra={"radius": int(radius), "fingerprint_type": "morgan"},
         progress_callback=progress_callback,
+        staging_token=staging_token,
     )
 
 
@@ -665,6 +727,7 @@ def build_rdkit_representation(
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """
     Compute RDKit-based fingerprints in parallel and persist as packed bits.
@@ -705,6 +768,7 @@ def build_rdkit_representation(
         pool_worker_fn=_rdkit_fp_packed_or_zero,
         meta_extra={"fingerprint_type": fp_kind, "radius": int(radius)},
         progress_callback=progress_callback,
+        staging_token=staging_token,
     )
 
 
@@ -722,6 +786,7 @@ def build_huggingface_representation(
     trust_remote_code: bool = False,
     revision: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     root = Path(root)
     reps_dir = root / "reps"
@@ -765,7 +830,9 @@ def build_huggingface_representation(
         )
 
     dim = hidden_size
-    data_path = reps_dir / f"{name}.dat"
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
 
     mm = np.memmap(
         data_path,
@@ -876,6 +943,7 @@ def build_huggingface_representation(
             progress_callback(end, n)
 
     mm.flush()
+    del mm
     elapsed_s = float(time.perf_counter() - t0)
     ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
 
@@ -899,9 +967,15 @@ def build_huggingface_representation(
         "invalid_smiles_fraction": float(invalid_smiles / n),
         "embed_failures": int(embed_failures),
     }
-    meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
 
 
 def build_chemberta_representation(

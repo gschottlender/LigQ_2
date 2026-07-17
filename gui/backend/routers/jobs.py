@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from datetime import datetime, timezone
@@ -16,7 +17,9 @@ from services.fs_inspector import (
     database_exists,
     representation_is_search_ready,
 )
+from services.hardware import get_hardware_capabilities
 from services.job_runner import enqueue_job, terminate_job_process
+from services.resource_artifacts import RESOURCE_JOB_TYPES, cleanup_resource_job_artifacts
 from services.uploads import UploadTooLargeError, inspect_fasta, save_upload_stream
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -24,6 +27,7 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 BSI_REPRESENTATION = "morgan_1024_r2"
 BSI_CLI_METRIC = "tanimoto"
 BSI_DEFAULT_THRESHOLD = 0.98
+_ACTIVE_JOB_STATUSES = {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
 
 
 def _err(code: str, message: str, status_code: int = 400, details=None):
@@ -268,6 +272,7 @@ async def build_database(
         "--output-dir", str(DATABASES_DIR),
         "--base-name", base_name,
         "--progress-json",
+        "--staging-token", job_id,
     ]
     if suffix != ".smi":
         args += ["--id-column", id_column, "--smiles-column", smiles_column]
@@ -291,6 +296,26 @@ async def build_database(
 async def add_representation(
     body: AddRepresentationRequest,
 ):
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", body.rep_name):
+        return _err(
+            "invalid_name",
+            "rep_name must start with an alphanumeric character and contain only letters, digits, dots, underscores, and hyphens.",
+        )
+
+    if body.representation_type == "huggingface":
+        if not body.model_id:
+            return _err("missing_field", "model_id is required for huggingface representation.")
+        capabilities = await asyncio.to_thread(get_hardware_capabilities)
+        if not capabilities.cuda_available:
+            return _err(
+                "gpu_required",
+                (
+                    "A CUDA-capable GPU is required to generate HuggingFace embeddings "
+                    "through the graphical interface. Command-line generation remains unrestricted."
+                ),
+                status_code=422,
+            )
+
     if not database_exists(body.base_name):
         return _err("database_not_found", f"Database '{body.base_name}' not found.")
 
@@ -304,9 +329,7 @@ async def add_representation(
     if body.representation_type == "rdkit" and not body.rdkit_fp_kind:
         return _err("missing_field", "rdkit_fp_kind is required for rdkit representation.")
 
-    if body.representation_type == "huggingface" and not body.model_id:
-        return _err("missing_field", "model_id is required for huggingface representation.")
-
+    job_id = str(uuid.uuid4())
     args: list[str] = [
         str(PIPELINE_ROOT / "add_new_representation.py"),
         "--output-dir", str(DATABASES_DIR),
@@ -314,6 +337,7 @@ async def add_representation(
         "--n-bits", str(body.n_bits),
         "--rep-name", body.rep_name,
         "--progress-json",
+        "--staging-token", job_id,
     ]
     if body.representation_type == "rdkit" and body.rdkit_fp_kind:
         args += ["--rdkit-fp-kind", body.rdkit_fp_kind]
@@ -330,7 +354,6 @@ async def add_representation(
         args += ["--base-name", body.base_name]
         args += ["--ensure-local-compatible"]
 
-    job_id = str(uuid.uuid4())
     job = Job(
         job_id=job_id,
         job_type="add_representation",
@@ -384,8 +407,9 @@ async def cancel_job(job_id: str):
 
     now = datetime.now(timezone.utc)
     message = "The job was cancelled by the user."
-    await state.update_job(
+    cancelled_job = await state.update_job_if_status(
         job_id,
+        _ACTIVE_JOB_STATUSES,
         status=JobStatus.cancelled,
         finished_at=now,
         elapsed_seconds=(
@@ -394,4 +418,8 @@ async def cancel_job(job_id: str):
         error=message,
         failure=JobFailure(label="Cancelled", message=message),
     )
+    if cancelled_job is None:
+        return
     await terminate_job_process(job_id)
+    if cancelled_job.job_type in RESOURCE_JOB_TYPES:
+        await asyncio.to_thread(cleanup_resource_job_artifacts, job_id)

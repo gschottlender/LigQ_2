@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +30,9 @@ COMMON_SMILES_COLUMNS = [
     "canonical_smiles",
     "canonical_SMILES",
 ]
+
+_STAGING_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_BUILD_JOB_MARKER = ".ligq_build_job"
 
 
 def _infer_format(path: Path) -> str:
@@ -129,13 +135,25 @@ def build_compound_database(
     default_rep_n_jobs: int | None = None,
     default_rep_chunksize: int = 500,
     progress: ProgressEmitter | None = None,
+    staging_token: str | None = None,
 ) -> Path:
     input_path = Path(input_file)
     if not input_path.is_file():
         raise FileNotFoundError(f"Input compound table not found: {input_path}")
 
-    root = Path(output_dir) / "compound_data" / base_name
+    final_root = Path(output_dir) / "compound_data" / base_name
+    root = final_root
+    if staging_token is not None:
+        if not _STAGING_TOKEN_RE.fullmatch(staging_token):
+            raise ValueError(
+                "staging_token must contain only letters, digits, underscores, and hyphens."
+            )
+        root = final_root.parent / f".{base_name}.building.{staging_token}"
+        if root.exists():
+            shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
+    if staging_token is not None:
+        (root / _BUILD_JOB_MARKER).write_text(staging_token, encoding="utf-8")
 
     if progress:
         progress.emit(
@@ -233,6 +251,13 @@ def build_compound_database(
             percent=99,
             context=base_name,
         )
+    if staging_token is not None:
+        if final_root.exists():
+            raise FileExistsError(
+                f"Cannot publish database '{base_name}': {final_root} already exists."
+            )
+        os.replace(root, final_root)
+        return final_root
     return root
 
 
@@ -302,6 +327,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--staging-token",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -320,6 +350,7 @@ def main() -> None:
         default_rep_n_jobs=args.default_rep_n_jobs,
         default_rep_chunksize=args.default_rep_chunksize,
         progress=progress,
+        staging_token=args.staging_token,
     )
     print(f"[INFO] Compound database created at: {root}")
 

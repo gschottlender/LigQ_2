@@ -7,15 +7,18 @@ const TERMINAL_STATUSES = new Set(['completed', 'completed_with_warnings', 'fail
 interface JobPollingOptions {
   onCompleted?: (job: Job) => void | Promise<void>;
   onFailed?: (job: Job) => void;
+  onCancelled?: (job: Job) => void | Promise<void>;
 }
 
 export function useJobPolling(jobId: string | null, options: JobPollingOptions = {}) {
   const [job, setJob] = useState<Job | null>(null);
   const completedRef = useRef(options.onCompleted);
   const failedRef = useRef(options.onFailed);
+  const cancelledRef = useRef(options.onCancelled);
 
   useEffect(() => { completedRef.current = options.onCompleted; }, [options.onCompleted]);
   useEffect(() => { failedRef.current = options.onFailed; }, [options.onFailed]);
+  useEffect(() => { cancelledRef.current = options.onCancelled; }, [options.onCancelled]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -31,7 +34,8 @@ export function useJobPolling(jobId: string | null, options: JobPollingOptions =
         if (!settled && TERMINAL_STATUSES.has(data.status)) {
           settled = true;
           if (interval) clearInterval(interval);
-          if (['failed', 'cancelled', 'interrupted'].includes(data.status)) failedRef.current?.(data);
+          if (data.status === 'cancelled') await cancelledRef.current?.(data);
+          else if (['failed', 'interrupted'].includes(data.status)) failedRef.current?.(data);
           else await completedRef.current?.(data);
         }
       } catch {

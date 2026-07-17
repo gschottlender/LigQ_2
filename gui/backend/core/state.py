@@ -124,6 +124,22 @@ async def update_job(job_id: str, **kwargs) -> Optional[Job]:
         return updated
 
 
+async def update_job_if_status(
+    job_id: str,
+    allowed_statuses: set[JobStatus],
+    **kwargs,
+) -> Optional[Job]:
+    """Update a job only when its current status still permits the transition."""
+    async with _lock:
+        job = jobs.get(job_id)
+        if job is None or job.status not in allowed_statuses:
+            return None
+        updated = job.model_copy(update=kwargs)
+        jobs[job_id] = updated
+        _write_job(updated)
+        return updated
+
+
 async def delete_job(job_id: str) -> bool:
     """Permanently remove a job record. Runtime cancellation uses update_job."""
     async with _lock:

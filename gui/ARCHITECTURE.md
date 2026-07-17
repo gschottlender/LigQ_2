@@ -96,6 +96,7 @@ Responses are `application/zip` streams.
 |---|---|---|
 | `GET` | `/api/databases` | `DatabaseContext.tsx` (on mount) |
 | `GET` | `/api/databases/{name}/representations` | `DatabaseContext.tsx` |
+| `GET` | `/api/system/capabilities` | `AddNewRepresentation.tsx` (on mount) |
 
 #### Initial setup
 
@@ -232,6 +233,7 @@ args = [
     "--input-file",  str(upload_path),   # saved to UPLOADS_DIR with UUID name
     "--base-name",   base_name,
     "--progress-json",
+    "--staging-token", job_id,
 ]
 # For CSV/TSV/Parquet only (not .smi):
 if suffix != ".smi":
@@ -248,6 +250,7 @@ args = [
     "--n-bits",              str(body.n_bits),
     "--rep-name",            body.rep_name,
     "--progress-json",
+    "--staging-token",       job_id,
 ]
 if rdkit:   args += ["--rdkit-fp-kind", body.rdkit_fp_kind]
 if hf:      args += ["--model-id", body.model_id]
@@ -286,6 +289,39 @@ advances the structured event after every remaining protein. The existing CLI
 
 The previous block, tqdm, and representation-build regexes remain as a legacy
 fallback for scripts launched without structured events.
+
+### Resource cancellation and transactional files
+
+`DELETE /api/jobs/{job_id}` marks an active job as `cancelled`, terminates its
+process group, waits for exit, and then removes job-scoped artifacts. Resource
+jobs use the UUID as a staging token:
+
+- database builds run under `.base_name.building.<job_id>` and are atomically
+  promoted only after the ligand table and default representation finish;
+- representation builders write `.partial.<job_id>` files and publish the
+  `.dat`/`.meta.json` pair atomically for each database phase;
+- a completed representation phase is preserved when a later compatibility
+  phase is cancelled, but partial phases are removed;
+- the uploaded build source is removed on completion, failure, cancellation,
+  or backend interruption.
+
+Publishing markers make cleanup safe if cancellation happens between atomic
+renames. Cleanup accepts only validated job tokens and only removes matching
+paths below the configured compound-data and upload roots. Persisted failed,
+cancelled, or interrupted resource jobs are cleaned again at backend startup;
+completed jobs have their ownership markers finalized. Terminal state changes
+are conditional, so completion and cancellation cannot overwrite each other
+during a process-exit race.
+
+### Hardware capabilities and GUI-only GPU guard
+
+`GET /api/system/capabilities` probes CUDA from the backend Python environment
+with a minimal Torch operation and returns `cuda_available` plus the detected
+device name. **Add new representation** disables HuggingFace/ChemBERTa presets
+unless that probe succeeds. `POST /api/jobs/add-representation` repeats the
+guard for graphical requests and returns `gpu_required` with HTTP 422 when CUDA
+is unavailable. The root `add_new_representation.py` command is intentionally
+unchanged, so technical command-line users retain the CPU fallback.
 
 **`_WARNING_TOKENS`** — any line containing `"warning"`, `"no domains found"`,
 `"no known ligands"`, or `"skipped"` is appended to the job's `warnings` list
@@ -503,7 +539,7 @@ flowchart LR
 | `MetricCards.tsx` | — | Aggregates counts from the summary data passed via props |
 | `ResultsPanel.tsx` | `GET /api/jobs/{id}/queries/{qid}/protein-ranking`, `/known-ligands`, `/predicted-ligands` | Fetches on tab change and pagination events |
 | `AddNewDatabase.tsx` | `POST /api/files/upload`, `POST /api/jobs/build-database`, `GET /api/jobs/{id}` | Polls job until terminal; calls `refetchDatabases()` on completion |
-| `AddNewRepresentation.tsx` | `POST /api/jobs/add-representation`, `GET /api/jobs/{id}` | Polls job; calls `refetchRepresentationsForDatabase()` on completion |
+| `AddNewRepresentation.tsx` | `GET /api/system/capabilities`, `POST /api/jobs/add-representation`, `GET /api/jobs/{id}` | Detects GUI CUDA support, polls jobs, and calls `refetchRepresentationsForDatabase()` on completion |
 | `DatabaseContext.tsx` | `GET /api/databases`, `GET /api/databases/{name}/representations` | Loaded on mount; exposes `refetchDatabases` and `refetchRepresentationsForDatabase` |
 | `SelectedResultPanel.tsx` | — (client-side only) | Uses `@rdkit/rdkit` WASM for 2D SVG rendering and SDF generation |
 | `MoleculeViewerModal.tsx` | — (client-side only) | Uses `3dmol.js` for interactive 3D display; rendered via `createPortal` |

@@ -154,13 +154,21 @@ application.
 
 **Add a compound database**
 Go to **Manage Resources → Add new database**, upload a `.smi`, `.csv`, `.tsv`,
-or `.parquet` file, and click **Process database**.
+or `.parquet` file, and click **Process database**. While the job is queued or
+running, **Cancel** stops its workers and removes the incomplete staging
+database after confirmation.
 
 **Add a molecular representation**
 Go to **Manage Resources → Add new representation**, select a database and preset,
 and click **Process representation**. It becomes searchable only after its `.dat`
 and `.meta.json` files exist in both the selected database and `pdb_chembl`.
 Incomplete representations are hidden from Search and can be processed again.
+Long embedding or fingerprint jobs can be cancelled after confirmation.
+Incomplete files from the active phase are removed, while a compatible copy
+that already finished successfully is preserved for the next retry.
+The graphical workflow enables ChemBERTa/HuggingFace generation only when its
+backend detects a usable CUDA GPU. The CPU Docker image therefore disables these
+presets. Native command-line generation is not restricted and may still use CPU.
 
 **Restore a past search**
 Click **History** (top right of Run Search) and **Load** next to any
@@ -175,6 +183,8 @@ are preserved.
 - The backend must be running before opening the frontend.
 - Jobs (search, build database, add representation) run as background processes
   and survive browser refreshes.
+- Database and representation jobs can be cancelled from Manage Resources. The
+  API waits for worker termination and cleanup before reporting cancellation.
 - A failed job identifies the active step in a red status panel and includes the
   last error reported by the underlying script.
 - During **Preparing predicted ligands**, the status panel reports processed

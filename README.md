@@ -103,6 +103,14 @@ histories may require substantially more space.
 The published images target `linux/amd64`. Docker Desktop can run them on other
 host architectures through emulation, with a possible performance cost.
 
+> **ChemBERTa and Docker:** the current Docker images are CPU-only. The web
+> interface therefore disables generation of Hugging Face/ChemBERTa
+> representations. Generating ChemBERTa embeddings on CPU is **strongly
+> discouraged**: every compound in both the selected provider and the compatible
+> `pdb_chembl` reference must be processed, so a large database can require an
+> impractically long run. Use the native Conda installation with a CUDA-capable
+> GPU when new ChemBERTa embeddings are required.
+
 ### Quick start
 
 Clone the repository and enter it:
@@ -361,6 +369,16 @@ Under **Manage Resources**:
   base.
 
 New resources appear in the search form after their background job completes.
+Long-running database and representation jobs provide a **Cancel** button with
+confirmation. Cancellation stops the worker processes and removes incomplete
+job-scoped files. A representation copy that already completed successfully is
+kept for reuse; the representation remains hidden from Search until compatible
+copies exist in both the selected provider and `pdb_chembl`. A cancelled
+database build is removed completely and can be submitted again.
+The graphical application enables ChemBERTa/HuggingFace representation builds
+only when its backend can execute CUDA operations. The standard CPU Docker image
+therefore disables these presets. This guard is GUI-specific: native command-line
+generation remains unrestricted and can fall back to CPU.
 
 ## Native installation and command-line usage
 
@@ -791,6 +809,12 @@ python add_new_representation.py \
 ```
 
 ### Hugging Face embeddings
+
+> **GPU strongly recommended:** generating ChemBERTa embeddings on CPU is
+> computationally prohibitive for large compound databases and is strongly
+> discouraged. The graphical interface requires a usable CUDA GPU for this
+> operation. The technical CLI remains unrestricted, but its automatic CPU
+> fallback should be used only for small tests or deliberate expert workflows.
 
 ```bash
 python add_new_representation.py \

@@ -15,6 +15,11 @@ from typing import Optional
 from core.config import JOB_SHUTDOWN_GRACE_SECONDS, PIPELINE_ROOT
 from core import state
 from models.job import Job, JobFailure, JobProgress, JobStatus
+from services.resource_artifacts import (
+    RESOURCE_JOB_TYPES,
+    cleanup_resource_job_artifacts,
+    finalize_resource_job_artifacts,
+)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -30,6 +35,9 @@ _PROGRESS_PREFIX = "LIGQ_PROGRESS "
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 _STOPPED_STATUSES = {JobStatus.cancelled, JobStatus.interrupted}
+_CLEANUP_STATUSES = {JobStatus.cancelled, JobStatus.failed, JobStatus.interrupted}
+_COMPLETED_STATUSES = {JobStatus.completed, JobStatus.completed_with_warnings}
+_ACTIVE_STATUSES = {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,25 @@ def _build_job_failure(job: Job | None, message: str) -> tuple[JobFailure, str]:
     else:
         error = f"Failed while {failure.label.lower()}. {message}"
     return failure, error
+
+
+async def _cleanup_resource_job(job: Job | None) -> None:
+    if job is not None and job.job_type in RESOURCE_JOB_TYPES:
+        await asyncio.to_thread(cleanup_resource_job_artifacts, job.job_id)
+
+
+async def _finalize_resource_job(job: Job | None) -> None:
+    if job is not None and job.job_type in RESOURCE_JOB_TYPES:
+        await asyncio.to_thread(finalize_resource_job_artifacts, job.job_id)
+
+
+async def cleanup_stale_resource_jobs() -> None:
+    """Reconcile persisted resource artifacts with their terminal job state."""
+    for job in state.get_all_jobs():
+        if job.job_type in RESOURCE_JOB_TYPES and job.status in _CLEANUP_STATUSES:
+            await _cleanup_resource_job(job)
+        elif job.job_type in RESOURCE_JOB_TYPES and job.status in _COMPLETED_STATUSES:
+            await _finalize_resource_job(job)
 
 
 async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
@@ -233,6 +260,7 @@ async def _tail_stdout(
     )
 
     if job.status in _STOPPED_STATUSES:
+        await _cleanup_resource_job(job)
         await state.update_job(
             job_id,
             finished_at=job.finished_at or finished_at,
@@ -243,11 +271,13 @@ async def _tail_stdout(
         return
 
     if rc != 0:
+        await _cleanup_resource_job(job)
         detail = stderr_tail[-1] if stderr_tail else f"Process exited with code {rc}."
         detail = detail[:1000]
         failure, error = _build_job_failure(job, detail)
-        await state.update_job(
+        await state.update_job_if_status(
             job_id,
+            _ACTIVE_STATUSES,
             status=JobStatus.failed,
             finished_at=finished_at,
             elapsed_seconds=elapsed,
@@ -275,8 +305,9 @@ async def _tail_stdout(
                     "eta_seconds": 0,
                 }
             )
-        await state.update_job(
+        completed_job = await state.update_job_if_status(
             job_id,
+            _ACTIVE_STATUSES,
             status=new_status,
             finished_at=finished_at,
             elapsed_seconds=elapsed,
@@ -285,6 +316,24 @@ async def _tail_stdout(
             progress_percent=100,
             progress=completed_progress,
         )
+        if completed_job is None:
+            latest_job = await state.get_job(job_id)
+            if latest_job is not None and latest_job.status in _STOPPED_STATUSES:
+                await _cleanup_resource_job(latest_job)
+        else:
+            try:
+                # Keep the database ownership marker until the completed state
+                # is persisted. A concurrent cancellation therefore either wins
+                # the transition and removes the database, or sees completion.
+                await _finalize_resource_job(completed_job)
+            except Exception as exc:
+                cleanup_warning = f"Generated files are complete, but cleanup must be retried: {exc}"
+                logger.exception("[job %s] %s", job_id, cleanup_warning)
+                await state.update_job(
+                    job_id,
+                    status=JobStatus.completed_with_warnings,
+                    warnings=[*warnings, cleanup_warning],
+                )
 
     async with state._lock:
         state.processes.pop(job_id, None)
@@ -373,9 +422,11 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
     except Exception as exc:
         job = await state.get_job(job_id)
         if job is not None and job.status in _STOPPED_STATUSES:
+            await _cleanup_resource_job(job)
             async with state._lock:
                 state.processes.pop(job_id, None)
             return
+        await _cleanup_resource_job(job)
         failure, error = _build_job_failure(job, str(exc))
         await state.update_job(
             job_id,
@@ -469,6 +520,12 @@ async def enqueue_job(
 async def stop_worker() -> None:
     global _job_queue, _worker_task, _stopping
     _stopping = True
+    active_resource_jobs = [
+        job
+        for job in state.get_all_jobs()
+        if job.job_type in RESOURCE_JOB_TYPES
+        and job.status in {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
+    ]
     await state.mark_unfinished_interrupted(
         "The backend stopped before this job finished."
     )
@@ -480,6 +537,8 @@ async def stop_worker() -> None:
             *(_terminate_process(process) for process in running_processes),
             return_exceptions=True,
         )
+    for job in active_resource_jobs:
+        await _cleanup_resource_job(job)
 
     if _worker_task is not None:
         _worker_task.cancel()

@@ -14,8 +14,8 @@ from core.config import (
     TEMP_RESULTS_DIR,
     UPLOADS_DIR,
 )
-from routers import databases, files, jobs, results, setup
-from services.job_runner import start_worker, stop_worker
+from routers import databases, files, jobs, results, setup, system
+from services.job_runner import cleanup_stale_resource_jobs, start_worker, stop_worker
 
 import logging
 
@@ -37,6 +37,7 @@ async def lifespan(_app: FastAPI):
     ):
         directory.mkdir(parents=True, exist_ok=True)
     await state.initialize()
+    await cleanup_stale_resource_jobs()
     await start_worker()
     try:
         yield
@@ -66,6 +67,7 @@ app.include_router(results.router)
 app.include_router(results.history_router)
 app.include_router(files.router)
 app.include_router(setup.router)
+app.include_router(system.router)
 
 
 @app.get("/api/health")
