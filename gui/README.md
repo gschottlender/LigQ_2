@@ -93,6 +93,9 @@ docker compose build
 docker compose up -d
 ```
 
+The default published images use the `main` tag and are built from the
+repository's `main` branch. The legacy `gui` tag points to the same builds.
+
 Open `http://localhost:8080`. The first visit detects missing databases and
 offers the same **Initial setup required** download flow. Data and job history
 are kept in Docker volumes; files placed in `work/` are shared with the host.

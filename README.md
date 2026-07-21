@@ -141,9 +141,13 @@ Then start the services again and open <http://localhost:18080>.
 The default images are published at:
 
 ```text
-ghcr.io/gschottlender/ligq-2-api:gui
-ghcr.io/gschottlender/ligq-2-web:gui
+ghcr.io/gschottlender/ligq-2-api:main
+ghcr.io/gschottlender/ligq-2-web:main
 ```
+
+These `main` images are rebuilt from the repository's `main` branch on every
+push. The same builds are also published with the legacy `gui` tag for backward
+compatibility.
 
 ### First-time data setup
 

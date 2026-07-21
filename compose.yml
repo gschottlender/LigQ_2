@@ -1,7 +1,7 @@
 name: ligq2
 
 x-api-common: &api-common
-  image: ${LIGQ_API_IMAGE:-ghcr.io/gschottlender/ligq-2-api:gui}
+  image: ${LIGQ_API_IMAGE:-ghcr.io/gschottlender/ligq-2-api:main}
   build:
     context: .
     dockerfile: docker/Dockerfile.api
@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${LIGQ_WEB_IMAGE:-ghcr.io/gschottlender/ligq-2-web:gui}
+    image: ${LIGQ_WEB_IMAGE:-ghcr.io/gschottlender/ligq-2-web:main}
     build:
       context: .
       dockerfile: docker/Dockerfile.web
