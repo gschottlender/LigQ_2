@@ -3,13 +3,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Cpu,
   FolderOpen,
   Info,
   Loader2,
   Play,
   Settings2,
 } from 'lucide-react';
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
@@ -53,6 +54,13 @@ interface CheckboxFieldProps {
   info?: string;
   disabled?: boolean;
 }
+
+interface HardwareCapabilities {
+  cuda_available: boolean;
+  cuda_device_name: string | null;
+}
+
+type GpuStatus = 'checking' | 'available' | 'unavailable' | 'error';
 
 function SelectField({ label, value, onChange, options, info, disabled }: SelectFieldProps) {
   return (
@@ -201,6 +209,7 @@ const VALIDATION_MESSAGES = {
   kValue: `K must be between ${MIN_NEAREST_K} and ${MAX_NEAREST_K}.`,
   noRepresentation: 'No representation available for the selected database.',
   bsiUnavailable: 'BSI requires the morgan_1024_r2 representation for the selected database.',
+  bsiGpuRequired: 'BSI requires a CUDA-capable GPU in the graphical interface.',
   thresholdRange: 'Maximum cutoff must be greater than or equal to minimum cutoff.',
 };
 
@@ -227,6 +236,7 @@ export function Sidebar({
   const [minCutoffValue, setMinCutoffValue] = useState<number | null>(null);
   const [maxCutoff, setMaxCutoff] = useState(1);
   const [useBsi, setUseBsi] = useState(false);
+  const [activeSearchUsesBsi, setActiveSearchUsesBsi] = useState(false);
   const [bsiThreshold, setBsiThreshold] = useState(BSI_DEFAULT_THRESHOLD);
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
@@ -236,9 +246,27 @@ export function Sidebar({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [fastaError, setFastaError] = useState('');
   const [fastaValidating, setFastaValidating] = useState(false);
+  const [gpuStatus, setGpuStatus] = useState<GpuStatus>('checking');
+  const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
 
   const fastaInputRef = useRef<HTMLInputElement>(null);
   const fastaValidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.get<HardwareCapabilities>('/system/capabilities')
+      .then(({ data }) => {
+        if (!active) return;
+        setGpuStatus(data.cuda_available ? 'available' : 'unavailable');
+        setGpuDeviceName(data.cuda_device_name);
+      })
+      .catch(() => {
+        if (!active) return;
+        setGpuStatus('error');
+        setGpuDeviceName(null);
+      });
+    return () => { active = false; };
+  }, []);
 
   const resolvedDatabaseId = databaseId || databases[0]?.id || '';
   const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
@@ -246,6 +274,7 @@ export function Sidebar({
     ? representationId
     : availableReps[0]?.id ?? '';
   const bsiAvailable = availableReps.some((r) => r.id === BSI_REPRESENTATION);
+  const bsiDisabled = !bsiAvailable || gpuStatus !== 'available';
   const resolvedRepresentationId = useBsi ? BSI_REPRESENTATION : normalRepresentationId;
   const selectedRepresentation = availableReps.find((r) => r.id === resolvedRepresentationId);
   const metric = useBsi ? 'bsi' : selectedRepresentation?.metric ?? 'tanimoto';
@@ -281,6 +310,7 @@ export function Sidebar({
   };
 
   const handleBsiChange = (enabled: boolean) => {
+    if (enabled && gpuStatus !== 'available') return;
     setUseBsi(enabled);
     if (enabled) {
       setBsiThreshold((current) => Math.max(current, BSI_MIN_THRESHOLD));
@@ -365,6 +395,7 @@ export function Sidebar({
     }
     if (availableReps.length === 0) { setValidationError(VALIDATION_MESSAGES.noRepresentation); return false; }
     if (useBsi && !bsiAvailable) { setValidationError(VALIDATION_MESSAGES.bsiUnavailable); return false; }
+    if (useBsi && gpuStatus !== 'available') { setValidationError(VALIDATION_MESSAGES.bsiGpuRequired); return false; }
     if (!useBsi && maxCutoff < minCutoff) { setValidationError(VALIDATION_MESSAGES.thresholdRange); return false; }
     setValidationError('');
     return true;
@@ -395,6 +426,7 @@ export function Sidebar({
         '/jobs/search',
         formData,
       );
+      setActiveSearchUsesBsi(useBsi);
       onJobCreated(response.data.job_id);
 
       setFastaFile(null);
@@ -485,9 +517,29 @@ export function Sidebar({
               label="BSI"
               checked={useBsi}
               onChange={handleBsiChange}
-              disabled={!bsiAvailable && !useBsi}
-              info="Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model."
+              disabled={bsiDisabled}
+              info={gpuStatus === 'available'
+                ? 'Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model.'
+                : 'BSI requires a CUDA-capable GPU and the morgan_1024_r2 representation in the graphical interface.'}
             />
+            {gpuStatus === 'checking' && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking CUDA availability…
+              </p>
+            )}
+            {gpuStatus === 'available' && gpuDeviceName && (
+              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
+                CUDA GPU available: {gpuDeviceName}.
+              </p>
+            )}
+            {(gpuStatus === 'unavailable' || gpuStatus === 'error') && (
+              <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {gpuStatus === 'unavailable'
+                  ? 'BSI is disabled because no CUDA GPU is available to the application.'
+                  : 'CUDA availability could not be verified. BSI is disabled.'}
+              </p>
+            )}
           </div>
 
           <SliderField
@@ -671,6 +723,7 @@ export function Sidebar({
               fallbackMessage={progressMessage || 'Running search'}
               startedAt={startedAt}
               compact
+              stepOnly={activeSearchUsesBsi}
             />
           )}
 

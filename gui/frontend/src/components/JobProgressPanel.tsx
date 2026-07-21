@@ -8,6 +8,7 @@ interface JobProgressPanelProps {
   fallbackMessage?: string;
   startedAt?: string | null;
   compact?: boolean;
+  stepOnly?: boolean;
 }
 
 interface JobFailurePanelProps {
@@ -43,19 +44,21 @@ export function JobProgressPanel({
   fallbackMessage = 'Processing',
   startedAt,
   compact = false,
+  stepOnly = false,
 }: JobProgressPanelProps) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    if (stepOnly) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [stepOnly]);
 
   const elapsed = useMemo(() => {
-    if (!startedAt) return null;
+    if (stepOnly || !startedAt) return null;
     const started = new Date(startedAt).getTime();
     return Number.isFinite(started) ? Math.max(0, (now - started) / 1000) : null;
-  }, [now, startedAt]);
+  }, [now, startedAt, stepOnly]);
 
   const percent = Math.max(0, Math.min(100, progress?.percent ?? fallbackPercent));
   const label = progress?.label || fallbackMessage;
@@ -72,7 +75,7 @@ export function JobProgressPanel({
           <Loader2 className="w-4 h-4 mt-0.5 text-[#0d5c6b] dark:text-teal-400 animate-spin shrink-0" />
           <div className="min-w-0">
             <p className="text-xs font-medium text-gray-700 dark:text-gray-200 leading-snug">{label}</p>
-            {progress?.context && (
+            {!stepOnly && progress?.context && (
               <p className="text-xs font-jetbrains-mono text-gray-400 dark:text-gray-500 truncate mt-0.5">
                 {progress.context}
               </p>
@@ -86,47 +89,51 @@ export function JobProgressPanel({
         )}
       </div>
 
-      <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-[#0d5c6b] dark:bg-teal-500 rounded-full transition-[width] duration-500"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
+      {!stepOnly && (
+        <>
+          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-[#0d5c6b] dark:bg-teal-500 rounded-full transition-[width] duration-500"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
 
-      {hasDownloadProgress && (
-        <div className="flex flex-col gap-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/60 dark:text-gray-300 sm:flex-row sm:items-center sm:justify-between">
-          <span className="font-medium">
-            {formatBytes(progress.downloaded_bytes!)} / {formatBytes(progress.download_total_bytes!)} downloaded
-          </span>
-          <span>
-            {formatCount(progress.completed_files!)} / {formatCount(progress.total_files!)} files downloaded
-          </span>
-        </div>
+          {hasDownloadProgress && (
+            <div className="flex flex-col gap-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-gray-800/60 dark:text-gray-300 sm:flex-row sm:items-center sm:justify-between">
+              <span className="font-medium">
+                {formatBytes(progress.downloaded_bytes!)} / {formatBytes(progress.download_total_bytes!)} downloaded
+              </span>
+              <span>
+                {formatCount(progress.completed_files!)} / {formatCount(progress.total_files!)} files downloaded
+              </span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs text-gray-500 dark:text-gray-400">
+            <span className="flex items-center gap-1.5">
+              <Gauge className="w-3.5 h-3.5" />
+              {percent}%
+            </span>
+            {hasCount && !hasDownloadProgress && (
+              <span className="text-right truncate" title={`${progress.current} / ${progress.total}`}>
+                {formatCount(progress.current!)} / {formatCount(progress.total!)} {progress.unit ?? ''}
+              </span>
+            )}
+            {progress?.eta_seconds != null && progress.eta_seconds > 0 && (
+              <span className="flex items-center gap-1.5">
+                <Activity className="w-3.5 h-3.5" />
+                ETA {formatDuration(progress.eta_seconds)}
+              </span>
+            )}
+            {elapsed != null && (
+              <span className="flex items-center gap-1.5 justify-end col-start-2">
+                <Clock3 className="w-3.5 h-3.5" />
+                {formatDuration(elapsed)} elapsed
+              </span>
+            )}
+          </div>
+        </>
       )}
-
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs text-gray-500 dark:text-gray-400">
-        <span className="flex items-center gap-1.5">
-          <Gauge className="w-3.5 h-3.5" />
-          {percent}%
-        </span>
-        {hasCount && !hasDownloadProgress && (
-          <span className="text-right truncate" title={`${progress.current} / ${progress.total}`}>
-            {formatCount(progress.current!)} / {formatCount(progress.total!)} {progress.unit ?? ''}
-          </span>
-        )}
-        {progress?.eta_seconds != null && progress.eta_seconds > 0 && (
-          <span className="flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5" />
-            ETA {formatDuration(progress.eta_seconds)}
-          </span>
-        )}
-        {elapsed != null && (
-          <span className="flex items-center gap-1.5 justify-end col-start-2">
-            <Clock3 className="w-3.5 h-3.5" />
-            {formatDuration(elapsed)} elapsed
-          </span>
-        )}
-      </div>
     </div>
   );
 }

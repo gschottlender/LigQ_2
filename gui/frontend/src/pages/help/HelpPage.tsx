@@ -238,8 +238,10 @@ export function HelpPage() {
                     Enables the Bioactivity Similarity Index for protein families with a trained Pfam-specific
                     model. BSI fixes the representation to{' '}
                     <span className="font-jetbrains-mono text-xs">morgan_1024_r2</span> and reports a learned{' '}
-                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity. To avoid
-                    prohibitively expensive domain-wide expansion, BSI mode supports only{' '}
+                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity. The graphical
+                    interface enables BSI only when the backend detects a usable CUDA GPU; CPU-only Docker
+                    deployments keep the control disabled. Command-line BSI remains available for administrative
+                    runs. To avoid prohibitively expensive domain-wide expansion, BSI mode supports only{' '}
                     <InfoBadge label="Sequence" color="teal" /> and{' '}
                     <InfoBadge label="Nearest K" color="blue" />; Domain is cleared and disabled.
                     <span className="mt-2 block">
@@ -294,10 +296,10 @@ export function HelpPage() {
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>
-                  Click <strong>Run Search</strong>. The status panel shows the current step, processed items,
-                  ETA, and elapsed time. During predicted-ligand preparation it also reports processed candidate
-                  proteins as X / total, including compatible cached proteins in the initial count. Results appear
-                  progressively as each query completes.
+                  Click <strong>Run Search</strong>. The status panel shows the current step. Structural-similarity
+                  searches also show processed items, ETA, and elapsed time. BSI searches show only the active step
+                  because processing time can vary substantially between proteins. Results appear progressively as
+                  each query completes.
                 </Step>
                 <Step n={5}>
                   Collapse the sidebar with the{' '}

@@ -84,6 +84,13 @@ Docker is the easiest way to run the complete application. The native Conda
 workflow exposes every pipeline option and is the recommended route for GPU
 execution.
 
+> **Docker (CPU) or native installation:** the published Docker images are
+> compatible with CPU-only systems and cover the standard LigQ 2 workflow. For
+> advanced options that require CUDA, such as BSI or generating and using
+> ChemBERTa embeddings, install the native Conda environment. The native
+> installation is also recommended for large workloads that need greater
+> computing capacity.
+
 ## Docker and web interface: recommended
 
 ### Requirements

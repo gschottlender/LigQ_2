@@ -227,7 +227,10 @@ if known_only:          args.append("--known-only")
 For BSI searches the backend treats the browser values as advisory and forces
 `morgan_1024_r2` plus the CLI-compatible `tanimoto` metric argument; the BSI
 provider itself reports `bsi_score`. The GUI default BSI cutoff is `0.98`, and
-the structural minimum/maximum cutoff arguments are omitted.
+the structural minimum/maximum cutoff arguments are omitted. The frontend checks
+`GET /api/system/capabilities` and enables BSI only when CUDA is usable. The search
+endpoint repeats that check and returns `422 gpu_required` for direct BSI requests
+without CUDA; this restriction does not apply to command-line runs.
 
 #### `build_database`
 
@@ -282,9 +285,11 @@ downloaded_bytes, download_total_bytes, completed_files, total_files
 ```
 
 The frontend renders the current step, overall percentage, processed/total
-count, ETA, and elapsed time. Structured percentages are monotonic. A parsed
-`tqdm` line may enrich the current structured step with count and ETA, but it
-does not replace the script's overall percentage.
+count, ETA, and elapsed time for standard jobs. BSI searches deliberately render
+only the active step and its position in the pipeline because per-protein runtime
+makes percentage and ETA estimates misleading. Structured percentages remain
+monotonic in the API. A parsed `tqdm` line may enrich the current structured step
+with count and ETA, but it does not replace the script's overall percentage.
 
 During `predicted_cache`, `ensure_provider_cache()` reports cached requested
 proteins as the initial count and `build_predicted_binding_data_incremental()`

@@ -145,8 +145,10 @@ application.
 **Run a search**
 1. Open **Run Search** in the top navigation.
 2. Upload a FASTA file, select a database and representation, optionally enable BSI, and choose search methods.
-3. Click **Run Search** — the status panel shows the current pipeline step,
-   processed items, ETA, and elapsed time while results appear per query.
+3. Click **Run Search** — the status panel shows the current pipeline step while
+   results appear per query. Structural-similarity searches also show processed
+   items, ETA, and elapsed time. BSI searches show only the active step because
+   processing time can vary substantially between proteins.
 
 **Inspect results**
 - Click a query row to load its results below.
@@ -206,7 +208,10 @@ are preserved.
 - Enabling BSI fixes the representation to `morgan_1024_r2`, displays `BSI Score`
   as the metric, and starts the minimum cutoff at `0.98`, with a lower bound of
   `0.97`. The maximum remains visible but fixed at `1.0`. BSI predictions are
-  limited to protein families with a trained Pfam-specific model. In the GUI,
+  limited to protein families with a trained Pfam-specific model. The BSI control
+  is enabled only when the backend verifies a usable CUDA GPU; CPU-only Docker
+  deployments leave it disabled, and the API rejects GUI BSI submissions without
+  CUDA. Command-line BSI remains available for administrative runs. In the GUI,
   BSI allows only Sequence and Nearest K search; Domain is cleared and disabled
   to avoid prohibitively slow domain-wide expansion.
 - Results are stored on disk under `results/` and can be reloaded at any time

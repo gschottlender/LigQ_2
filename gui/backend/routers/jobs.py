@@ -125,6 +125,18 @@ async def start_search(
     use_bsi: bool = Form(False),
     bsi_threshold: float = Form(BSI_DEFAULT_THRESHOLD),
 ):
+    if use_bsi:
+        capabilities = await asyncio.to_thread(get_hardware_capabilities)
+        if not capabilities.cuda_available:
+            return _err(
+                "gpu_required",
+                (
+                    "A CUDA-capable GPU is required to run BSI through the graphical interface. "
+                    "Command-line BSI remains available for administrative runs."
+                ),
+                status_code=422,
+            )
+
     if not database_exists(ligand_provider):
         return _err("database_not_found", f"Ligand provider '{ligand_provider}' not found.")
 
