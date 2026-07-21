@@ -88,7 +88,7 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01, di
   return (
     <section className="flex flex-col gap-2 mt-5">
       <label className="text-sm font-dm-sans font-semibold text-gray-500 dark:text-gray-200">{label}</label>
-      <div className="flex items-center gap-3 pr-2">
+      <div className="flex items-center gap-3 pr-4">
         <input
           type="range"
           min={min}
@@ -97,7 +97,7 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01, di
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+          className="min-w-0 flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
         />
         <input
           type="number"
@@ -110,7 +110,7 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01, di
             const v = parseFloat(e.target.value);
             if (!isNaN(v) && v >= min && v <= max) onChange(v);
           }}
-          className="w-24 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs text-center
+          className="w-20 shrink-0 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs text-center
             text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500
             disabled:opacity-50 disabled:cursor-not-allowed"
         />
