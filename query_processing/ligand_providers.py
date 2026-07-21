@@ -18,13 +18,26 @@ from compound_processing.compound_helpers import LigandStore
 from query_processing.results_tables import CompoundDatabaseProviderAdapter
 
 
-def _file_fingerprint(path: Path, data_dir: Path) -> dict:
+PORTABLE_DATABASE_FINGERPRINT_VERSION = 2
+_PORTABLE_HASH_MAX_BYTES = 1024 * 1024
+
+
+def _file_fingerprint(path: Path, data_dir: Path, *, portable: bool = False) -> dict:
     st = path.stat()
-    return {
+    fingerprint = {
         "path": str(path.relative_to(data_dir)),
         "size": int(st.st_size),
-        "mtime_ns": int(st.st_mtime_ns),
     }
+    if portable:
+        # Database update scripts explicitly invalidate predicted caches. Keep
+        # the persisted identity stable across downloads, copies and volume
+        # restores, while still hashing small metadata files whose contents can
+        # change without affecting their size.
+        if st.st_size <= _PORTABLE_HASH_MAX_BYTES:
+            fingerprint["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    else:
+        fingerprint["mtime_ns"] = int(st.st_mtime_ns)
+    return fingerprint
 
 
 def _representation_files(root: Path, rep_name: str) -> list[Path]:
@@ -82,6 +95,18 @@ class LigandSearchProvider(ABC):
 
     def filter_cached_results(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
+
+    def database_fingerprint_version(self) -> int:
+        return 1
+
+    def database_fingerprint_files(self, data_dir: Path) -> list[Path]:
+        return []
+
+    def supports_hf_legacy_cache_migration(self) -> bool:
+        return False
+
+    def legacy_database_fingerprint(self, data_dir: Path) -> str | None:
+        return None
 
 
 class CompoundDatabaseSearchProvider(LigandSearchProvider):
@@ -212,6 +237,30 @@ class CompoundDatabaseSearchProvider(LigandSearchProvider):
         return filtered.reset_index(drop=True)
 
     def database_fingerprint(self, data_dir: Path) -> str:
+        return self._database_fingerprint(data_dir, portable=True)
+
+    def legacy_database_fingerprint(self, data_dir: Path) -> str:
+        return self._database_fingerprint(data_dir, portable=False)
+
+    def _database_fingerprint(self, data_dir: Path, *, portable: bool) -> str:
+        files = self.database_fingerprint_files(data_dir)
+        payload = {
+            "provider": self.provider_name,
+            "search_representation": self.search_representation,
+            "files": [
+                _file_fingerprint(path, Path(data_dir), portable=portable)
+                for path in files
+            ],
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def database_fingerprint_version(self) -> int:
+        return PORTABLE_DATABASE_FINGERPRINT_VERSION
+
+    def supports_hf_legacy_cache_migration(self) -> bool:
+        return True
+
+    def database_fingerprint_files(self, data_dir: Path) -> list[Path]:
         data_dir = Path(data_dir)
         target_root = data_dir / "compound_data" / self.target_base_name
         pdb_chembl_root = data_dir / "compound_data" / "pdb_chembl"
@@ -229,14 +278,7 @@ class CompoundDatabaseSearchProvider(LigandSearchProvider):
             files.extend(_representation_files(target_root, rep_name))
             files.extend(_representation_files(pdb_chembl_root, rep_name))
 
-        files = _dedupe_paths(files)
-
-        payload = {
-            "provider": self.provider_name,
-            "search_representation": self.search_representation,
-            "files": [_file_fingerprint(path, data_dir) for path in files],
-        }
-        return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+        return _dedupe_paths(files)
 
     def compute_for_protein(self, prot: str, known_binding: pd.DataFrame) -> pd.DataFrame:
         return self.adapter.compute_for_protein(prot=prot, known_binding=known_binding)

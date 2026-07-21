@@ -962,6 +962,14 @@ a lower minimum threshold can serve a stricter query when all other compatibilit
 checks pass. For example, a cache covering Morgan/Tanimoto scores from `0.4` can
 serve the default `0.415094` search without recomputation.
 
+Structural database fingerprints are portable across downloads, Docker volumes,
+copies, and backup restores: file modification times are not part of their
+identity. Legacy Hugging Face cache manifests are upgraded in place only when
+the downloaded database inputs and cache artifacts are unchanged files from the
+same dataset revision. `update_databases.py` invalidates all predicted caches
+after PDB/ChEMBL changes, while `update_zinc_databases.py` moves the affected
+`zinc` and `zinc_bsi` namespaces aside before rebuilding ZINC.
+
 `.cache.lock` prevents simultaneous writers. `--force-rebuild-predicted-cache`
 discards and regenerates the compatible namespace selected for the run.
 

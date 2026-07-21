@@ -15,6 +15,17 @@ import pyarrow.parquet as pq
 from query_processing.results_tables import build_predicted_binding_data_incremental
 
 
+_HF_DOWNLOAD_METADATA_ROOT = Path(".cache") / "huggingface" / "download"
+_CACHE_ARTIFACT_FILENAMES = (
+    "manifest.json",
+    "predicted_binding_data.parquet",
+    "predicted_binding_progress.json",
+    "cached_proteins.json",
+    "predicted_binding_rowgroup_index.json",
+)
+_MIGRATE_DB_FINGERPRINT_KEY = "_migrate_db_fingerprint"
+
+
 def _cache_namespace(value: str) -> str:
     return value.replace("/", "_").replace(":", "_").replace(" ", "_")
 
@@ -45,6 +56,24 @@ def _provider_filter_cached_results(provider, df: pd.DataFrame) -> pd.DataFrame:
     if hasattr(provider, "filter_cached_results"):
         return provider.filter_cached_results(df)
     return df
+
+
+def _provider_database_fingerprint_version(provider) -> int:
+    if hasattr(provider, "database_fingerprint_version"):
+        return int(provider.database_fingerprint_version())
+    return 1
+
+
+def _provider_database_fingerprint_files(provider, data_dir: Path) -> list[Path]:
+    if hasattr(provider, "database_fingerprint_files"):
+        return [Path(path) for path in provider.database_fingerprint_files(data_dir)]
+    return []
+
+
+def _provider_supports_hf_legacy_cache_migration(provider) -> bool:
+    if hasattr(provider, "supports_hf_legacy_cache_migration"):
+        return bool(provider.supports_hf_legacy_cache_migration())
+    return False
 
 
 def remove_predicted_cache_dirs(
@@ -102,17 +131,87 @@ def _normalize_manifest(manifest: dict) -> dict:
     elif normalized["cache_threshold_max"] is not None:
         normalized["cache_threshold_max"] = float(normalized["cache_threshold_max"])
 
+    try:
+        normalized["db_fingerprint_version"] = int(normalized.get("db_fingerprint_version", 1))
+    except (TypeError, ValueError):
+        normalized["db_fingerprint_version"] = 1
+
     return normalized
 
 
-def _manifest_matches_method(manifest: dict, method_signature: dict, db_fingerprint: str) -> bool:
+def _manifest_matches_method_signature(manifest: dict, method_signature: dict) -> bool:
     manifest = _normalize_manifest(manifest)
-    if manifest.get("db_fingerprint") != db_fingerprint:
-        return False
     for key, value in method_signature.items():
         if manifest.get(key) != value:
             return False
     return True
+
+
+def _manifest_matches_method(
+    manifest: dict,
+    method_signature: dict,
+    db_fingerprint: str,
+    db_fingerprint_version: int = 1,
+) -> bool:
+    manifest = _normalize_manifest(manifest)
+    return (
+        _manifest_matches_method_signature(manifest, method_signature)
+        and manifest.get("db_fingerprint") == db_fingerprint
+        and manifest.get("db_fingerprint_version") == int(db_fingerprint_version)
+    )
+
+
+def _hf_metadata_path(path: Path, data_dir: Path) -> Path | None:
+    try:
+        relative_path = path.relative_to(data_dir)
+    except ValueError:
+        return None
+    return data_dir / _HF_DOWNLOAD_METADATA_ROOT / Path(f"{relative_path}.metadata")
+
+
+def _hf_download_revision(path: Path, data_dir: Path) -> str | None:
+    metadata_path = _hf_metadata_path(path, data_dir)
+    if metadata_path is None or not path.is_file() or not metadata_path.is_file():
+        return None
+    try:
+        lines = metadata_path.read_text(encoding="utf-8").splitlines()
+        revision = lines[0].strip()
+        downloaded_at = float(lines[2])
+    except (OSError, IndexError, TypeError, ValueError):
+        return None
+    if not revision or path.stat().st_mtime > downloaded_at + 1.0:
+        return None
+    return revision
+
+
+def _can_migrate_legacy_cache(
+    *,
+    cache_dir: Path,
+    provider,
+    data_dir: Path,
+    manifest: dict,
+    current_fingerprint_version: int,
+) -> bool:
+    manifest = _normalize_manifest(manifest)
+    if manifest.get("db_fingerprint_version", 1) >= int(current_fingerprint_version):
+        return False
+    if hasattr(provider, "legacy_database_fingerprint"):
+        legacy_fingerprint = provider.legacy_database_fingerprint(data_dir)
+        if legacy_fingerprint and manifest.get("db_fingerprint") == legacy_fingerprint:
+            return True
+    if not _provider_supports_hf_legacy_cache_migration(provider):
+        return False
+
+    database_files = _provider_database_fingerprint_files(provider, data_dir)
+    cache_files = [cache_dir / filename for filename in _CACHE_ARTIFACT_FILENAMES]
+    if not database_files or not all(path.is_file() for path in cache_files):
+        return False
+
+    revisions = [
+        _hf_download_revision(path, data_dir)
+        for path in (*database_files, *cache_files)
+    ]
+    return all(revision is not None for revision in revisions) and len(set(revisions)) == 1
 
 
 def _cache_covers_request(
@@ -151,6 +250,7 @@ def _discover_compatible_cache(
     data_dir: Path,
     requested_threshold_min: float | None,
     requested_threshold_max: float | None,
+    proteins_needed: set[str] | None = None,
 ) -> tuple[Path | None, dict | None]:
     provider_root = cache_root / provider.provider_name
     if not provider_root.exists():
@@ -158,7 +258,13 @@ def _discover_compatible_cache(
 
     method_signature = _cache_method_signature(provider)
     db_fingerprint = provider.database_fingerprint(data_dir)
-    candidates: list[tuple[Path, dict]] = []
+    db_fingerprint_version = _provider_database_fingerprint_version(provider)
+    requested_proteins = (
+        {str(protein) for protein in proteins_needed}
+        if proteins_needed is not None
+        else None
+    )
+    candidates: list[tuple[Path, dict, int]] = []
     for cache_dir in sorted(provider_root.iterdir()):
         if not cache_dir.is_dir():
             continue
@@ -170,16 +276,48 @@ def _discover_compatible_cache(
                 manifest = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
-        if not _manifest_matches_method(manifest, method_signature, db_fingerprint):
+        if not _manifest_matches_method_signature(manifest, method_signature):
             continue
         if not _cache_covers_request(manifest, requested_threshold_min, requested_threshold_max):
             continue
-        candidates.append((cache_dir, _normalize_manifest(manifest)))
+
+        normalized_manifest = _normalize_manifest(manifest)
+        if not _manifest_matches_method(
+            normalized_manifest,
+            method_signature,
+            db_fingerprint,
+            db_fingerprint_version,
+        ):
+            if not _can_migrate_legacy_cache(
+                cache_dir=cache_dir,
+                provider=provider,
+                data_dir=data_dir,
+                manifest=normalized_manifest,
+                current_fingerprint_version=db_fingerprint_version,
+            ):
+                continue
+            normalized_manifest[_MIGRATE_DB_FINGERPRINT_KEY] = True
+
+        cached_requested = 0
+        if requested_proteins is not None:
+            try:
+                cached_proteins = _read_cached_protein_index(
+                    cache_dir / "cached_proteins.json"
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                cached_proteins = None
+            if cached_proteins is not None:
+                cached_requested = len(requested_proteins & cached_proteins)
+
+        candidates.append((cache_dir, normalized_manifest, cached_requested))
 
     if not candidates:
         return None, None
 
-    best_dir, best_manifest = sorted(candidates, key=lambda item: _candidate_sort_key(item[1]))[0]
+    best_dir, best_manifest, _ = sorted(
+        candidates,
+        key=lambda item: (-item[2], *_candidate_sort_key(item[1])),
+    )[0]
     return best_dir, best_manifest
 
 
@@ -314,6 +452,7 @@ def ensure_provider_cache(
             data_dir=Path(data_dir),
             requested_threshold_min=requested_threshold_min,
             requested_threshold_max=requested_threshold_max,
+            proteins_needed=set(proteins_needed),
         )
         if cache_dir is None:
             cache_dir = cache_root / provider.provider_name / _cache_dir_name(
@@ -324,7 +463,12 @@ def ensure_provider_cache(
 
     cache_threshold_min = requested_threshold_min
     cache_threshold_max = requested_threshold_max
+    migrate_db_fingerprint = False
     if selected_manifest is not None:
+        selected_manifest = dict(selected_manifest)
+        migrate_db_fingerprint = bool(
+            selected_manifest.pop(_MIGRATE_DB_FINGERPRINT_KEY, False)
+        )
         cache_threshold_min = selected_manifest.get("cache_threshold_min")
         cache_threshold_max = selected_manifest.get("cache_threshold_max")
 
@@ -342,6 +486,9 @@ def ensure_provider_cache(
     expected_manifest["cache_threshold_min"] = cache_threshold_min
     expected_manifest["cache_threshold_max"] = cache_threshold_max
     expected_manifest["db_fingerprint"] = cache_provider.database_fingerprint(data_dir)
+    expected_manifest["db_fingerprint_version"] = _provider_database_fingerprint_version(
+        cache_provider
+    )
 
     with file_lock(lock_path):
         regenerate_cache = force_rebuild_cache
@@ -349,7 +496,31 @@ def ensure_provider_cache(
             with open(manifest_path, "r") as f:
                 current_manifest = _normalize_manifest(json.load(f))
             if current_manifest != expected_manifest:
-                regenerate_cache = True
+                can_migrate = (
+                    migrate_db_fingerprint
+                    and _manifest_matches_method_signature(current_manifest, method_signature)
+                    and _cache_covers_request(
+                        current_manifest,
+                        cache_threshold_min,
+                        cache_threshold_max,
+                    )
+                    and _can_migrate_legacy_cache(
+                        cache_dir=cache_dir,
+                        provider=cache_provider,
+                        data_dir=Path(data_dir),
+                        manifest=current_manifest,
+                        current_fingerprint_version=expected_manifest["db_fingerprint_version"],
+                    )
+                )
+                if can_migrate:
+                    print(
+                        "[INFO] Migrating downloaded predicted cache to portable "
+                        f"database fingerprint: {cache_dir}"
+                    )
+                    with open(manifest_path, "w") as f:
+                        json.dump(expected_manifest, f, indent=2)
+                else:
+                    regenerate_cache = True
 
         if regenerate_cache:
             if cache_dir.exists():

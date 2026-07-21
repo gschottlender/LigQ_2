@@ -193,6 +193,10 @@ existing local data and avoids retaining a second full copy in the user's global
 Hugging Face cache. Its required set includes the default structural-search
 resources, the compatible Morgan/Tanimoto ZINC predicted-ligand cache with
 minimum coverage `0.4`, and the Pfam-specific BSI models exposed by the GUI.
+The downloaded structural-cache manifest is portable across the Docker volume:
+local file modification times do not invalidate it. Older manifests are migrated
+only when Hugging Face metadata confirms that all database inputs and cache
+artifacts are unchanged files from the same dataset revision.
 
 ### Argument construction (`gui/backend/routers/jobs.py`)
 
