@@ -88,7 +88,7 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01, di
   return (
     <section className="flex flex-col gap-2 mt-5">
       <label className="text-sm font-dm-sans font-semibold text-gray-500 dark:text-gray-200">{label}</label>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 pr-2">
         <input
           type="range"
           min={min}
