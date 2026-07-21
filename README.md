@@ -203,6 +203,32 @@ The repository also provides helper commands:
 
 PowerShell equivalents use `.\docker\ligq.ps1`.
 
+### Uninstall LigQ 2
+
+Open a terminal inside the cloned `LigQ_2` folder. The same commands work on
+Linux, macOS, and Windows PowerShell.
+
+To remove the application while keeping the downloaded databases, cache, and
+results for a future reinstall:
+
+```bash
+docker compose down --remove-orphans --rmi all
+```
+
+To remove **all** LigQ 2 Docker data and start again from an empty installation:
+
+> [!CAUTION]
+> The following command permanently deletes the downloaded databases, predicted
+> cache, search history, uploads, and application state.
+
+```bash
+docker compose down --volumes --remove-orphans --rmi all
+```
+
+Neither option uninstalls Docker itself or deletes the cloned repository. Files
+saved under the local `work/` folder are also preserved. To install LigQ 2 again,
+follow the [Quick start](#quick-start) instructions.
+
 ### Persistent Docker data
 
 Docker stores large application data outside the images:
