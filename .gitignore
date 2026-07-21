@@ -44,14 +44,6 @@ CLAUDE.md
 #Files
 P00533.fasta
 
-#Origin file
-compound_processing/
-generate_databases/
-query_processing/
+# Tests are kept locally but are not versioned.
 tests/
-add_new_representation.py
-benchmark_bsi_search.py
-build_compound_database.py
-run_ligq_2.py
-update_databases.py
-update_zinc_databases.py
+gui/backend/test_*.py
