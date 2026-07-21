@@ -35,36 +35,40 @@ from huggingface_hub.utils import HfHubHTTPError, RepositoryNotFoundError
 def backup_zinc_predicted_cache(
     output_dir: Path,
     backup_dirname: str = "old_predicted_bindings_backup",
-) -> Optional[Path]:
+) -> list[Path]:
     """
-    Move the existing ZINC predicted-binding cache to a timestamped backup.
+    Move existing ZINC predicted-binding caches to timestamped backups.
 
     ZINC rebuilds change the ligand universe and invalidate any per-protein
-    predicted cache computed against the previous base. The runtime cache also
-    validates database fingerprints, but moving the old cache keeps the
-    results_databases tree unambiguous after an update.
+    predicted cache computed against the previous base. This covers both
+    structural similarity (`zinc`) and BSI (`zinc_bsi`) cache namespaces.
     """
-    cache_dir = output_dir / "results_databases" / "predicted_bindings" / "zinc"
-    if not cache_dir.exists():
-        return None
-
-    existing_entries = sorted(cache_dir.iterdir())
-    if not existing_entries:
-        return None
-
-    backup_root = output_dir / "results_databases" / backup_dirname / "zinc"
-    backup_root.mkdir(parents=True, exist_ok=True)
-
+    moved: list[Path] = []
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = backup_root / timestamp
-    suffix = 1
-    while backup_dir.exists():
-        suffix += 1
-        backup_dir = backup_root / f"{timestamp}_{suffix}"
 
-    shutil.move(str(cache_dir), str(backup_dir))
-    print(f"[INFO] Moved existing ZINC predicted cache to backup: {backup_dir}")
-    return backup_dir
+    for provider_name in ("zinc", "zinc_bsi"):
+        cache_dir = output_dir / "results_databases" / "predicted_bindings" / provider_name
+        if not cache_dir.exists():
+            continue
+
+        existing_entries = sorted(cache_dir.iterdir())
+        if not existing_entries:
+            continue
+
+        backup_root = output_dir / "results_databases" / backup_dirname / provider_name
+        backup_root.mkdir(parents=True, exist_ok=True)
+
+        backup_dir = backup_root / timestamp
+        suffix = 1
+        while backup_dir.exists():
+            suffix += 1
+            backup_dir = backup_root / f"{timestamp}_{suffix}"
+
+        shutil.move(str(cache_dir), str(backup_dir))
+        moved.append(backup_dir)
+        print(f"[INFO] Moved existing {provider_name} predicted cache to backup: {backup_dir}")
+
+    return moved
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +243,7 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Keep the current files under "
-            "<output-dir>/results_databases/predicted_bindings/zinc instead "
+            "<output-dir>/results_databases/predicted_bindings/zinc and zinc_bsi instead "
             "of moving them to old_predicted_bindings_backup before rebuilding."
         ),
     )

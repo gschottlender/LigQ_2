@@ -3,7 +3,11 @@
 import os
 import json
 import argparse
+import re
 from datetime import date
+from pathlib import Path
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -24,15 +28,92 @@ from query_processing.results_tables import (
     build_protein_domains_table,
     save_known_binding_table,
 )
+from query_processing.query_processing_functions import prepare_blast_db
+from query_processing.predicted_cache import remove_predicted_cache_dirs
 
 
 # HuggingFace dataset repo with the preprocessed databases and initial metadata
 HF_DATASET_REPO_ID = "gschottlender/LigQ_2"
+CHEMBL_RELEASES_URL = "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/"
+CHEMBL_RELEASES_TIMEOUT = 30
 
 
 # ----------------------------------------------------------------------
 # Command-line arguments
 # ----------------------------------------------------------------------
+def parse_chembl_version(value):
+    text = str(value).strip().lower()
+    if text == "latest":
+        return text
+
+    try:
+        version = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "ChEMBL version must be a positive integer or 'latest'."
+        ) from exc
+
+    if version <= 0:
+        raise argparse.ArgumentTypeError(
+            "ChEMBL version must be a positive integer or 'latest'."
+        )
+
+    return version
+
+
+def parse_available_chembl_versions(releases_html: str) -> list[int]:
+    versions = {
+        int(match)
+        for match in re.findall(r"chembl_(\d+)/", releases_html, flags=re.IGNORECASE)
+    }
+    return sorted(versions)
+
+
+def resolve_latest_chembl_version(
+    releases_url: str = CHEMBL_RELEASES_URL,
+    timeout: int = CHEMBL_RELEASES_TIMEOUT,
+) -> int:
+    try:
+        with urlopen(releases_url, timeout=timeout) as response:
+            releases_html = response.read().decode("utf-8", errors="replace")
+    except (OSError, URLError) as exc:
+        raise RuntimeError(
+            f"Could not resolve latest ChEMBL version from {releases_url}: {exc}"
+        ) from exc
+
+    versions = parse_available_chembl_versions(releases_html)
+    if not versions:
+        raise RuntimeError(
+            f"Could not find any ChEMBL release directories at {releases_url}."
+        )
+
+    return versions[-1]
+
+
+def resolve_chembl_version(value) -> int:
+    parsed = parse_chembl_version(value)
+    if parsed == "latest":
+        return resolve_latest_chembl_version()
+    return parsed
+
+
+def coerce_chembl_version(value):
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def build_chembl_sqlite_url(chembl_version: int) -> str:
+    return (
+        f"{CHEMBL_RELEASES_URL}chembl_{chembl_version}/"
+        f"chembl_{chembl_version}_sqlite.tar.gz"
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run full pipeline: PDB + ChEMBL → merged DB → UniProt sequences."
@@ -53,9 +134,13 @@ def parse_args():
 
     parser.add_argument(
         "--chembl-version",
-        type=int,
-        default=36,
-        help="ChEMBL version to use when regenerating the local database if needed.",
+        type=parse_chembl_version,
+        default="latest",
+        help=(
+            "ChEMBL version to use when regenerating the local database if needed. "
+            "Use a positive integer for a reproducible fixed release, or 'latest' "
+            "to resolve the newest release from EBI. Default: latest."
+        ),
     )
 
     parser.add_argument(
@@ -124,6 +209,28 @@ def regenerate_results_databases(output_dir, binding_data_merged, ligs_smiles_me
     print(f"[INFO] Saved protein-domain runtime table to {protein_domains_path}")
 
     return known_binding, protein_domains
+
+
+def rebuild_blast_database(output_dir: str) -> None:
+    """Rebuild the BLAST database from the freshly exported target FASTA."""
+    data_dir = Path(output_dir)
+    complementary_dir = data_dir / "complementary_databases"
+    print("[INFO] Rebuilding BLAST target sequence database...")
+    prepare_blast_db(
+        data_dir=data_dir,
+        complementary_dir=complementary_dir,
+        force=True,
+    )
+
+
+def invalidate_all_predicted_caches(output_dir: str) -> None:
+    """Remove predicted-ligand caches after PDB/ChEMBL local base changes."""
+    removed = remove_predicted_cache_dirs(Path(output_dir))
+    if not removed:
+        print("[INFO] No predicted-ligand caches found to invalidate.")
+        return
+    for path in removed:
+        print(f"[INFO] Removed stale predicted-ligand cache: {path}")
 
 
 # ----------------------------------------------------------------------
@@ -243,7 +350,6 @@ def main():
 
     output_dir = args.output_dir
     temp_data_dir = args.temp_data_dir
-    chembl_version = args.chembl_version
 
     # Ensure root directories exist
     os.makedirs(output_dir, exist_ok=True)
@@ -301,7 +407,15 @@ def main():
     chembl_sql_dir = os.path.join(temp_data_dir, "chembl_sql")
     os.makedirs(chembl_sql_dir, exist_ok=True)
 
-    current_chembl_in_metadata = metadata.get("chembl_version")
+    if args.chembl_version == "latest":
+        print("[INFO] Resolving latest ChEMBL version from EBI releases...")
+
+    chembl_version = resolve_chembl_version(args.chembl_version)
+
+    if args.chembl_version == "latest":
+        print(f"[INFO] Latest ChEMBL version detected: {chembl_version}")
+
+    current_chembl_in_metadata = coerce_chembl_version(metadata.get("chembl_version"))
 
     # We only regenerate the ChEMBL database if the target version
     # differs from the one stored in metadata.
@@ -332,10 +446,7 @@ def main():
             os.remove(chembl_file)
 
         # Download ChEMBL SQLite for the requested version
-        url = (
-            "https://ftp.ebi.ac.uk/pub/databases/chembl/ChEMBLdb/releases/"
-            f"chembl_{chembl_version}/chembl_{chembl_version}_sqlite.tar.gz"
-        )
+        url = build_chembl_sqlite_url(chembl_version)
 
         print(f"[INFO] Downloading ChEMBL SQLite from: {url}")
         ret = os.system(f"wget -q -P {chembl_sql_dir} {url}")
@@ -457,6 +568,7 @@ def main():
 
     print("[INFO] Exporting UniProt sequences to FASTA...")
     uniprot_dict_to_fasta(output_dir=sequences_dir)
+    rebuild_blast_database(output_dir)
 
     metadata["uniprot_last_update"] = date.today().isoformat()
 
@@ -466,6 +578,8 @@ def main():
     print(f"[INFO] Saving metadata to {metadata_path}")
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2, sort_keys=True)
+
+    invalidate_all_predicted_caches(output_dir)
 
     print("[INFO] Full pipeline finished successfully.")
 

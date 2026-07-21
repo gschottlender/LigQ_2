@@ -291,7 +291,7 @@ The cache is designed for large runs:
 
 A cache generated with a lower minimum threshold can serve stricter later
 queries if provider, method, and database fingerprint match. For example, the
-optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.3` can
+optional Hugging Face `morgan_1024_r2` cache with `cache_threshold_min=0.4` can
 serve the current default `morgan_1024_r2` threshold `0.415094`.
 
 Use `--force-rebuild-predicted-cache` to discard and regenerate the compatible
@@ -569,6 +569,17 @@ an explicit `--search-threshold`.
 ### Update PDB and ChEMBL
 
 ```bash
+python update_databases.py
+```
+
+By default, `update_databases.py` resolves the latest available ChEMBL
+release from the EBI release index and regenerates the local ChEMBL database
+only when that version differs from `db_metadata.json`.
+
+For reproducible updates against a fixed ChEMBL release, pass an explicit
+version:
+
+```bash
 python update_databases.py --chembl-version 36
 ```
 
@@ -576,6 +587,8 @@ When PDB or ChEMBL changes are detected, this command:
 
 - refreshes processed `pdb/` and/or `chembl/` data;
 - rebuilds `merged_databases/`;
+- rebuilds the BLAST database from the updated `target_sequences.fasta`;
+- removes predicted-ligand caches because the local PDB/ChEMBL seed set changed;
 - regenerates runtime tables:
 
 ```text
@@ -606,9 +619,8 @@ Default behavior:
 - backs up existing `databases/compound_data/zinc/reps/` into
   `databases/compound_data/zinc/old_reps_backup/<timestamp>/`;
 - rebuilds the fresh ZINC base and default representation;
-- moves existing ZINC predicted cache from
-  `databases/results_databases/predicted_bindings/zinc/` to
-  `databases/results_databases/old_predicted_bindings_backup/zinc/`.
+- moves existing ZINC predicted caches from `predicted_bindings/zinc/` and
+  `predicted_bindings/zinc_bsi/` to `old_predicted_bindings_backup/`.
 
 Optional overrides:
 
@@ -619,6 +631,12 @@ python update_zinc_databases.py --keep-existing-predicted-cache
 
 After updating ZINC, rebuild any non-default representations needed for that
 new ZINC base.
+
+Rebuilding a custom compound database with `build_compound_database.py` removes
+the matching `<provider>` and `<provider>_bsi` predicted caches. At runtime,
+cache manifests also include fingerprints for the selected target database,
+the local PDB/ChEMBL reference database, and known-binding table, so stale
+predictions are rebuilt from scratch when any of those inputs change.
 
 ## Performance Notes
 

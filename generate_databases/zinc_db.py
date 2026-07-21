@@ -9,66 +9,23 @@ Utilities to:
 This module is designed to be imported and its functions called from other scripts.
 """
 
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Union, Tuple, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import time
-from datetime import datetime
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from compound_processing.compound_helpers import (
+    backup_and_clear_representations,
     build_ligand_index,
     build_morgan_representation,
     build_huggingface_representation
 )
-
-
-def backup_and_clear_representations(
-    root: Union[str, Path],
-    backup_dirname: str = "old_reps_backup",
-) -> Optional[Path]:
-    """
-    Move the current contents of ``root/reps`` into a timestamped backup folder
-    under ``root/<backup_dirname>`` and leave ``root/reps`` empty.
-
-    Returns the backup directory used, or ``None`` when there was nothing to move.
-    """
-    root = Path(root)
-    reps_dir = root / "reps"
-
-    if not reps_dir.exists():
-        return None
-
-    existing_entries = sorted(reps_dir.iterdir())
-    if not existing_entries:
-        return None
-
-    backup_root = root / backup_dirname
-    backup_root.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = backup_root / timestamp
-    suffix = 1
-    while backup_dir.exists():
-        suffix += 1
-        backup_dir = backup_root / f"{timestamp}_{suffix}"
-
-    backup_dir.mkdir(parents=True, exist_ok=False)
-
-    for entry in existing_entries:
-        shutil.move(str(entry), str(backup_dir / entry.name))
-
-    print(
-        f"[INFO] Moved {len(existing_entries)} existing representation files "
-        f"from {reps_dir} to backup {backup_dir}"
-    )
-    return backup_dir
 
 
 def download_zinc_database(
