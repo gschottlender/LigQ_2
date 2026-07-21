@@ -3,6 +3,7 @@ import { VisualizeResults } from './pages/home/VisualizeResults';
 import { ConfigureSearch } from './pages/config/ConfigureSearch';
 import { HelpPage } from './pages/help/HelpPage';
 import { Header } from './components/Header';
+import { InitialSetupGate } from './components/InitialSetupGate';
 import { DatabaseProvider } from './context/DatabaseContext';
 
 function Layout() {
@@ -30,7 +31,9 @@ export function App() {
   return (
     <DatabaseProvider>
       <BrowserRouter>
-        <Layout />
+        <InitialSetupGate>
+          <Layout />
+        </InitialSetupGate>
       </BrowserRouter>
     </DatabaseProvider>
   );

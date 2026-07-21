@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, FileUp, FolderOpen, Info, Loader2, Settings,
 import { useDatabase } from '../../context/DatabaseContext';
 import { api } from '../../lib/api';
 import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
+import { CancelJobButton } from '../../components/CancelJobButton';
 import { useJobPolling } from '../../hooks/useJobPolling';
 
 type FileExt = 'smi' | 'csv' | 'tsv' | 'parquet';
@@ -26,7 +27,7 @@ function validateCsvTsv(text: string, sep: string): string | null {
 }
 
 interface ProcessingState {
-  stage: 'idle' | 'processing' | 'done' | 'error';
+  stage: 'idle' | 'processing' | 'cancelling' | 'cancelled' | 'done' | 'error';
   message: string;
 }
 
@@ -93,6 +94,7 @@ export function AddNewDatabase() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', message: '' });
   const [jobId, setJobId] = useState<string | null>(null);
+  const [submittedOutputName, setSubmittedOutputName] = useState('');
   const [showInfo, setShowInfo] = useState(false);
   const [fileError, setFileError] = useState('');
   const [fileInfo, setFileInfo] = useState('');
@@ -100,6 +102,7 @@ export function AddNewDatabase() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileValidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelRequestRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -116,9 +119,20 @@ export function AddNewDatabase() {
     setProcessing({ stage: 'error', message: job.error ?? 'Processing failed.' });
   }, []);
 
+  const finishJobCancelled = useCallback(async () => {
+    setProcessing({ stage: 'cancelled', message: 'Database generation cancelled. Incomplete files were removed.' });
+    await refetchDatabases();
+  }, [refetchDatabases]);
+
+  const handleJobCancelled = useCallback(async () => {
+    if (cancelRequestRef.current) return;
+    await finishJobCancelled();
+  }, [finishJobCancelled]);
+
   const { job, resetJob } = useJobPolling(jobId, {
     onCompleted: handleJobCompleted,
     onFailed: handleJobFailed,
+    onCancelled: handleJobCancelled,
   });
 
   const applyColumns = useCallback((cols: string[]) => {
@@ -208,11 +222,13 @@ export function AddNewDatabase() {
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+    if (processing.stage === 'processing' || processing.stage === 'cancelling') return;
     const file = e.dataTransfer.files[0];
     if (file) acceptFile(file);
-  }, [acceptFile]);
+  }, [acceptFile, processing.stage]);
 
   const handleBrowse = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (processing.stage === 'processing' || processing.stage === 'cancelling') return;
     const file = e.target.files?.[0];
     if (file) acceptFile(file);
   };
@@ -238,6 +254,7 @@ export function AddNewDatabase() {
 
     resetJob();
     setJobId(null);
+    setSubmittedOutputName(outputName.trim());
     setProcessing({ stage: 'processing', message: 'Submitting job…' });
 
     try {
@@ -272,6 +289,7 @@ export function AddNewDatabase() {
     setErrors({});
     setProcessing({ stage: 'idle', message: '' });
     setJobId(null);
+    setSubmittedOutputName('');
     resetJob();
     setFileError('');
     setFileInfo('');
@@ -280,7 +298,10 @@ export function AddNewDatabase() {
   };
 
   const needsMapping = fileExt === 'csv' || fileExt === 'tsv' || fileExt === 'parquet';
-  const canSubmit = !!uploadedFile && !!outputName.trim() && processing.stage !== 'processing';
+  const jobActive = processing.stage === 'processing' || processing.stage === 'cancelling';
+  const canSubmit = !!uploadedFile
+    && !!outputName.trim()
+    && !jobActive;
 
   return (
     <div className="w-full">
@@ -293,7 +314,7 @@ export function AddNewDatabase() {
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
+        onClick={() => { if (!jobActive) fileInputRef.current?.click(); }}
         className={`border-2 border-dashed rounded-xl p-8 flex flex-col items-center gap-3 transition-colors cursor-pointer
           ${isDragging
             ? 'border-teal-500 bg-teal-50 dark:bg-teal-900/20'
@@ -312,7 +333,8 @@ export function AddNewDatabase() {
               </span>
               <button
                 onClick={(e) => { e.stopPropagation(); reset(); }}
-                className="text-gray-400 hover:text-red-500 transition-colors"
+                disabled={jobActive}
+                className="text-gray-400 hover:text-red-500 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -330,8 +352,10 @@ export function AddNewDatabase() {
         )}
         <button
           onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+          disabled={jobActive}
           className="flex items-center gap-2 border border-gray-300 dark:border-gray-500 text-gray-600 dark:text-gray-300 cursor-pointer
-            px-4 py-1.5 rounded-lg text-sm hover:border-teal-500 hover:text-teal-600 transition-colors"
+            px-4 py-1.5 rounded-lg text-sm hover:border-teal-500 hover:text-teal-600 transition-colors
+            disabled:cursor-not-allowed disabled:opacity-40"
         >
           <FolderOpen className="w-4 h-4" /> Browse files
         </button>
@@ -407,19 +431,47 @@ export function AddNewDatabase() {
             : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
           }`}
       >
-        {processing.stage === 'processing'
-          ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
+        {processing.stage === 'processing' || processing.stage === 'cancelling'
+          ? <><Loader2 className="w-4 h-4 animate-spin" /> {processing.stage === 'cancelling' ? 'Cancelling…' : 'Processing…'}</>
           : <><Settings className="w-4 h-4" /> Process database</>
         }
       </button>
 
-      {processing.stage === 'processing' && (
-        <JobProgressPanel
-          progress={job?.progress}
-          fallbackPercent={job?.progress_percent ?? 0}
-          fallbackMessage={job?.progress_message || processing.message}
-          startedAt={job?.started_at}
-        />
+      {(processing.stage === 'processing' || processing.stage === 'cancelling') && (
+        <>
+          {processing.stage === 'processing' ? (
+            <JobProgressPanel
+              progress={job?.progress}
+              fallbackPercent={job?.progress_percent ?? 0}
+              fallbackMessage={job?.progress_message || processing.message}
+              startedAt={job?.started_at}
+            />
+          ) : (
+            <p className="mt-4 text-sm text-amber-700 dark:text-amber-300">
+              Stopping workers and removing incomplete files…
+            </p>
+          )}
+          {jobId && (!job || ['queued', 'running', 'partial_results'].includes(job.status)) && (
+            <CancelJobButton
+              jobId={jobId}
+              resourceLabel="database generation"
+              description="Processing will stop and all incomplete database files will be removed. The database will not appear in Search until a future run finishes successfully."
+              cancelling={processing.stage === 'cancelling'}
+              onCancelStarted={() => {
+                cancelRequestRef.current = true;
+                setProcessing({ stage: 'cancelling', message: '' });
+              }}
+              onCancelFinished={async () => {
+                cancelRequestRef.current = false;
+                await finishJobCancelled();
+              }}
+              onCancelError={(message) => {
+                cancelRequestRef.current = false;
+                setProcessing({ stage: 'error', message });
+              }}
+            />
+          )}
+        </>
       )}
 
       {/* Error */}
@@ -427,12 +479,20 @@ export function AddNewDatabase() {
         <JobFailurePanel failure={job?.failure} error={processing.message} />
       )}
 
+      {processing.stage === 'cancelled' && (
+        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800
+          dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+          <p className="font-semibold">Cancelled</p>
+          <p className="mt-1 text-xs">{processing.message}</p>
+        </div>
+      )}
+
       {/* Success */}
       {processing.stage === 'done' && (
         <div className="mt-4 flex items-center gap-2 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl">
           <Upload className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0" />
           <p className="text-sm text-green-700 dark:text-green-300">
-            Database <span className="font-medium">"{outputName}"</span> processed. It is now available in Search.
+            Database <span className="font-medium">"{submittedOutputName || outputName}"</span> processed. It is now available in Search.
           </p>
         </div>
       )}

@@ -30,6 +30,26 @@ const SECTIONS: Section[] = [
   { id: 'glossary',           label: 'Glossary',                  icon: <BookOpen className="w-4 h-4" /> },
 ];
 
+const BSI_SUPPORTED_FAMILIES = [
+  { id: 'PF00001', name: '7 transmembrane receptor (rhodopsin family)' },
+  { id: 'PF00002', name: '7 transmembrane receptor (Secretin family)' },
+  { id: 'PF00026', name: 'Eukaryotic aspartyl protease' },
+  { id: 'PF00067', name: 'Cytochrome P450' },
+  { id: 'PF00069', name: 'Protein kinase domain' },
+  { id: 'PF00089', name: 'Trypsin' },
+  { id: 'PF00104', name: 'Ligand-binding domain of nuclear hormone receptor' },
+  { id: 'PF00112', name: 'Papain family cysteine protease' },
+  { id: 'PF00135', name: 'Carboxylesterase family' },
+  { id: 'PF00194', name: 'Eukaryotic-type carbonic anhydrase' },
+  { id: 'PF00209', name: 'Sodium:neurotransmitter symporter family' },
+  { id: 'PF00233', name: "3'5'-cyclic nucleotide phosphodiesterase" },
+  { id: 'PF00413', name: 'Matrixin' },
+  { id: 'PF00520', name: 'Ion transport protein' },
+  { id: 'PF00850', name: 'Histone deacetylase domain' },
+  { id: 'PF01094', name: 'Receptor family ligand binding region' },
+  { id: 'PF07714', name: 'Protein tyrosine and serine/threonine kinase' },
+];
+
 function SectionHeader({ id, icon, title }: { id: string; icon: React.ReactNode; title: string }) {
   return (
     <div id={id} className="flex items-center gap-3 mb-4 scroll-mt-24">
@@ -171,6 +191,20 @@ export function HelpPage() {
                 FASTA file, and the system finds structurally similar proteins in PDB/ChEMBL, collects their known
                 ligands, and retrieves compounds from external databases with high molecular similarity.
               </p>
+              <Card>
+                <div className="flex items-center gap-2 text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200">
+                  <Database className="w-4 h-4 text-[#0d5c6b] dark:text-teal-300" />
+                  First-time initialization
+                </div>
+                <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
+                  If the default reference data is missing, LigQ 2 displays an initialization screen before the
+                  search interface. It calculates the required download from the official Hugging Face files,
+                  shows the available disk space, and installs only missing resources after you confirm. Keep the
+                  backend running while the background job downloads ZINC/PDB-ChEMBL data, BLAST/Pfam resources,
+                  the reusable default predicted-ligand cache, and supported BSI models. Databases become available
+                  automatically when setup completes.
+                </p>
+              </Card>
             </div>
           </section>
 
@@ -200,34 +234,70 @@ export function HelpPage() {
                     <InfoBadge label="Tanimoto" color="teal" /> for binary fingerprints,{' '}
                     <InfoBadge label="Cosine" color="blue" /> for embeddings.
                   </Param>
+                  <Param name="BSI">
+                    Enables the Bioactivity Similarity Index for protein families with a trained Pfam-specific
+                    model. BSI fixes the representation to{' '}
+                    <span className="font-jetbrains-mono text-xs">morgan_1024_r2</span> and reports a learned{' '}
+                    <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity. To avoid
+                    prohibitively expensive domain-wide expansion, BSI mode supports only{' '}
+                    <InfoBadge label="Sequence" color="teal" /> and{' '}
+                    <InfoBadge label="Nearest K" color="blue" />; Domain is cleared and disabled.
+                    <span className="mt-2 block">
+                      <strong className="font-semibold text-gray-700 dark:text-gray-300">
+                        Supported protein families:
+                      </strong>
+                      <span className="mt-1 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+                        {BSI_SUPPORTED_FAMILIES.map((family) => (
+                          <span key={family.id}>
+                            <span className="font-jetbrains-mono text-xs text-[#0d5c6b] dark:text-teal-300">
+                              {family.id}
+                            </span>{' '}
+                            — {family.name}
+                          </span>
+                        ))}
+                      </span>
+                    </span>
+                  </Param>
                   <Param name="Min / Max cutoff">
                     Similarity threshold for predicted ligands. Only compounds with similarity inside this range
                     are included (0.0 to 1.0). The minimum uses the selected representation's pipeline default,
                     rounded upward to two decimals; representations without a registered default start at 0.9.
-                    The maximum starts at 1.0, and both controls advance in 0.01 increments.
+                    In the frontend, the minimum cannot be lowered below 0.20 for Tanimoto representations or
+                    0.75 for Cosine representations. The maximum starts at 1.0, and both controls advance in
+                    0.01 increments. In BSI mode, the minimum starts at 0.98, cannot be lowered below 0.97, and
+                    remains adjustable up to 1.0; the maximum is fixed at 1.0.
                   </Param>
                   <Param name="Input FASTA">
                     Click the folder icon to upload your <span className="font-jetbrains-mono text-xs">.fasta</span>,{' '}
                     <span className="font-jetbrains-mono text-xs">.fa</span>, or{' '}
                     <span className="font-jetbrains-mono text-xs">.faa</span> file.
-                    Each sequence in the file becomes one query.
+                    Each sequence in the file becomes one query. The frontend counts sequences immediately and
+                    displays the count alongside the current maximum. Files above the default limit of 200 are
+                    blocked from submission.
                   </Param>
                   <Param name="Method">
                     Check one or more search strategies:{' '}
                     <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
-                    <InfoBadge label="Nearest K" color="blue" /> (set K),{' '}
+                    <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
                     <InfoBadge label="Domain" color="amber" /> (HMMER).
+                  </Param>
+                  <Param name="Advanced options">
+                    Change the maximum number of FASTA sequences accepted by the frontend. The default is 200,
+                    and any positive integer can be used. Increasing this limit can make searches take
+                    substantially longer to complete.
                   </Param>
                 </div>
               </Card>
 
               <div className="flex flex-col gap-2">
-                <Step n={1}>Select your database, representation, and similarity cutoffs.</Step>
+                <Step n={1}>Select your database, representation, and similarity cutoffs, or enable BSI.</Step>
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>
                   Click <strong>Run Search</strong>. The status panel shows the current step, processed items,
-                  ETA, and elapsed time. Results appear progressively as each query completes.
+                  ETA, and elapsed time. During predicted-ligand preparation it also reports processed candidate
+                  proteins as X / total, including compatible cached proteins in the initial count. Results appear
+                  progressively as each query completes.
                 </Step>
                 <Step n={5}>
                   Collapse the sidebar with the{' '}
@@ -330,11 +400,15 @@ export function HelpPage() {
                 <Step n={3}>
                   Click <strong>Load</strong> next to any run to restore its full results instantly.
                 </Step>
+                <Step n={4}>
+                  To free disk space, click <strong>Clear history</strong> at the bottom of the panel and confirm
+                  the permanent deletion. Results belonging to an active search are preserved.
+                </Step>
               </div>
               <p className="text-xs font-dm-sans text-gray-400 dark:text-gray-500">
                 Results are stored under{' '}
                 <span className="font-jetbrains-mono">results/{'<job_id>'}/search_results/</span> in the
-                project directory.
+                project directory. Clearing history cannot be undone.
               </p>
             </div>
           </section>
@@ -367,6 +441,10 @@ export function HelpPage() {
                   progress; the default Morgan representation is built automatically.
                 </Step>
                 <Step n={5}>
+                  To stop a long job, click <strong>Cancel</strong> and confirm. LigQ 2 terminates the workers,
+                  removes the incomplete staging database, and keeps the form ready for another attempt.
+                </Step>
+                <Step n={6}>
                   Once complete, the new database appears immediately in the Search sidebar dropdown.
                 </Step>
               </div>
@@ -387,7 +465,9 @@ export function HelpPage() {
                 <Step n={2}>
                   Choose a <strong>Representation type</strong>:{' '}
                   <InfoBadge label="RDKit fingerprint" color="teal" /> or{' '}
-                  <InfoBadge label="HuggingFace embedding" color="blue" />
+                  <InfoBadge label="HuggingFace embedding" color="blue" />. ChemBERTa embedding generation
+                  is enabled only when the graphical application detects a usable CUDA GPU. This restriction
+                  does not apply to command-line workflows.
                 </Step>
                 <Step n={3}>
                   Choose a <strong>Representation preset</strong>. The recommended metric (Tanimoto or Cosine)
@@ -402,16 +482,21 @@ export function HelpPage() {
                   Click <strong>Process representation</strong>. This computes fingerprints or embeddings for
                   every compound in the database while showing the active database, count, ETA, and elapsed time.
                   <span className="ml-1 text-amber-600 dark:text-amber-400">
-                    RDKit fingerprints take minutes; HuggingFace embeddings may take several hours on large databases.
+                    RDKit fingerprints take minutes; HuggingFace embeddings require a CUDA GPU in the graphical interface.
                   </span>
                 </Step>
                 <Step n={6}>
+                  While the job is queued or running, click <strong>Cancel</strong> and confirm to stop it.
+                  Incomplete files from the active phase are removed. A representation copy that already
+                  completed successfully is kept, so a future retry only builds the missing compatible copy.
+                </Step>
+                <Step n={7}>
                   When complete, the representation has both a <strong>.dat</strong> and a{' '}
                   <strong>.meta.json</strong> file in the selected database and in the internal{' '}
                   <strong>pdb_chembl</strong> database. Only then does it appear in the Search sidebar.
                   An incomplete representation stays hidden and can be processed again.
                 </Step>
-                <Step n={7}>
+                <Step n={8}>
                   If processing stops, a red panel identifies the failed step and shows the script error
                   so you can correct the cause before retrying.
                 </Step>

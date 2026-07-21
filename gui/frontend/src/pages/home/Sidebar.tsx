@@ -1,4 +1,14 @@
-import { Check, ChevronLeft, ChevronRight, FolderOpen, Info, Loader2, Play } from 'lucide-react';
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FolderOpen,
+  Info,
+  Loader2,
+  Play,
+  Settings2,
+} from 'lucide-react';
 import { useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
@@ -33,12 +43,15 @@ interface SliderFieldProps {
   min?: number;
   max?: number;
   step?: number;
+  disabled?: boolean;
 }
 
 interface CheckboxFieldProps {
   label: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
+  info?: string;
+  disabled?: boolean;
 }
 
 function SelectField({ label, value, onChange, options, info, disabled }: SelectFieldProps) {
@@ -71,7 +84,7 @@ function SelectField({ label, value, onChange, options, info, disabled }: Select
   );
 }
 
-function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01 }: SliderFieldProps) {
+function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01, disabled }: SliderFieldProps) {
   return (
     <section className="flex flex-col gap-2 mt-5">
       <label className="text-sm font-dm-sans font-semibold text-gray-500 dark:text-gray-200">{label}</label>
@@ -82,8 +95,9 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01 }: 
           max={max}
           step={step}
           value={value}
+          disabled={disabled}
           onChange={(e) => onChange(parseFloat(e.target.value))}
-          className="flex-1 cursor-pointer"
+          className="flex-1 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
         />
         <input
           type="number"
@@ -91,24 +105,38 @@ function SliderField({ label, value, onChange, min = 0, max = 1, step = 0.01 }: 
           max={max}
           step={step}
           value={value.toFixed(2)}
+          disabled={disabled}
           onChange={(e) => {
             const v = parseFloat(e.target.value);
             if (!isNaN(v) && v >= min && v <= max) onChange(v);
           }}
           className="w-24 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-xs text-center
-            text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500
+            disabled:opacity-50 disabled:cursor-not-allowed"
         />
       </div>
     </section>
   );
 }
 
-function CheckboxField({ label, checked, onChange }: CheckboxFieldProps) {
+function CheckboxField({ label, checked, onChange, info, disabled }: CheckboxFieldProps) {
   return (
-    <label className="flex font-dm-sans font-medium items-center gap-2 text-sm text-gray-500 dark:text-gray-200 cursor-pointer">
+    <div className={`flex font-dm-sans font-medium items-center gap-2 text-sm
+      ${disabled ? 'text-gray-400 dark:text-gray-500' : 'text-gray-500 dark:text-gray-200'}`}>
       <div
-        onClick={() => onChange(!checked)}
-        className={`w-4 h-4 rounded flex items-center justify-center border transition-colors duration-200 cursor-pointer
+        role="checkbox"
+        aria-checked={checked}
+        aria-disabled={disabled}
+        tabIndex={disabled ? -1 : 0}
+        onClick={() => { if (!disabled) onChange(!checked); }}
+        onKeyDown={(event) => {
+          if (!disabled && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            onChange(!checked);
+          }
+        }}
+        className={`w-4 h-4 rounded flex items-center justify-center border transition-colors duration-200
+          ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}
           ${checked
             ? 'bg-cyan-900 border-cyan-900 dark:bg-teal-500 dark:border-teal-500'
             : 'bg-white dark:bg-transparent border-gray-300 dark:border-gray-600'
@@ -116,12 +144,25 @@ function CheckboxField({ label, checked, onChange }: CheckboxFieldProps) {
       >
         {checked && <Check className="w-3 h-3 text-white stroke-3" />}
       </div>
-      {label}
-    </label>
+      <span>{label}</span>
+      {info && (
+        <Tooltip content={info}>
+          <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
+        </Tooltip>
+      )}
+    </div>
   );
 }
 
 const VALID_AA_RE = /^[ACDEFGHIKLMNPQRSTVWYBZXU*]+$/i;
+const BSI_REPRESENTATION = 'morgan_1024_r2';
+const TANIMOTO_MIN_THRESHOLD = 0.2;
+const COSINE_MIN_THRESHOLD = 0.75;
+const BSI_MIN_THRESHOLD = 0.97;
+const BSI_DEFAULT_THRESHOLD = 0.98;
+const DEFAULT_MAX_FASTA_SEQUENCES = 200;
+const MIN_NEAREST_K = 1;
+const MAX_NEAREST_K = 15;
 
 function roundThresholdUp(value: number): number {
   return Math.min(1, Math.ceil(value * 100 - 1e-9) / 100);
@@ -129,6 +170,12 @@ function roundThresholdUp(value: number): number {
 
 function representationDefault(value: number | null | undefined): number | null {
   return value == null ? null : roundThresholdUp(value);
+}
+
+function structuralMinimumForMetric(metric: 'tanimoto' | 'cosine' | undefined): number {
+  if (metric === 'tanimoto') return TANIMOTO_MIN_THRESHOLD;
+  if (metric === 'cosine') return COSINE_MIN_THRESHOLD;
+  return 0;
 }
 
 function validateFasta(text: string): string | null {
@@ -145,10 +192,15 @@ function validateFasta(text: string): string | null {
   return null;
 }
 
+function countFastaSequences(text: string): number {
+  return text.match(/^[ \t]*>/gm)?.length ?? 0;
+}
+
 const VALIDATION_MESSAGES = {
   fasta: 'FASTA file is required.',
-  kValue: 'K must be greater than 0.',
+  kValue: `K must be between ${MIN_NEAREST_K} and ${MAX_NEAREST_K}.`,
   noRepresentation: 'No representation available for the selected database.',
+  bsiUnavailable: 'BSI requires the morgan_1024_r2 representation for the selected database.',
   thresholdRange: 'Maximum cutoff must be greater than or equal to minimum cutoff.',
 };
 
@@ -169,12 +221,17 @@ export function Sidebar({
   const [databaseId, setDatabaseId] = useState('');
   const [representationId, setRepresentationId] = useState('');
   const [fastaFile, setFastaFile] = useState<File | null>(null);
+  const [fastaSequenceCount, setFastaSequenceCount] = useState<number | null>(null);
+  const [maxFastaSequences, setMaxFastaSequences] = useState(DEFAULT_MAX_FASTA_SEQUENCES);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [minCutoffValue, setMinCutoffValue] = useState<number | null>(null);
   const [maxCutoff, setMaxCutoff] = useState(1);
+  const [useBsi, setUseBsi] = useState(false);
+  const [bsiThreshold, setBsiThreshold] = useState(BSI_DEFAULT_THRESHOLD);
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
   const [kValue, setKValue] = useState(5);
-  const [methodDomain, setMethodDomain] = useState(true);
+  const [methodDomain, setMethodDomain] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [fastaError, setFastaError] = useState('');
@@ -185,37 +242,62 @@ export function Sidebar({
 
   const resolvedDatabaseId = databaseId || databases[0]?.id || '';
   const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
-  const resolvedRepresentationId = availableReps.some((r) => r.id === representationId)
+  const normalRepresentationId = availableReps.some((r) => r.id === representationId)
     ? representationId
     : availableReps[0]?.id ?? '';
+  const bsiAvailable = availableReps.some((r) => r.id === BSI_REPRESENTATION);
+  const resolvedRepresentationId = useBsi ? BSI_REPRESENTATION : normalRepresentationId;
   const selectedRepresentation = availableReps.find((r) => r.id === resolvedRepresentationId);
-  const metric = selectedRepresentation?.metric ?? 'tanimoto';
-  const minCutoff = minCutoffValue
+  const metric = useBsi ? 'bsi' : selectedRepresentation?.metric ?? 'tanimoto';
+  const structuralMinCutoff = structuralMinimumForMetric(selectedRepresentation?.metric);
+  const storedMinCutoff = minCutoffValue
     ?? representationDefault(selectedRepresentation?.defaultThreshold)
     ?? 0.9;
+  const minCutoff = Math.max(storedMinCutoff, structuralMinCutoff);
+  const activeMinCutoff = useBsi ? bsiThreshold : minCutoff;
+  const activeMaxCutoff = useBsi ? 1 : maxCutoff;
+  const fastaSequenceLimitExceeded = fastaSequenceCount !== null
+    && fastaSequenceCount > maxFastaSequences;
 
   const handleDatabaseChange = (nextDatabaseId: string) => {
     const nextRepresentations = getRepresentationsForDatabase(nextDatabaseId);
     const nextRepresentation = nextRepresentations[0];
     setDatabaseId(nextDatabaseId);
     setRepresentationId('');
-    setMinCutoffValue(representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff);
+    if (useBsi && !nextRepresentations.some((rep) => rep.id === BSI_REPRESENTATION)) {
+      setUseBsi(false);
+    }
+    const nextMinimum = structuralMinimumForMetric(nextRepresentation?.metric);
+    const nextDefault = representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff;
+    setMinCutoffValue(Math.max(nextDefault, nextMinimum));
   };
 
   const handleRepresentationChange = (nextRepresentationId: string) => {
     const nextRepresentation = availableReps.find((rep) => rep.id === nextRepresentationId);
     setRepresentationId(nextRepresentationId);
-    setMinCutoffValue(representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff);
+    const nextMinimum = structuralMinimumForMetric(nextRepresentation?.metric);
+    const nextDefault = representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff;
+    setMinCutoffValue(Math.max(nextDefault, nextMinimum));
+  };
+
+  const handleBsiChange = (enabled: boolean) => {
+    setUseBsi(enabled);
+    if (enabled) {
+      setBsiThreshold((current) => Math.max(current, BSI_MIN_THRESHOLD));
+      setMethodDomain(false);
+    }
   };
 
   const handleFastaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    setFastaFile(null);
+    setFastaSequenceCount(null);
+    setValidationError('');
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (!['fasta', 'fa', 'faa'].includes(ext ?? '')) {
       setFastaError('Invalid file type. Accepted: .fasta, .fa, .faa');
-      setFastaFile(null);
       if (fastaInputRef.current) fastaInputRef.current.value = '';
       return;
     }
@@ -233,13 +315,37 @@ export function Sidebar({
       if (error) {
         setFastaError(error);
         setFastaFile(null);
+        setFastaSequenceCount(null);
         if (fastaInputRef.current) fastaInputRef.current.value = '';
       } else {
         setFastaError('');
         setFastaFile(file);
+        setFastaSequenceCount(countFastaSequences(text));
       }
     };
-    reader.readAsText(file.slice(0, 65536));
+    reader.onerror = () => {
+      if (fastaValidationTimerRef.current) clearTimeout(fastaValidationTimerRef.current);
+      setFastaValidating(false);
+      setFastaError('FASTA file could not be read. Please try again.');
+      setFastaFile(null);
+      setFastaSequenceCount(null);
+      if (fastaInputRef.current) fastaInputRef.current.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  const handleMaxFastaSequencesChange = (value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isInteger(parsed) && parsed >= 1) {
+      setMaxFastaSequences(parsed);
+      setValidationError('');
+    }
+  };
+
+  const handleNearestKChange = (value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    const nextValue = Number.isNaN(parsed) ? MIN_NEAREST_K : parsed;
+    setKValue(Math.min(MAX_NEAREST_K, Math.max(MIN_NEAREST_K, nextValue)));
   };
 
   const validate = () => {
@@ -247,9 +353,19 @@ export function Sidebar({
       if (!fastaError) setValidationError(VALIDATION_MESSAGES.fasta);
       return false;
     }
-    if (methodNearestK && kValue <= 0) { setValidationError(VALIDATION_MESSAGES.kValue); return false; }
+    if (fastaSequenceLimitExceeded) {
+      setValidationError(
+        `FASTA contains ${fastaSequenceCount} sequences; the current maximum is ${maxFastaSequences}.`,
+      );
+      return false;
+    }
+    if (methodNearestK && (kValue < MIN_NEAREST_K || kValue > MAX_NEAREST_K)) {
+      setValidationError(VALIDATION_MESSAGES.kValue);
+      return false;
+    }
     if (availableReps.length === 0) { setValidationError(VALIDATION_MESSAGES.noRepresentation); return false; }
-    if (maxCutoff < minCutoff) { setValidationError(VALIDATION_MESSAGES.thresholdRange); return false; }
+    if (useBsi && !bsiAvailable) { setValidationError(VALIDATION_MESSAGES.bsiUnavailable); return false; }
+    if (!useBsi && maxCutoff < minCutoff) { setValidationError(VALIDATION_MESSAGES.thresholdRange); return false; }
     setValidationError('');
     return true;
   };
@@ -263,12 +379,17 @@ export function Sidebar({
       formData.append('ligand_provider', resolvedDatabaseId);
       formData.append('search_representation', resolvedRepresentationId);
       formData.append('search_metric', metric);
-      formData.append('search_threshold', String(minCutoff));
-      formData.append('search_threshold_max', String(maxCutoff));
+      formData.append('use_bsi', String(useBsi));
+      if (useBsi) {
+        formData.append('bsi_threshold', String(bsiThreshold));
+      } else {
+        formData.append('search_threshold', String(minCutoff));
+        formData.append('search_threshold_max', String(maxCutoff));
+      }
       formData.append('use_sequence', String(methodSequence));
       formData.append('use_nearest_k', String(methodNearestK));
       formData.append('nearest_k', String(kValue));
-      formData.append('use_domains', String(methodDomain));
+      formData.append('use_domains', String(useBsi ? false : methodDomain));
 
       const response = await api.post<{ job_id: string; status: string; output_dir: string }>(
         '/jobs/search',
@@ -277,6 +398,7 @@ export function Sidebar({
       onJobCreated(response.data.job_id);
 
       setFastaFile(null);
+      setFastaSequenceCount(null);
       setFastaError('');
       if (fastaInputRef.current) fastaInputRef.current.value = '';
 
@@ -301,7 +423,7 @@ export function Sidebar({
     setTimeout(() => setIsOpen(true), 50);
   };
 
-  const buttonDisabled = isRunning || isSubmitting;
+  const buttonDisabled = isRunning || isSubmitting || fastaValidating || fastaSequenceLimitExceeded;
 
   return (
     <section className={`relative w-full border-b sm:border-b-0 sm:border-r border-gray-300 dark:border-gray-700 sm:sticky top-0 h-auto sm:h-full sm:shrink-0 transition-all duration-300 ${isOpen ? 'sm:w-72' : 'sm:w-16'} dark:bg-[#1a2330]`}>
@@ -338,7 +460,7 @@ export function Sidebar({
             onChange={handleRepresentationChange}
             info="Molecular representation used for similarity search."
             options={availableReps.map((r) => ({ value: r.id, label: r.label }))}
-            disabled={availableReps.length === 0}
+            disabled={useBsi || availableReps.length === 0}
           />
 
           {/* Metric (read-only — derived from selected representation) */}
@@ -346,16 +468,40 @@ export function Sidebar({
             label="Metric"
             value={metric}
             onChange={() => {}}
-            info="Similarity metric determined by the representation. Fingerprints use Tanimoto; embeddings use Cosine similarity."
-            options={[
-              { value: 'tanimoto', label: 'Tanimoto' },
-              { value: 'cosine', label: 'Cosine similarity' },
-            ]}
+            info={useBsi
+              ? 'BSI reports a learned bioactivity similarity score.'
+              : 'Similarity metric determined by the representation. Fingerprints use Tanimoto; embeddings use Cosine similarity.'}
+            options={useBsi
+              ? [{ value: 'bsi', label: 'BSI Score' }]
+              : [
+                  { value: 'tanimoto', label: 'Tanimoto' },
+                  { value: 'cosine', label: 'Cosine similarity' },
+                ]}
             disabled
           />
 
-          <SliderField label="Minimum cutoff" value={minCutoff} onChange={setMinCutoffValue} />
-          <SliderField label="Maximum cutoff" value={maxCutoff} onChange={setMaxCutoff} />
+          <div className="mt-5">
+            <CheckboxField
+              label="BSI"
+              checked={useBsi}
+              onChange={handleBsiChange}
+              disabled={!bsiAvailable && !useBsi}
+              info="Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model."
+            />
+          </div>
+
+          <SliderField
+            label="Minimum cutoff"
+            value={activeMinCutoff}
+            onChange={useBsi ? setBsiThreshold : setMinCutoffValue}
+            min={useBsi ? BSI_MIN_THRESHOLD : structuralMinCutoff}
+          />
+          <SliderField
+            label="Maximum cutoff"
+            value={activeMaxCutoff}
+            onChange={setMaxCutoff}
+            disabled={useBsi}
+          />
 
           {/* Input FASTA */}
           <section className="flex flex-col gap-2 mt-5">
@@ -365,18 +511,20 @@ export function Sidebar({
                 <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
               </Tooltip>
             </label>
-            <div className="flex gap-2">
+            <div className="flex w-full gap-2">
               <input
                 type="text"
                 value={fastaFile?.name ?? ''}
                 readOnly
                 placeholder="queries.faa"
-                className="flex-1 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm
+                title={fastaFile?.name ?? ''}
+                className="min-w-0 flex-1 border border-gray-300 dark:border-gray-600 rounded-lg px-3 py-2 text-sm
                   text-gray-600 dark:text-gray-300 bg-gray-50 dark:bg-gray-800 cursor-default placeholder:text-gray-400"
               />
               <button
                 onClick={() => fastaInputRef.current?.click()}
-                className="border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-300 p-2 rounded-lg
+                aria-label="Select FASTA file"
+                className="shrink-0 border border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-300 p-2 rounded-lg
                   hover:border-teal-400 hover:text-teal-600 transition-colors cursor-pointer"
               >
                 <FolderOpen className="w-4 h-4" />
@@ -395,6 +543,29 @@ export function Sidebar({
             {fastaError && !fastaValidating && (
               <p className="text-xs text-red-500 dark:text-red-400">{fastaError}</p>
             )}
+            {fastaSequenceCount !== null && !fastaValidating && (
+              <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-dm-sans
+                ${fastaSequenceLimitExceeded
+                  ? 'text-red-600 dark:text-red-400'
+                  : 'text-gray-500 dark:text-gray-400'}`}>
+                <span>
+                  Sequences: <strong className="font-semibold">{fastaSequenceCount.toLocaleString()}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  Maximum: <strong className="font-semibold">{maxFastaSequences.toLocaleString()}</strong>
+                </span>
+                <Tooltip content="The maximum number of FASTA sequences can be changed in Advanced options.">
+                  <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
+                </Tooltip>
+              </div>
+            )}
+            {fastaSequenceLimitExceeded && !fastaValidating && (
+              <p className="text-xs text-red-500 dark:text-red-400">
+                This FASTA exceeds the current sequence limit. Increase the maximum in Advanced options or
+                upload a smaller file.
+              </p>
+            )}
           </section>
 
           {/* Method */}
@@ -409,16 +580,67 @@ export function Sidebar({
                   <input
                     type="number"
                     value={kValue}
-                    min={1}
-                    onChange={(e) => setKValue(parseInt(e.target.value) || 1)}
+                    min={MIN_NEAREST_K}
+                    max={MAX_NEAREST_K}
+                    step={1}
+                    onChange={(event) => handleNearestKChange(event.target.value)}
                     className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm
                       text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
                   />
                 </div>
               )}
-              <CheckboxField label="Domain" checked={methodDomain} onChange={setMethodDomain} />
+              <CheckboxField
+                label="Domain"
+                checked={methodDomain}
+                onChange={setMethodDomain}
+                disabled={useBsi}
+                info={useBsi
+                  ? 'Domain search is unavailable in BSI mode because domain-wide expansion can be prohibitively slow.'
+                  : undefined}
+              />
             </div>
           </div>
+
+          {/* Advanced options */}
+          <section className="mt-5 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
+            <button
+              type="button"
+              aria-expanded={showAdvancedOptions}
+              onClick={() => setShowAdvancedOptions((current) => !current)}
+              className="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2.5 text-left
+                text-sm font-dm-sans font-semibold text-gray-600 transition-colors hover:bg-gray-50
+                dark:text-gray-300 dark:hover:bg-gray-800/60"
+            >
+              <span className="flex items-center gap-2">
+                <Settings2 className="w-4 h-4 text-gray-400" />
+                Advanced options
+              </span>
+              {showAdvancedOptions
+                ? <ChevronDown className="w-4 h-4 text-gray-400" />
+                : <ChevronRight className="w-4 h-4 text-gray-400" />
+              }
+            </button>
+            {showAdvancedOptions && (
+              <div className="border-t border-gray-200 px-3 py-3 dark:border-gray-700">
+                <label className="flex flex-col gap-2 text-xs font-dm-sans font-medium text-gray-600 dark:text-gray-300">
+                  <span>Maximum FASTA sequences</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={maxFastaSequences}
+                    onChange={(event) => handleMaxFastaSequencesChange(event.target.value)}
+                    className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-600
+                      focus:outline-none focus:ring-1 focus:ring-teal-500 dark:border-gray-600 dark:bg-gray-800
+                      dark:text-gray-200"
+                  />
+                </label>
+                <p className="mt-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
+                  Large FASTA inputs can make the search take substantially longer to complete.
+                </p>
+              </div>
+            )}
+          </section>
 
           {validationError && (
             <p className="mt-3 text-xs text-red-500 dark:text-red-400">{validationError}</p>

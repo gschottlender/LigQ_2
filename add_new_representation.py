@@ -173,6 +173,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--staging-token",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -245,6 +250,7 @@ def build_representation_if_needed(
     trust_remote_code: bool,
     revision: Optional[str],
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     ensure_ligands_exist(root)
 
@@ -272,6 +278,7 @@ def build_representation_if_needed(
             trust_remote_code=trust_remote_code,
             revision=revision,
             progress_callback=progress_callback,
+            staging_token=staging_token,
         )
     elif representation_type == "rdkit":
         if n_bits is None:
@@ -285,6 +292,7 @@ def build_representation_if_needed(
             n_jobs=n_jobs,
             chunksize=chunksize,
             progress_callback=progress_callback,
+            staging_token=staging_token,
         )
     else:
         raise ValueError(f"Unsupported representation_type: {representation_type}")
@@ -391,6 +399,7 @@ def main() -> None:
             trust_remote_code=args.trust_remote_code,
             revision=args.revision,
             progress_callback=phase_progress,
+            staging_token=args.staging_token,
         )
         if not representation_exists(root, resolved_name):
             missing = [

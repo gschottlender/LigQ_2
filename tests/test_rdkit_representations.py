@@ -58,6 +58,35 @@ class TestRDKitRepresentations(unittest.TestCase):
             self.assertEqual(meta["fingerprint_type"], "maccs")
             self.assertEqual(meta["failed_smiles"], 1)
 
+    def test_job_staging_publishes_only_complete_representation_pair(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pd.DataFrame(
+                {
+                    "chem_comp_id": ["A"],
+                    "smiles": ["CCO"],
+                    "inchikey": [None],
+                    "lig_idx": [0],
+                }
+            ).to_parquet(root / "ligands.parquet", index=False)
+
+            build_rdkit_representation(
+                root=root,
+                fp_kind="rdkit",
+                n_bits=128,
+                batch_size=1,
+                name="transactional_test",
+                n_jobs=1,
+                chunksize=1,
+                staging_token="test-job",
+            )
+
+            reps = root / "reps"
+            self.assertTrue((reps / "transactional_test.dat").is_file())
+            self.assertTrue((reps / "transactional_test.meta.json").is_file())
+            self.assertEqual(list(reps.glob("*.partial.test-job")), [])
+            self.assertEqual(list(reps.glob("*.publishing.test-job")), [])
+
 
 if __name__ == "__main__":
     unittest.main()

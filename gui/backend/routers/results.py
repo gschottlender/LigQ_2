@@ -1,4 +1,5 @@
 import io
+import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,10 +10,17 @@ from fastapi.responses import StreamingResponse
 
 from core import state
 from core.config import RESULTS_DIR
+from models.job import JobStatus
 from services.tsv_reader import read_summary, read_tsv_paginated
 
 router = APIRouter(prefix="/api/jobs", tags=["results"])
 history_router = APIRouter(prefix="/api/results", tags=["history"])
+
+ACTIVE_RESULT_STATUSES = {
+    JobStatus.queued,
+    JobStatus.running,
+    JobStatus.partial_results,
+}
 
 
 async def _resolve_output_dir(job_id: str) -> Path:
@@ -73,6 +81,51 @@ async def list_results():
 
     entries.sort(key=lambda e: e["created_at"], reverse=True)
     return {"results": entries}
+
+
+@history_router.delete("")
+async def clear_results_history():
+    """Delete stored search results while preserving active search outputs."""
+    if not RESULTS_DIR.exists():
+        return {
+            "deleted_count": 0,
+            "deleted_results": [],
+            "skipped_active": [],
+            "failed_results": [],
+        }
+
+    active_output_dirs = {
+        Path(job.output_dir).resolve()
+        for job in state.get_all_jobs()
+        if (
+            job.job_type == "search"
+            and job.status in ACTIVE_RESULT_STATUSES
+            and job.output_dir
+        )
+    }
+
+    deleted_results: list[str] = []
+    skipped_active: list[str] = []
+    failed_results: list[str] = []
+
+    for folder in sorted(RESULTS_DIR.iterdir(), key=lambda path: path.name):
+        if not folder.is_dir() or folder.is_symlink():
+            continue
+        if folder.resolve() in active_output_dirs:
+            skipped_active.append(folder.name)
+            continue
+        try:
+            shutil.rmtree(folder)
+            deleted_results.append(folder.name)
+        except OSError:
+            failed_results.append(folder.name)
+
+    return {
+        "deleted_count": len(deleted_results),
+        "deleted_results": deleted_results,
+        "skipped_active": skipped_active,
+        "failed_results": failed_results,
+    }
 
 
 # ─── Summary ──────────────────────────────────────────────────────────────────

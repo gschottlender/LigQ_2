@@ -11,6 +11,8 @@ class JobStatus(str, Enum):
     completed = "completed"
     completed_with_warnings = "completed_with_warnings"
     failed = "failed"
+    cancelled = "cancelled"
+    interrupted = "interrupted"
 
 
 class JobProgress(BaseModel):
@@ -24,6 +26,10 @@ class JobProgress(BaseModel):
     unit: Optional[str] = None
     context: Optional[str] = None
     eta_seconds: Optional[int] = None
+    downloaded_bytes: Optional[int] = None
+    download_total_bytes: Optional[int] = None
+    completed_files: Optional[int] = None
+    total_files: Optional[int] = None
 
 
 class JobFailure(BaseModel):
@@ -36,7 +42,7 @@ class JobFailure(BaseModel):
 
 class Job(BaseModel):
     job_id: str
-    job_type: str  # "search" | "build_database" | "add_representation"
+    job_type: str  # "setup" | "search" | "build_database" | "add_representation"
     status: JobStatus
     created_at: datetime
     started_at: Optional[datetime] = None

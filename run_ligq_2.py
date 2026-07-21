@@ -52,6 +52,10 @@ DEFAULT_CACHE_NAMESPACE = (
     "predicted_bindings/zinc/"
     "search_representation=morgan_1024_r2__search_metric=tanimoto__cache_threshold_min=0.4"
 )
+LEGACY_DEFAULT_CACHE_NAMESPACE = (
+    "predicted_bindings/zinc/"
+    "search_representation=morgan_1024_r2__search_metric=tanimoto__zinc_search_threshold=0.5"
+)
 
 HF_CORE_REQUIRED_RELATIVE_PATHS = [
     "sequences",
@@ -86,6 +90,13 @@ HF_OPTIONAL_CACHE_PATH_GROUPS = [
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
         f"results_databases/{DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
+    ],
+    [
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/manifest.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_data.parquet",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_progress.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/cached_proteins.json",
+        f"results_databases/{LEGACY_DEFAULT_CACHE_NAMESPACE}/predicted_binding_rowgroup_index.json",
     ],
 ]
 
@@ -702,6 +713,12 @@ def main() -> None:
             proteins_needed=proteins_needed,
             force_rebuild_cache=args.force_rebuild_predicted_cache,
             load_dataframe=False,
+            progress_callback=lambda current, total: report_search_progress(
+                "predicted_cache",
+                current=current,
+                total=total,
+                unit="proteins",
+            ),
         )
         predicted_score_col = getattr(provider, "score_column", None)
 

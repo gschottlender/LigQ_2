@@ -1,9 +1,10 @@
-import { useCallback, useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Info, Loader2, Settings, Upload } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Cpu, Info, Loader2, Settings, Upload } from 'lucide-react';
 import { useDatabase } from '../../context/DatabaseContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
 import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
+import { CancelJobButton } from '../../components/CancelJobButton';
 import { useJobPolling } from '../../hooks/useJobPolling';
 
 type RepPresetId =
@@ -129,9 +130,16 @@ const METRIC_HINTS: Record<'tanimoto' | 'cosine', string> = {
 };
 
 interface ProcessingState {
-  stage: 'idle' | 'processing' | 'done' | 'error';
+  stage: 'idle' | 'processing' | 'cancelling' | 'cancelled' | 'done' | 'error';
   message: string;
 }
+
+interface HardwareCapabilities {
+  cuda_available: boolean;
+  cuda_device_name: string | null;
+}
+
+type GpuStatus = 'checking' | 'available' | 'unavailable' | 'error';
 
 function getAutoName(preset: RepPreset, nBits: number, radius: number): string {
   switch (preset.id) {
@@ -167,7 +175,27 @@ export function AddNewRepresentation() {
   const [processing, setProcessing] = useState<ProcessingState>({ stage: 'idle', message: '' });
   const [jobId, setJobId] = useState<string | null>(null);
   const [submittedDbId, setSubmittedDbId] = useState('');
+  const [submittedRepName, setSubmittedRepName] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [gpuStatus, setGpuStatus] = useState<GpuStatus>('checking');
+  const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
+  const cancelRequestRef = useRef(false);
+
+  useEffect(() => {
+    let active = true;
+    api.get<HardwareCapabilities>('/system/capabilities')
+      .then(({ data }) => {
+        if (!active) return;
+        setGpuStatus(data.cuda_available ? 'available' : 'unavailable');
+        setGpuDeviceName(data.cuda_device_name);
+      })
+      .catch(() => {
+        if (!active) return;
+        setGpuStatus('error');
+        setGpuDeviceName(null);
+      });
+    return () => { active = false; };
+  }, []);
 
   const handleJobCompleted = useCallback(async () => {
     setProcessing({ stage: 'done', message: '' });
@@ -178,13 +206,27 @@ export function AddNewRepresentation() {
     setProcessing({ stage: 'error', message: job.error ?? 'Processing failed.' });
   }, []);
 
+  const finishJobCancelled = useCallback(async () => {
+    setProcessing({ stage: 'cancelled', message: 'Generation cancelled. Incomplete files were removed.' });
+    if (submittedDbId) await refetchRepresentationsForDatabase(submittedDbId);
+  }, [refetchRepresentationsForDatabase, submittedDbId]);
+
+  const handleJobCancelled = useCallback(async () => {
+    // DELETE only returns after the worker has stopped and cleanup has finished.
+    // While that request is in flight, let its completion own the UI transition.
+    if (cancelRequestRef.current) return;
+    await finishJobCancelled();
+  }, [finishJobCancelled]);
+
   const { job, resetJob } = useJobPolling(jobId, {
     onCompleted: handleJobCompleted,
     onFailed: handleJobFailed,
+    onCancelled: handleJobCancelled,
   });
 
   const preset = REP_PRESETS.find((p) => p.id === presetId)!;
   const isHuggingFace = preset.representation_type === 'huggingface';
+  const huggingFaceDisabled = gpuStatus !== 'available';
   const hasRadius = presetId === 'morgan' || presetId === 'morgan_feature';
   const autoName = getAutoName(preset, nBits, radius);
   const displayName = repName.trim() || autoName;
@@ -193,6 +235,12 @@ export function AddNewRepresentation() {
   const validate = () => {
     const errs: Record<string, string> = {};
     if (!selectedDbId) errs.db = 'Select a database.';
+    if (isHuggingFace && huggingFaceDisabled) {
+      errs.gpu = 'A CUDA-capable GPU is required to generate ChemBERTa embeddings in the graphical interface.';
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(displayName)) {
+      errs.repName = 'Use letters, digits, dots, underscores, or hyphens; start with a letter or digit.';
+    }
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -203,6 +251,7 @@ export function AddNewRepresentation() {
     resetJob();
     setJobId(null);
     setSubmittedDbId(selectedDbId);
+    setSubmittedRepName(displayName);
     setProcessing({ stage: 'processing', message: 'Submitting job…' });
 
     try {
@@ -271,14 +320,18 @@ export function AddNewRepresentation() {
 
       {/* Representation type dropdown */}
       <div className="mt-5 flex flex-col gap-1.5">
-        <label className="text-sm font-medium text-gray-600 dark:text-gray-300">
+        <label className="text-sm font-medium text-gray-600 dark:text-gray-300 flex items-center gap-1.5">
           Representation type
+          <Tooltip content="ChemBERTa embeddings require a CUDA-capable GPU in the graphical interface. Command-line generation remains unrestricted.">
+            <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
+          </Tooltip>
         </label>
         <div className="relative">
           <select
             value={repType}
             onChange={(e) => {
               const t = e.target.value as 'rdkit' | 'huggingface';
+              if (t === 'huggingface' && huggingFaceDisabled) return;
               setRepType(t);
               const first = REP_PRESETS.find((p) => p.representation_type === t)!;
               setPresetId(first.id);
@@ -289,10 +342,32 @@ export function AddNewRepresentation() {
               text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-800 cursor-pointer focus:outline-none focus:ring-1 focus:ring-teal-500"
           >
             <option value="rdkit">RDKit fingerprint</option>
-            <option value="huggingface">HuggingFace embedding</option>
+            <option value="huggingface" disabled={huggingFaceDisabled}>
+              HuggingFace embedding (GPU required)
+            </option>
           </select>
           <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
         </div>
+        {gpuStatus === 'checking' && (
+          <p className="flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking CUDA availability…
+          </p>
+        )}
+        {gpuStatus === 'available' && (
+          <p className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+            CUDA GPU available{gpuDeviceName ? `: ${gpuDeviceName}` : ''}.
+          </p>
+        )}
+        {(gpuStatus === 'unavailable' || gpuStatus === 'error') && (
+          <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <Cpu className="mt-0.5 w-3.5 h-3.5 shrink-0" />
+            {gpuStatus === 'unavailable'
+              ? 'ChemBERTa generation is disabled because CUDA is not available to the application.'
+              : 'CUDA availability could not be verified. ChemBERTa generation is disabled.'}
+          </p>
+        )}
+        {errors.gpu && <p className="text-xs text-red-500">{errors.gpu}</p>}
       </div>
 
       {/* Representation preset dropdown */}
@@ -360,6 +435,7 @@ export function AddNewRepresentation() {
             Using a non-standard name disables automatic similarity thresholds.
           </p>
         )}
+        {errors.repName && <p className="text-xs text-red-500">{errors.repName}</p>}
       </div>
 
       {/* Advanced parameters */}
@@ -463,31 +539,57 @@ export function AddNewRepresentation() {
       {/* Process button */}
       <button
         onClick={handleProcess}
-        disabled={processing.stage === 'processing'}
+        disabled={processing.stage === 'processing' || processing.stage === 'cancelling'}
         className={`mt-6 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-colors
-          ${processing.stage === 'processing'
+          ${processing.stage === 'processing' || processing.stage === 'cancelling'
             ? 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
             : 'bg-[#0d5c6b] hover:bg-[#0a4d5a] text-white cursor-pointer'
           }`}
       >
-        {processing.stage === 'processing'
-          ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
+        {processing.stage === 'processing' || processing.stage === 'cancelling'
+          ? <><Loader2 className="w-4 h-4 animate-spin" /> {processing.stage === 'cancelling' ? 'Cancelling…' : 'Processing…'}</>
           : <><Settings className="w-4 h-4" /> Process representation</>
         }
       </button>
 
-      {processing.stage === 'processing' && (
+      {(processing.stage === 'processing' || processing.stage === 'cancelling') && (
         <>
-          <JobProgressPanel
-            progress={job?.progress}
-            fallbackPercent={job?.progress_percent ?? 0}
-            fallbackMessage={job?.progress_message || processing.message}
-            startedAt={job?.started_at}
-          />
+          {processing.stage === 'processing' ? (
+            <JobProgressPanel
+              progress={job?.progress}
+              fallbackPercent={job?.progress_percent ?? 0}
+              fallbackMessage={job?.progress_message || processing.message}
+              startedAt={job?.started_at}
+            />
+          ) : (
+            <p className="mt-4 text-sm text-amber-700 dark:text-amber-300">
+              Stopping workers and removing incomplete files…
+            </p>
+          )}
           {isHuggingFace && processing.stage === 'processing' && (
             <p className="text-xs text-amber-500 dark:text-amber-400">
               Embedding models can take several hours on large databases.
             </p>
+          )}
+          {jobId && (!job || ['queued', 'running', 'partial_results'].includes(job.status)) && (
+            <CancelJobButton
+              jobId={jobId}
+              resourceLabel="representation generation"
+              description="Processing will stop and incomplete generated files will be removed. Any representation copy that already finished successfully will be kept for a future retry."
+              cancelling={processing.stage === 'cancelling'}
+              onCancelStarted={() => {
+                cancelRequestRef.current = true;
+                setProcessing({ stage: 'cancelling', message: '' });
+              }}
+              onCancelFinished={async () => {
+                cancelRequestRef.current = false;
+                await finishJobCancelled();
+              }}
+              onCancelError={(message) => {
+                cancelRequestRef.current = false;
+                setProcessing({ stage: 'error', message });
+              }}
+            />
           )}
         </>
       )}
@@ -497,12 +599,20 @@ export function AddNewRepresentation() {
         <JobFailurePanel failure={job?.failure} error={processing.message} />
       )}
 
+      {processing.stage === 'cancelled' && (
+        <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800
+          dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+          <p className="font-semibold">Cancelled</p>
+          <p className="mt-1 text-xs">{processing.message}</p>
+        </div>
+      )}
+
       {/* Success */}
       {processing.stage === 'done' && (
         <div className="mt-4 flex items-center gap-2 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-xl">
           <Upload className="w-4 h-4 text-green-600 dark:text-green-400 shrink-0" />
           <p className="text-sm text-green-700 dark:text-green-300">
-            <span className="font-medium">"{displayName}"</span> is now available in the Representation dropdown.
+            <span className="font-medium">"{submittedRepName || displayName}"</span> is now available in the Representation dropdown.
           </p>
         </div>
       )}

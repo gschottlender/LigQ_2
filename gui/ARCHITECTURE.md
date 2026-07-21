@@ -23,8 +23,8 @@ LigQ 2 has three layers:
                      │  asyncio.create_subprocess_exec
 ┌────────────────────▼────────────────────────────────────┐
 │  Pipeline  (repository root)                            │
-│  run_ligq_2.py · build_compound_database.py             │
-│  add_new_representation.py                              │
+│  prepare_ligq_2_data.py · run_ligq_2.py                 │
+│  build_compound_database.py · add_new_representation.py │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +66,9 @@ clients or hardcoded URLs.
 | `GET` | `/api/jobs/{job_id}/summary` | `VisualizeResults.tsx` |
 
 The search form is submitted as `multipart/form-data` (FASTA file + form
-fields). The response contains a `job_id` that the frontend stores in state.
+fields). BSI mode adds `use_bsi=true` and `bsi_threshold` (default `0.98`);
+structural mode sends `search_threshold` and `search_threshold_max` instead.
+The response contains a `job_id` that the frontend stores in state.
 
 #### Result tables
 
@@ -94,6 +96,28 @@ Responses are `application/zip` streams.
 |---|---|---|
 | `GET` | `/api/databases` | `DatabaseContext.tsx` (on mount) |
 | `GET` | `/api/databases/{name}/representations` | `DatabaseContext.tsx` |
+| `GET` | `/api/system/capabilities` | `AddNewRepresentation.tsx` (on mount) |
+
+#### Initial setup
+
+| Method | Endpoint | Caller |
+|---|---|---|
+| `GET` | `/api/setup/status` | `InitialSetupGate.tsx` (on mount and after completion) |
+| `POST` | `/api/setup/download` | `InitialSetupGate.tsx` |
+| `GET` | `/api/jobs/{job_id}` | `InitialSetupGate.tsx` (1-second polling) |
+
+The setup gate remains in front of all application views while required default
+data is missing. Status inspection obtains the required file list and sizes from
+the Hugging Face repository, compares it with `databases/`, and reports both the
+remaining download and free space on that filesystem. After a successful job,
+`DatabaseContext.refetchDatabases()` makes the newly installed ZINC database and
+representations available without a page reload.
+
+While the setup job is active, its structured progress includes aggregate
+`downloaded_bytes`/`download_total_bytes` and
+`completed_files`/`total_files`. Byte callbacks from concurrent Hugging Face
+downloads are throttled before being emitted, while every completed file forces
+an immediate update.
 
 #### File upload
 
@@ -116,6 +140,7 @@ building a database.
 | Method | Endpoint | Caller |
 |---|---|---|
 | `GET` | `/api/results` | `VisualizeResults.tsx` (History panel) |
+| `DELETE` | `/api/results` | `VisualizeResults.tsx` (Clear history confirmation) |
 
 ### Polling strategy
 
@@ -157,9 +182,17 @@ compiled packages such as RDKit load the C++ runtime shipped with that environme
 
 | Job type | Script |
 |---|---|
+| `setup` | `prepare_ligq_2_data.py` |
 | `search` | `run_ligq_2.py` |
 | `build_database` | `build_compound_database.py` |
 | `add_representation` | `add_new_representation.py` |
+
+The setup script uses Hugging Face metadata to select only missing required
+files and downloads them with `local_dir=databases`. This avoids overwriting
+existing local data and avoids retaining a second full copy in the user's global
+Hugging Face cache. Its required set includes the default structural-search
+resources, the compatible Morgan/Tanimoto ZINC predicted-ligand cache with
+minimum coverage `0.4`, and the Pfam-specific BSI models exposed by the GUI.
 
 ### Argument construction (`gui/backend/routers/jobs.py`)
 
@@ -176,13 +209,21 @@ args = [
     "--progress-json",
 ]
 # Optional flags
-if search_threshold:    args += ["--search-threshold", str(search_threshold)]
-if search_threshold_max: args += ["--search-threshold-max", str(search_threshold_max)]
+if use_bsi:
+    args += ["--bsi", "--bsi-threshold", str(bsi_threshold)]
+else:
+    if search_threshold: args += ["--search-threshold", str(search_threshold)]
+    if search_threshold_max: args += ["--search-threshold-max", str(search_threshold_max)]
 if use_sequence:        args.append("--sequence")
 if use_nearest_k:       args += ["--nearest_k", "--nearest-k", str(nearest_k)]
 if use_domains:         args.append("--domains")
 if known_only:          args.append("--known-only")
 ```
+
+For BSI searches the backend treats the browser values as advisory and forces
+`morgan_1024_r2` plus the CLI-compatible `tanimoto` metric argument; the BSI
+provider itself reports `bsi_score`. The GUI default BSI cutoff is `0.98`, and
+the structural minimum/maximum cutoff arguments are omitted.
 
 #### `build_database`
 
@@ -192,6 +233,7 @@ args = [
     "--input-file",  str(upload_path),   # saved to UPLOADS_DIR with UUID name
     "--base-name",   base_name,
     "--progress-json",
+    "--staging-token", job_id,
 ]
 # For CSV/TSV/Parquet only (not .smi):
 if suffix != ".smi":
@@ -208,6 +250,7 @@ args = [
     "--n-bits",              str(body.n_bits),
     "--rep-name",            body.rep_name,
     "--progress-json",
+    "--staging-token",       job_id,
 ]
 if rdkit:   args += ["--rdkit-fp-kind", body.rdkit_fp_kind]
 if hf:      args += ["--model-id", body.model_id]
@@ -230,7 +273,8 @@ events prefixed with `LIGQ_PROGRESS `. Each JSON payload is validated as
 
 ```text
 step, label, step_index, step_count, percent,
-current, total, unit, context, eta_seconds
+current, total, unit, context, eta_seconds,
+downloaded_bytes, download_total_bytes, completed_files, total_files
 ```
 
 The frontend renders the current step, overall percentage, processed/total
@@ -238,8 +282,46 @@ count, ETA, and elapsed time. Structured percentages are monotonic. A parsed
 `tqdm` line may enrich the current structured step with count and ETA, but it
 does not replace the script's overall percentage.
 
+During `predicted_cache`, `ensure_provider_cache()` reports cached requested
+proteins as the initial count and `build_predicted_binding_data_incremental()`
+advances the structured event after every remaining protein. The existing CLI
+`Predicted proteins` tqdm display remains available independently on stderr.
+
 The previous block, tqdm, and representation-build regexes remain as a legacy
 fallback for scripts launched without structured events.
+
+### Resource cancellation and transactional files
+
+`DELETE /api/jobs/{job_id}` marks an active job as `cancelled`, terminates its
+process group, waits for exit, and then removes job-scoped artifacts. Resource
+jobs use the UUID as a staging token:
+
+- database builds run under `.base_name.building.<job_id>` and are atomically
+  promoted only after the ligand table and default representation finish;
+- representation builders write `.partial.<job_id>` files and publish the
+  `.dat`/`.meta.json` pair atomically for each database phase;
+- a completed representation phase is preserved when a later compatibility
+  phase is cancelled, but partial phases are removed;
+- the uploaded build source is removed on completion, failure, cancellation,
+  or backend interruption.
+
+Publishing markers make cleanup safe if cancellation happens between atomic
+renames. Cleanup accepts only validated job tokens and only removes matching
+paths below the configured compound-data and upload roots. Persisted failed,
+cancelled, or interrupted resource jobs are cleaned again at backend startup;
+completed jobs have their ownership markers finalized. Terminal state changes
+are conditional, so completion and cancellation cannot overwrite each other
+during a process-exit race.
+
+### Hardware capabilities and GUI-only GPU guard
+
+`GET /api/system/capabilities` probes CUDA from the backend Python environment
+with a minimal Torch operation and returns `cuda_available` plus the detected
+device name. **Add new representation** disables HuggingFace/ChemBERTa presets
+unless that probe succeeds. `POST /api/jobs/add-representation` repeats the
+guard for graphical requests and returns `gpu_required` with HTTP 422 when CUDA
+is unavailable. The root `add_new_representation.py` command is intentionally
+unchanged, so technical command-line users retain the CPU fallback.
 
 **`_WARNING_TOKENS`** — any line containing `"warning"`, `"no domains found"`,
 `"no known ligands"`, or `"skipped"` is appended to the job's `warnings` list
@@ -304,7 +386,22 @@ For each valid representation, calls `get_metric_from_manifest()` to determine
 the similarity metric and loads its optional default cutoff from
 `search_threshold_defaults.json`.
 The search sidebar rounds this default upward to two decimal places and exposes
-both cutoff controls in `0.01` increments; the shared pipeline value remains exact.
+both cutoff controls in `0.01` increments. It applies frontend-only minimums of
+`0.2` for Tanimoto representations and `0.75` for Cosine representations; the
+shared pipeline and backend validation remain unchanged.
+The browser also counts FASTA headers after upload and compares the count with a
+frontend-only configurable maximum (`200` by default). Files above the current
+limit remain visible but cannot be submitted until the user raises the value in
+the collapsible Advanced options section or uploads a smaller file. This limit is
+not part of the API contract; increasing it may significantly extend job runtime.
+The Nearest K numeric control is likewise constrained only in the frontend to
+integer values from `1` through `15`; the API and CLI remain unchanged.
+When BSI is enabled, the sidebar fixes the representation to `morgan_1024_r2`,
+shows `BSI Score`, uses a separate minimum cutoff initialized to `0.98` and
+bounded below at `0.97`, and disables the maximum cutoff at `1.0`. It also clears
+and disables Domain search, leaving Sequence and Nearest K as the only selectable
+methods. This method restriction is frontend-only. Disabling BSI restores the
+structural representation, metric, cutoff, and Domain controls.
 
 **`get_metric_from_manifest(rep_path)`**  
 Checks the sidecar JSON in priority order:
@@ -345,6 +442,12 @@ section 6).
 `GET /api/results` (handled by `history_router` in
 `gui/backend/routers/results.py`) scans `RESULTS_DIR` on disk and returns
 folder metadata without loading any TSV content.
+
+`DELETE /api/results` permanently removes inactive result directories. Before
+deleting, the backend derives protected output paths from queued, running, and
+partial search jobs in memory. The response lists deleted, protected, and failed
+folders so the frontend can refresh History without hiding partial failures. The
+frontend exposes this operation only after a destructive-action confirmation.
 
 When the frontend loads a past result, it calls
 `GET /api/jobs/{result_folder_name}/summary`. The helper
@@ -430,13 +533,13 @@ flowchart LR
 
 | Component | API calls | Notes |
 |---|---|---|
-| `VisualizeResults.tsx` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/summary`, `GET /api/results` | Manages search state, polling interval, history panel |
+| `VisualizeResults.tsx` | `GET /api/jobs/{id}`, `GET /api/jobs/{id}/summary`, `GET`/`DELETE /api/results` | Manages search state, polling interval, history panel, and confirmed history deletion |
 | `Sidebar.tsx` | `POST /api/jobs/search` | Submits `multipart/form-data`; reads database/representation lists from `DatabaseContext` |
 | `QueryList.tsx` | — | Receives query data from `VisualizeResults`; uses a bounded, independently scrollable table with a sticky status header |
 | `MetricCards.tsx` | — | Aggregates counts from the summary data passed via props |
 | `ResultsPanel.tsx` | `GET /api/jobs/{id}/queries/{qid}/protein-ranking`, `/known-ligands`, `/predicted-ligands` | Fetches on tab change and pagination events |
 | `AddNewDatabase.tsx` | `POST /api/files/upload`, `POST /api/jobs/build-database`, `GET /api/jobs/{id}` | Polls job until terminal; calls `refetchDatabases()` on completion |
-| `AddNewRepresentation.tsx` | `POST /api/jobs/add-representation`, `GET /api/jobs/{id}` | Polls job; calls `refetchRepresentationsForDatabase()` on completion |
+| `AddNewRepresentation.tsx` | `GET /api/system/capabilities`, `POST /api/jobs/add-representation`, `GET /api/jobs/{id}` | Detects GUI CUDA support, polls jobs, and calls `refetchRepresentationsForDatabase()` on completion |
 | `DatabaseContext.tsx` | `GET /api/databases`, `GET /api/databases/{name}/representations` | Loaded on mount; exposes `refetchDatabases` and `refetchRepresentationsForDatabase` |
 | `SelectedResultPanel.tsx` | — (client-side only) | Uses `@rdkit/rdkit` WASM for 2D SVG rendering and SDF generation |
 | `MoleculeViewerModal.tsx` | — (client-side only) | Uses `3dmol.js` for interactive 3D display; rendered via `createPortal` |

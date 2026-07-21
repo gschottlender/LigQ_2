@@ -1523,6 +1523,37 @@ def _build_protein_ranking_for_query(df_cand_q: pd.DataFrame) -> pd.DataFrame:
     return ranking[output_cols]
 
 
+def _filter_protein_ranking_to_ligand_contributors(
+    protein_ranking: pd.DataFrame,
+    known_ligands: pd.DataFrame,
+    predicted_ligands: pd.DataFrame,
+) -> pd.DataFrame:
+    """Keep proteins represented in at least one final per-query ligand table."""
+    if protein_ranking is None or protein_ranking.empty:
+        return protein_ranking
+
+    contributing_proteins: set[str] = set()
+    for ligand_table in (known_ligands, predicted_ligands):
+        if ligand_table is None or ligand_table.empty:
+            continue
+        protein_col = next(
+            (col for col in ("uniprot_id", "sseqid") if col in ligand_table.columns),
+            None,
+        )
+        if protein_col is None:
+            continue
+        contributing_proteins.update(
+            ligand_table[protein_col].dropna().astype(str).tolist()
+        )
+
+    filtered = protein_ranking[
+        protein_ranking["sseqid"].astype(str).isin(contributing_proteins)
+    ].copy()
+    filtered = filtered.reset_index(drop=True)
+    filtered["protein_rank"] = np.arange(1, len(filtered) + 1)
+    return filtered
+
+
 def _process_single_query(
     qseqid: str,
     df_cand_q: pd.DataFrame,
@@ -1539,7 +1570,8 @@ def _process_single_query(
     Process a single query (qseqid).
 
     For a given query:
-      - Count candidate proteins by search_type (sequence / domain).
+      - Rank proteins that contribute at least one retained known or predicted
+        ligand, split by search_type (sequence / nearest_k / domain).
       - Optionally collapse ligands to one row per ligand ID
         (chem_comp_id / predicted_chem_comp_id), prioritizing sequence hits
         over domain hits.
@@ -1550,21 +1582,6 @@ def _process_single_query(
     - `known_q` and `predicted_q` are NOT globally collapsed; they come
       directly from per-chunk merges.
     """
-    # -----------------------------
-    # 0) Candidate protein counts
-    # -----------------------------
-    if df_cand_q is None or df_cand_q.empty:
-        n_prot_seq = 0
-        n_prot_nk = 0
-        n_prot_dom = 0
-    else:
-        mask_seq = df_cand_q["search_type"] == "sequence"
-        mask_nk = df_cand_q["search_type"] == "nearest_k"
-        mask_dom = df_cand_q["search_type"] == "domain"
-        n_prot_seq = df_cand_q.loc[mask_seq, "sseqid"].nunique()
-        n_prot_nk = df_cand_q.loc[mask_nk, "sseqid"].nunique()
-        n_prot_dom = df_cand_q.loc[mask_dom, "sseqid"].nunique()
-
     # Ensure DataFrames
     if known_q is None:
         known_q = pd.DataFrame()
@@ -1625,6 +1642,24 @@ def _process_single_query(
 
     known_q_final = _sort_and_collapse(known_q, known_ligand_col)
     predicted_q_final = _sort_and_collapse(predicted_q, predicted_ligand_col)
+    protein_ranking = _filter_protein_ranking_to_ligand_contributors(
+        protein_ranking,
+        known_q_final,
+        predicted_q_final,
+    )
+
+    # Protein summary counts match the filtered ranking exposed to users.
+    if protein_ranking.empty:
+        n_prot_seq = 0
+        n_prot_nk = 0
+        n_prot_dom = 0
+    else:
+        mask_seq = protein_ranking["search_type"] == "sequence"
+        mask_nk = protein_ranking["search_type"] == "nearest_k"
+        mask_dom = protein_ranking["search_type"] == "domain"
+        n_prot_seq = protein_ranking.loc[mask_seq, "sseqid"].nunique()
+        n_prot_nk = protein_ranking.loc[mask_nk, "sseqid"].nunique()
+        n_prot_dom = protein_ranking.loc[mask_dom, "sseqid"].nunique()
 
     # -----------------------------
     # 2) Write per-query TSV files
@@ -1634,8 +1669,7 @@ def _process_single_query(
     ):
         q_dir = ensure_dir(search_results_dir / qseqid)
 
-        if not protein_ranking.empty:
-            protein_ranking.to_csv(q_dir / "protein_ranking.tsv", sep="\t", index=False)
+        protein_ranking.to_csv(q_dir / "protein_ranking.tsv", sep="\t", index=False)
 
         # --- Known ligands ---
         if not known_q_final.empty:
@@ -1822,7 +1856,7 @@ def build_query_ligand_results_parallel(
           * Split per qseqid (groupby).
           * Process each query sequentially to keep RAM bounded.
             using `_process_single_query`, which:
-              - counts candidate proteins,
+              - counts ligand-contributing proteins,
               - sorts by search_type,
               - optionally collapses to one row per ligand ID,
               - writes per-query TSVs,

@@ -1,0 +1,69 @@
+name: ligq2
+
+x-api-common: &api-common
+  image: ${LIGQ_API_IMAGE:-ghcr.io/gschottlender/ligq-2-api:gui}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.api
+  platform: linux/amd64
+  environment:
+    LIGQ_PIPELINE_ROOT: /app
+    LIGQ_DATABASES_DIR: /app/databases
+    LIGQ_RESULTS_DIR: /app/results
+    LIGQ_UPLOADS_DIR: /app/gui/backend/uploads
+    LIGQ_TEMP_RESULTS_DIR: /app/temp_results
+    LIGQ_STATE_DIR: /app/state
+    LIGQ_MAX_UPLOAD_BYTES: ${LIGQ_MAX_UPLOAD_BYTES:-21474836480}
+    HF_HOME: /cache/huggingface
+    HF_TOKEN: ${HF_TOKEN:-}
+  volumes:
+    - ligq_databases:/app/databases
+    - ligq_results:/app/results
+    - ligq_uploads:/app/gui/backend/uploads
+    - ligq_huggingface:/cache/huggingface
+    - ligq_state:/app/state
+    - ligq_temp:/app/temp_results
+    - ./work:/work
+  init: true
+  stop_grace_period: 30s
+
+services:
+  api:
+    <<: *api-common
+    restart: unless-stopped
+
+  web:
+    image: ${LIGQ_WEB_IMAGE:-ghcr.io/gschottlender/ligq-2-web:gui}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    platform: linux/amd64
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${LIGQ_WEB_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  init-data:
+    <<: *api-common
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/prepare_ligq_2_data.py"]
+    command:
+      - --data-dir
+      - /app/databases
+      - --progress-json
+
+  cli:
+    <<: *api-common
+    profiles: ["tools"]
+    entrypoint: ["python", "/app/run_ligq_2.py"]
+    command: ["--help"]
+
+volumes:
+  ligq_databases:
+  ligq_results:
+  ligq_uploads:
+  ligq_huggingface:
+  ligq_state:
+  ligq_temp:
