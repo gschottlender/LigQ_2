@@ -16,14 +16,13 @@ This module provides:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Callable, Optional, Dict, List, Tuple
 
 import os
 import multiprocessing as mp
 import json
-import shutil
+import re
 import time
-from datetime import datetime
 from contextlib import nullcontext
 import numpy as np
 import pandas as pd
@@ -49,6 +48,55 @@ _RDKIT_FP_WORKER_CFG: Dict[str, int | str] = {
 }
 
 _TQDM_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+_STAGING_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _representation_output_paths(
+    reps_dir: Path,
+    name: str,
+    staging_token: Optional[str],
+) -> tuple[Path, Path, Path, Path, Optional[Path]]:
+    """Resolve final and job-scoped representation paths.
+
+    GUI resource jobs write to partial files and publish a complete data/meta
+    pair only after computation succeeds. The publishing marker makes the
+    two-file promotion recoverable if the process is cancelled between the
+    atomic renames.
+    """
+    final_data = reps_dir / f"{name}.dat"
+    final_meta = reps_dir / f"{name}.meta.json"
+    if staging_token is None:
+        return final_data, final_meta, final_data, final_meta, None
+    if not _STAGING_TOKEN_RE.fullmatch(staging_token):
+        raise ValueError("staging_token must contain only letters, digits, underscores, and hyphens.")
+
+    partial_data = reps_dir / f".{name}.dat.partial.{staging_token}"
+    partial_meta = reps_dir / f".{name}.meta.json.partial.{staging_token}"
+    publishing_marker = reps_dir / f".{name}.publishing.{staging_token}"
+    partial_data.unlink(missing_ok=True)
+    partial_meta.unlink(missing_ok=True)
+    publishing_marker.unlink(missing_ok=True)
+    return final_data, final_meta, partial_data, partial_meta, publishing_marker
+
+
+def _publish_representation_pair(
+    *,
+    final_data: Path,
+    final_meta: Path,
+    staged_data: Path,
+    staged_meta: Path,
+    publishing_marker: Optional[Path],
+) -> None:
+    if publishing_marker is None:
+        return
+
+    publishing_marker.write_text(
+        json.dumps({"data": final_data.name, "meta": final_meta.name}),
+        encoding="utf-8",
+    )
+    os.replace(staged_data, final_data)
+    os.replace(staged_meta, final_meta)
+    publishing_marker.unlink()
 
 # ---------------------------------------------------------------------------
 # 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
@@ -420,6 +468,7 @@ def build_ligand_index(
     compute_inchikey: bool = True,
     inchikey_n_jobs: Optional[int] = 4,
     inchikey_chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
     """
     Build the ligand index table (ligands.parquet) with a dense integer index.
@@ -471,31 +520,50 @@ def build_ligand_index(
         n_jobs = _resolve_inchikey_workers(inchikey_n_jobs)
         progress_desc = f"[{root.name}] InChIKey from SMILES"
 
+        total_smiles = len(smiles_values)
+        callback_interval = max(1, total_smiles // 200)
         if n_jobs == 1:
-            inchikeys = [
+            iterator = (
                 smiles_to_inchikey(smi)
-                for smi in tqdm(
-                    smiles_values,
-                    total=len(smiles_values),
-                    desc=progress_desc,
-                    unit="lig",
-                    dynamic_ncols=True,
-                    bar_format=_TQDM_BAR_FORMAT,
-                )
-            ]
+                for smi in smiles_values
+            )
         else:
             ctx = mp.get_context("fork")
             with ctx.Pool(processes=n_jobs) as pool:
-                inchikeys = list(
+                iterator = pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize)
+                inchikeys = []
+                for idx, value in enumerate(
                     tqdm(
-                        pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize),
-                        total=len(smiles_values),
+                        iterator,
+                        total=total_smiles,
                         desc=progress_desc,
                         unit="lig",
                         dynamic_ncols=True,
                         bar_format=_TQDM_BAR_FORMAT,
-                    )
-                )
+                    ),
+                    start=1,
+                ):
+                    inchikeys.append(value)
+                    if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                        progress_callback(idx, total_smiles)
+                iterator = None
+
+        if n_jobs == 1:
+            inchikeys = []
+            for idx, value in enumerate(
+                tqdm(
+                    iterator,
+                    total=total_smiles,
+                    desc=progress_desc,
+                    unit="lig",
+                    dynamic_ncols=True,
+                    bar_format=_TQDM_BAR_FORMAT,
+                ),
+                start=1,
+            ):
+                inchikeys.append(value)
+                if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                    progress_callback(idx, total_smiles)
 
         df["inchikey"] = inchikeys
 
@@ -505,49 +573,6 @@ def build_ligand_index(
     out_path = root / "ligands.parquet"
     df.to_parquet(out_path, index=False)
     return out_path
-
-
-def backup_and_clear_representations(
-    root: str | Path,
-    backup_dirname: str = "old_reps_backup",
-) -> Optional[Path]:
-    """
-    Move the current representation files out of ``root/reps``.
-
-    Any change to ``ligands.parquet`` can invalidate every representation
-    because rows are addressed by dense ``lig_idx``. Backing up old files avoids
-    accidentally mixing a fresh ligand index with stale memmaps.
-    """
-    root = Path(root)
-    reps_dir = root / "reps"
-
-    if not reps_dir.exists():
-        return None
-
-    existing_entries = sorted(reps_dir.iterdir())
-    if not existing_entries:
-        return None
-
-    backup_root = root / backup_dirname
-    backup_root.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = backup_root / timestamp
-    suffix = 1
-    while backup_dir.exists():
-        suffix += 1
-        backup_dir = backup_root / f"{timestamp}_{suffix}"
-
-    backup_dir.mkdir(parents=True, exist_ok=False)
-
-    for entry in existing_entries:
-        shutil.move(str(entry), str(backup_dir / entry.name))
-
-    print(
-        f"[INFO] Moved {len(existing_entries)} existing representation files "
-        f"from {reps_dir} to backup {backup_dir}"
-    )
-    return backup_dir
 
 
 
@@ -564,6 +589,8 @@ def _build_packed_bit_representation(
     pool_initargs: tuple,
     pool_worker_fn,
     meta_extra: Dict[str, object],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """Shared parallel builder for packed bit-vector representations."""
     root = Path(root)
@@ -583,7 +610,9 @@ def _build_packed_bit_representation(
         n_jobs = max(1, min(int(n_jobs), cpu_avail))
 
     n_bytes = (n_bits + 7) // 8
-    data_path = reps_dir / f"{name}.dat"
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
 
     mm = np.memmap(
         data_path,
@@ -597,6 +626,7 @@ def _build_packed_bit_representation(
     failed_smiles = 0
 
     total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
     progress_desc = f"[{root.name}] Building '{name}'"
 
     with ctx.Pool(
@@ -604,14 +634,14 @@ def _build_packed_bit_representation(
         initializer=pool_initializer,
         initargs=pool_initargs,
     ) as pool:
-        for start in tqdm(
+        for batch_index, start in enumerate(tqdm(
             range(0, n, batch_size),
             total=total_batches,
             desc=progress_desc,
             unit="batch",
             dynamic_ncols=True,
             bar_format=_TQDM_BAR_FORMAT,
-        ):
+        ), start=1):
             end = min(start + batch_size, n)
             smiles_list = ligs.iloc[start:end]["smiles"].tolist()
 
@@ -620,8 +650,13 @@ def _build_packed_bit_representation(
 
             failed_smiles += int(sum(0 if ok else 1 for _, ok in packed_and_status))
             mm[start:end, :] = fps_packed
+            if progress_callback and (
+                batch_index == total_batches or batch_index % callback_batch_interval == 0
+            ):
+                progress_callback(end, n)
 
     mm.flush()
+    del mm
 
     elapsed_s = float(time.perf_counter() - t0)
     ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
@@ -629,6 +664,7 @@ def _build_packed_bit_representation(
     meta = {
         "name": name,
         "file": f"{name}.dat",
+        "search_metric": "tanimoto",
         "dtype": "uint8",
         "dim": int(n_bits),
         "packed_bits": True,
@@ -642,9 +678,15 @@ def _build_packed_bit_representation(
     }
     meta.update(meta_extra)
 
-    meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
 
 
 def build_morgan_representation(
@@ -655,6 +697,8 @@ def build_morgan_representation(
     name: str = "morgan_1024_r2",
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """Compute parallel Morgan fingerprints and persist as packed bits."""
     _build_packed_bit_representation(
@@ -668,6 +712,8 @@ def build_morgan_representation(
         pool_initargs=(n_bits, radius),
         pool_worker_fn=_morgan_fp_packed_or_zero,
         meta_extra={"radius": int(radius), "fingerprint_type": "morgan"},
+        progress_callback=progress_callback,
+        staging_token=staging_token,
     )
 
 
@@ -680,6 +726,8 @@ def build_rdkit_representation(
     name: Optional[str] = None,
     n_jobs: Optional[int] = None,
     chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     """
     Compute RDKit-based fingerprints in parallel and persist as packed bits.
@@ -719,6 +767,8 @@ def build_rdkit_representation(
         pool_initargs=(fp_kind, n_bits, radius),
         pool_worker_fn=_rdkit_fp_packed_or_zero,
         meta_extra={"fingerprint_type": fp_kind, "radius": int(radius)},
+        progress_callback=progress_callback,
+        staging_token=staging_token,
     )
 
 
@@ -735,6 +785,8 @@ def build_huggingface_representation(
     pooling: str = "mean_attention_mask",
     trust_remote_code: bool = False,
     revision: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
 ) -> None:
     root = Path(root)
     reps_dir = root / "reps"
@@ -778,7 +830,9 @@ def build_huggingface_representation(
         )
 
     dim = hidden_size
-    data_path = reps_dir / f"{name}.dat"
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
 
     mm = np.memmap(
         data_path,
@@ -836,15 +890,16 @@ def build_huggingface_representation(
     # Process ligands batch by batch
     # -----------------------------
     total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
     progress_desc = f"[{root.name}] Building '{name}'"
-    for start in tqdm(
+    for batch_index, start in enumerate(tqdm(
         range(0, n, batch_size),
         total=total_batches,
         desc=progress_desc,
         unit="batch",
         dynamic_ncols=True,
         bar_format=_TQDM_BAR_FORMAT,
-    ):
+    ), start=1):
         end = min(start + batch_size, n)
         batch_smiles = smiles_all[start:end]
         batch_n = end - start
@@ -882,14 +937,20 @@ def build_huggingface_representation(
                     embed_failures += 1
 
         mm[start:end, :] = emb_out
+        if progress_callback and (
+            batch_index == total_batches or batch_index % callback_batch_interval == 0
+        ):
+            progress_callback(end, n)
 
     mm.flush()
+    del mm
     elapsed_s = float(time.perf_counter() - t0)
     ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
 
     meta: Dict = {
         "name": name,
         "file": f"{name}.dat",
+        "search_metric": "cosine",
         "dtype": "float16",
         "dim": int(dim),
         "packed_bits": False,
@@ -906,9 +967,15 @@ def build_huggingface_representation(
         "invalid_smiles_fraction": float(invalid_smiles / n),
         "embed_failures": int(embed_failures),
     }
-    meta_path = reps_dir / f"{name}.meta.json"
     with meta_path.open("w") as f:
         json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
 
 
 def build_chemberta_representation(

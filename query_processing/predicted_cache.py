@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from math import inf
+from typing import Callable
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -293,6 +294,7 @@ def ensure_provider_cache(
     proteins_needed: set[str],
     force_rebuild_cache: bool = False,
     load_dataframe: bool = True,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> pd.DataFrame | Path:
     cache_root = Path(data_dir) / "results_databases" / "predicted_bindings"
     requested_threshold_min, requested_threshold_max = _requested_cache_coverage(provider)
@@ -397,15 +399,26 @@ def ensure_provider_cache(
             "[INFO] Requested LigQ proteins: "
             f"total={requested_total}, cached={already_cached}, pending={len(proteins_to_compute)}"
         )
+        if progress_callback is not None:
+            progress_callback(already_cached, requested_total)
 
         if proteins_to_compute:
             known_subset = known_binding[known_binding["uniprot_id"].astype(str).isin(proteins_to_compute)].copy()
+
+            def report_pending_progress(current: int, _pending_total: int) -> None:
+                if progress_callback is not None:
+                    progress_callback(
+                        min(requested_total, already_cached + current),
+                        requested_total,
+                    )
+
             build_predicted_binding_data_incremental(
                 proteins_to_process=proteins_to_compute,
                 cache_dir=cache_dir,
                 provider=cache_provider,
                 known_binding=known_subset,
                 resume=not regenerate_cache,
+                progress_callback=report_pending_progress,
             )
 
         with open(manifest_path, "w") as f:

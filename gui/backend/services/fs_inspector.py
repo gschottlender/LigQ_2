@@ -1,0 +1,111 @@
+import json
+from pathlib import Path
+from core.config import COMPOUND_DATA_DIR, PIPELINE_ROOT
+
+_COSINE_KEYWORDS = {"chemberta", "huggingface", "bert", "transformer", "embedding", "molformer"}
+_THRESHOLD_DEFAULTS_PATH = PIPELINE_ROOT / "search_threshold_defaults.json"
+
+
+def load_search_threshold_defaults() -> dict[str, float]:
+    try:
+        data = json.loads(_THRESHOLD_DEFAULTS_PATH.read_text())
+        return {str(name): float(value) for name, value in data.items()}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def get_metric_from_manifest(rep_path: Path) -> str:
+    """Return the similarity metric for a representation.
+
+    Checks, in order:
+      1. ``search_metric`` key in the JSON sidecar (future-proof explicit field).
+      2. Fingerprint metadata (``fingerprint_type`` or packed bits) → tanimoto.
+      3. Embedding metadata (``model_id`` or unpacked vectors) → cosine.
+      4. Name-based keyword heuristic as last resort.
+
+    The sidecar is ``{stem}.meta.json`` alongside the ``.dat`` file (actual layout)
+    or ``manifest.json`` inside a representation sub-directory (alternative layout).
+    """
+    candidates = [
+        rep_path.with_suffix(".meta.json"),       # actual: {name}.meta.json next to .dat
+        rep_path.parent / "manifest.json",        # alternative: manifest.json in same dir
+    ]
+    for meta in candidates:
+        if meta.exists():
+            try:
+                data = json.loads(meta.read_text())
+                explicit_metric = str(data.get("search_metric", "")).lower()
+                if explicit_metric in {"tanimoto", "cosine"}:
+                    return explicit_metric
+                if data.get("fingerprint_type") or data.get("packed_bits") is True:
+                    return "tanimoto"
+                if data.get("model_id") or data.get("packed_bits") is False:
+                    return "cosine"
+            except Exception:
+                pass
+
+    name = rep_path.stem.lower()
+    return "cosine" if any(kw in name for kw in _COSINE_KEYWORDS) else "tanimoto"
+
+
+def list_databases() -> list[str]:
+    if not COMPOUND_DATA_DIR.exists():
+        return []
+    return sorted(
+        d.name
+        for d in COMPOUND_DATA_DIR.iterdir()
+        if d.is_dir() and d.name != "pdb_chembl" and (d / "ligands.parquet").exists()
+    )
+
+
+def list_representations(db_name: str) -> list[dict]:
+    reps_dir = COMPOUND_DATA_DIR / db_name / "reps"
+    if not reps_dir.exists():
+        return []
+    defaults = load_search_threshold_defaults()
+    return [
+        {
+            "name": f.stem,
+            "metric": get_metric_from_manifest(f),
+            "default_threshold": defaults.get(f.stem),
+        }
+        for f in sorted(reps_dir.iterdir())
+        if (
+            f.is_file()
+            and f.suffix == ".dat"
+            and representation_is_search_ready(db_name, f.stem)
+        )
+    ]
+
+
+def database_exists(db_name: str) -> bool:
+    return (COMPOUND_DATA_DIR / db_name / "ligands.parquet").exists()
+
+
+def representation_files_complete(root: Path, rep_name: str) -> bool:
+    reps_dir = root / "reps"
+    return (
+        (reps_dir / f"{rep_name}.dat").is_file()
+        and (reps_dir / f"{rep_name}.meta.json").is_file()
+    )
+
+
+def representation_exists(db_name: str, rep_name: str) -> bool:
+    return representation_files_complete(COMPOUND_DATA_DIR / db_name, rep_name)
+
+
+def representation_is_search_ready(db_name: str, rep_name: str) -> bool:
+    return (
+        representation_exists(db_name, rep_name)
+        and representation_exists("pdb_chembl", rep_name)
+    )
+
+
+def read_file_columns(path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        import pyarrow.parquet as pq
+        return pq.read_schema(str(path)).names
+    import pandas as pd
+    sep = "\t" if suffix == ".tsv" else ","
+    return list(pd.read_csv(path, nrows=0, sep=sep).columns)
