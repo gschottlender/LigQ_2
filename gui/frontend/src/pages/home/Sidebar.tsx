@@ -3,7 +3,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Cpu,
   FolderOpen,
   Info,
   Loader2,
@@ -247,7 +246,6 @@ export function Sidebar({
   const [fastaError, setFastaError] = useState('');
   const [fastaValidating, setFastaValidating] = useState(false);
   const [gpuStatus, setGpuStatus] = useState<GpuStatus>('checking');
-  const [gpuDeviceName, setGpuDeviceName] = useState<string | null>(null);
 
   const fastaInputRef = useRef<HTMLInputElement>(null);
   const fastaValidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -258,12 +256,10 @@ export function Sidebar({
       .then(({ data }) => {
         if (!active) return;
         setGpuStatus(data.cuda_available ? 'available' : 'unavailable');
-        setGpuDeviceName(data.cuda_device_name);
       })
       .catch(() => {
         if (!active) return;
         setGpuStatus('error');
-        setGpuDeviceName(null);
       });
     return () => { active = false; };
   }, []);
@@ -522,24 +518,6 @@ export function Sidebar({
                 ? 'Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model.'
                 : 'BSI requires a CUDA-capable GPU and the morgan_1024_r2 representation in the graphical interface.'}
             />
-            {gpuStatus === 'checking' && (
-              <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-500">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking CUDA availability…
-              </p>
-            )}
-            {gpuStatus === 'available' && gpuDeviceName && (
-              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-                CUDA GPU available: {gpuDeviceName}.
-              </p>
-            )}
-            {(gpuStatus === 'unavailable' || gpuStatus === 'error') && (
-              <p className="mt-2 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <Cpu className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                {gpuStatus === 'unavailable'
-                  ? 'BSI is disabled because no CUDA GPU is available to the application.'
-                  : 'CUDA availability could not be verified. BSI is disabled.'}
-              </p>
-            )}
           </div>
 
           <SliderField
