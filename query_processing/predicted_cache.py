@@ -425,6 +425,26 @@ def file_lock(lock_path: Path, timeout_s: int = 900, poll_interval_s: float = 0.
                 lock_path.unlink()
 
 
+def find_compatible_cache_dir(
+    data_dir: Path,
+    provider,
+    proteins_needed: set[str] | None = None,
+) -> Path | None:
+    """Return the best compatible cache directory for a provider request."""
+    data_dir = Path(data_dir)
+    cache_root = data_dir / "results_databases" / "predicted_bindings"
+    requested_threshold_min, requested_threshold_max = _requested_cache_coverage(provider)
+    cache_dir, _manifest = _discover_compatible_cache(
+        cache_root=cache_root,
+        provider=provider,
+        data_dir=data_dir,
+        requested_threshold_min=requested_threshold_min,
+        requested_threshold_max=requested_threshold_max,
+        proteins_needed=proteins_needed,
+    )
+    return cache_dir
+
+
 def ensure_provider_cache(
     data_dir: Path,
     provider,

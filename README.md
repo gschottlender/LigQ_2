@@ -976,6 +976,57 @@ python run_ligq_2.py \
 Predicted searches are incremental. LigQ 2 computes predictions only for
 candidate proteins needed by the current run and records them for reuse.
 
+### Precompute a complete predicted cache
+
+`precompute_predicted_cache.py` builds the shared predicted-ligand cache for
+every unique protein in `databases/sequences/target_sequences.fasta` without
+running BLAST/HMMER and without creating per-query result folders. It uses the
+same providers, representation defaults, cache namespaces, manifests,
+fingerprints, locks, and resume behavior as `run_ligq_2.py`.
+
+Precompute the default ECFP/Morgan cache for ZINC on a GPU:
+
+```bash
+python precompute_predicted_cache.py \
+  --data-dir databases \
+  --ligand-provider zinc \
+  --search-representation morgan_1024_r2 \
+  --search-metric tanimoto \
+  --search-threshold 0.4 \
+  --search-device cuda
+```
+
+Precompute the FCFP/Morgan-feature cache after that representation has been
+built for both ZINC and PDB/ChEMBL:
+
+```bash
+python precompute_predicted_cache.py \
+  --data-dir databases \
+  --ligand-provider zinc \
+  --search-representation morgan_feature_1024_r2 \
+  --search-metric tanimoto \
+  --search-threshold 0.5 \
+  --search-device cuda
+```
+
+Any installed representation supported by `run_ligq_2.py` can be selected. It
+must have matching `.dat` and `.meta.json` files in both the target provider and
+`compound_data/pdb_chembl`. When `--search-threshold` is omitted, the registered
+representation-specific default is used; representations without a registered
+default require an explicit value. Use `--search-metric cosine` for compatible
+embedding representations.
+
+The command is incremental. Run it again with the same provider,
+representation, metric, and threshold coverage to resume or verify an existing
+cache. `--force-rebuild-predicted-cache` deliberately discards the exact
+requested namespace before starting again. An optional `--protein-fasta` can
+replace the default protein universe.
+
+On completion, the command verifies that every requested protein appears in
+`cached_proteins.json`, including proteins that were processed but produced no
+predicted ligands. A wider cache built at a lower minimum threshold can serve
+later searches with stricter cutoffs.
+
 Structural similarity caches use:
 
 ```text

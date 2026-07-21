@@ -201,46 +201,50 @@ def build_predicted_binding_data_incremental(
     if progress_callback is not None:
         progress_callback(0, total)
 
-    with tqdm(total=total, desc="Predicted proteins", unit="protein") as pbar:
-        def advance_progress(current: int) -> None:
-            pbar.update(1)
-            pbar.set_postfix(completadas=current, faltan=max(total - current, 0))
-            if progress_callback is not None:
-                progress_callback(current, total)
+    try:
+        with tqdm(total=total, desc="Predicted proteins", unit="protein") as pbar:
+            def advance_progress(current: int) -> None:
+                pbar.update(1)
+                pbar.set_postfix(completadas=current, faltan=max(total - current, 0))
+                if progress_callback is not None:
+                    progress_callback(current, total)
 
-        for i, prot in enumerate(proteins_to_process, start=1):
-            if prot in processed_proteins:
-                advance_progress(i)
-                continue
+            for i, prot in enumerate(proteins_to_process, start=1):
+                if prot in processed_proteins:
+                    advance_progress(i)
+                    continue
 
-            ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
-            if ligands is None or ligands.empty:
+                ligands = provider.compute_for_protein(prot=prot, known_binding=known_binding)
+                if ligands is None or ligands.empty:
+                    processed_proteins.add(prot)
+                    _write_processed_index()
+                    advance_progress(i)
+                    continue
+
+                ligands = ligands.copy()
+                ligands.insert(0, "uniprot_id", prot)
+                table = pa.Table.from_pandas(ligands, preserve_index=False)
+
+                if writer is None:
+                    writer = pq.ParquetWriter(parquet_path.as_posix(), table.schema)
+                else:
+                    schema_names = writer.schema.names
+                    if table.schema.names != schema_names:
+                        table = table.select(schema_names)
+
+                writer.write_table(table)
                 processed_proteins.add(prot)
                 _write_processed_index()
+
                 advance_progress(i)
-                continue
-
-            ligands = ligands.copy()
-            ligands.insert(0, "uniprot_id", prot)
-            table = pa.Table.from_pandas(ligands, preserve_index=False)
-
-            if writer is None:
-                writer = pq.ParquetWriter(parquet_path.as_posix(), table.schema)
-            else:
-                schema_names = writer.schema.names
-                if table.schema.names != schema_names:
-                    table = table.select(schema_names)
-
-            writer.write_table(table)
-            processed_proteins.add(prot)
-            _write_processed_index()
-
-            advance_progress(i)
-
-    if writer is not None:
-        writer.close()
-        if temp_path is not None:
-            os.replace(temp_path, parquet_path)
+    finally:
+        # Finalize the partial parquet even when the process is interrupted or a
+        # provider raises. Rerunning the same cache command can then resume from
+        # cached_proteins.json instead of discarding a corrupt parquet.
+        if writer is not None:
+            writer.close()
+            if temp_path is not None:
+                os.replace(temp_path, parquet_path)
 
     if parquet_path.exists():
         build_row_group_index(parquet_path, row_group_index_path)
