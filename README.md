@@ -1092,7 +1092,7 @@ Structural similarity caches use:
 
 ```text
 databases/results_databases/predicted_bindings/<provider>/
-  search_representation=<representation>__search_metric=<metric>__cache_threshold_min=<threshold>/
+  search_representation=<representation>__search_metric=<metric>__cache_threshold_min=<threshold>[__cache_threshold_max=<threshold>]/
     predicted_binding_data.parquet
     predicted_binding_progress.json
     cached_proteins.json
@@ -1121,6 +1121,86 @@ after PDB/ChEMBL changes, while `update_zinc_databases.py` moves the affected
 
 `.cache.lock` prevents simultaneous writers. `--force-rebuild-predicted-cache`
 discards and regenerates the compatible namespace selected for the run.
+
+### Remove obsolete predicted caches
+
+Predicted-ligand caches are derived data. They can be deleted without removing
+the compound databases or molecular representations; LigQ 2 downloads or
+recomputes the required cache the next time it is needed. That first search can
+therefore be substantially slower.
+
+The web interface's **Clear history** action removes saved search runs, not
+these shared predicted-ligand caches.
+
+A cache is normally safe to remove when its provider or representation is no
+longer used, or when an update has moved it into an `old_*_backup` directory.
+Do not classify a cache as obsolete only because its minimum cutoff differs
+from the current search: a cache built with a lower cutoff can also serve
+stricter searches. Incompatible cache manifests are ignored automatically.
+
+> [!CAUTION]
+> Stop running searches, database updates, and cache precomputation before
+> deleting cache files. Do not delete the active `compound_data/<provider>/reps`
+> directory or other database files. A leftover `.cache.lock` from a dead
+> process is detected and removed automatically.
+
+For a native installation, first inspect the available namespaces:
+
+```bash
+find databases/results_databases/predicted_bindings -mindepth 1 -maxdepth 2 -type d -print
+du -sh databases/results_databases/predicted_bindings/* 2>/dev/null
+```
+
+Delete one exact cache directory by replacing both placeholders with names from
+the listing above:
+
+```bash
+rm -rf "databases/results_databases/predicted_bindings/<provider>/<exact-cache-directory>"
+```
+
+Alternatively, remove all structural and BSI predicted caches for ZINC. The
+directories are recreated when they are next required:
+
+```bash
+rm -rf databases/results_databases/predicted_bindings/zinc
+rm -rf databases/results_databases/predicted_bindings/zinc_bsi
+```
+
+After confirming that an updated ZINC database works correctly, its inactive
+backup copies can also be removed:
+
+```bash
+rm -rf databases/results_databases/old_predicted_bindings_backup
+rm -rf databases/compound_data/zinc/old_reps_backup
+```
+
+With Docker, operate on the persistent database volume through a temporary CLI
+container. These commands work without locating the volume on the host:
+
+```bash
+docker compose down
+docker compose --profile tools run --rm --entrypoint sh cli -c 'find /app/databases/results_databases/predicted_bindings -mindepth 1 -maxdepth 2 -type d -print'
+docker compose --profile tools run --rm --entrypoint sh cli -c 'rm -rf "/app/databases/results_databases/predicted_bindings/<provider>/<exact-cache-directory>"'
+docker compose up -d
+```
+
+To remove all ZINC structural and BSI caches, replace the single-cache removal
+command with:
+
+```bash
+docker compose --profile tools run --rm --entrypoint sh cli -c 'rm -rf /app/databases/results_databases/predicted_bindings/zinc /app/databases/results_databases/predicted_bindings/zinc_bsi'
+```
+
+To remove only the inactive update backups, use:
+
+```bash
+docker compose --profile tools run --rm --entrypoint sh cli -c 'rm -rf /app/databases/results_databases/old_predicted_bindings_backup /app/databases/compound_data/zinc/old_reps_backup'
+```
+
+Do not use `docker compose down -v` for cache cleanup: `-v` removes all LigQ 2
+volumes, including the downloaded databases, representations, results, uploads,
+and application state. The separate Hugging Face download cache is normally
+best retained because removing it can force large files to be downloaded again.
 
 ## Data layout
 
