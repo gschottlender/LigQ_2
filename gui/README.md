@@ -201,10 +201,9 @@ are preserved.
   at `0.9`; the frontend enforces lower bounds of `0.2` for Tanimoto and `0.75`
   for Cosine representations. The maximum starts at `1.0`, and both controls use
   `0.01` increments.
-- After FASTA validation, the sidebar displays the sequence count and the current
-  frontend limit. The default maximum is `200`; larger files are blocked until
-  the limit is increased under **Advanced options**. Large multi-sequence inputs
-  can substantially increase total search time.
+- After FASTA validation, the sidebar displays the sequence count without
+  imposing a frontend maximum. Large multi-sequence inputs can substantially
+  increase total search time and resource usage.
 - The frontend restricts the Nearest K value to integers from `1` through `15`.
 - Enabling BSI fixes the representation to `morgan_1024_r2`, displays `BSI Score`
   as the metric, and starts the minimum cutoff at `0.98`, with a lower bound of

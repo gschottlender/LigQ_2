@@ -398,11 +398,9 @@ The search sidebar rounds this default upward to two decimal places and exposes
 both cutoff controls in `0.01` increments. It applies frontend-only minimums of
 `0.2` for Tanimoto representations and `0.75` for Cosine representations; the
 shared pipeline and backend validation remain unchanged.
-The browser also counts FASTA headers after upload and compares the count with a
-frontend-only configurable maximum (`200` by default). Files above the current
-limit remain visible but cannot be submitted until the user raises the value in
-the collapsible Advanced options section or uploads a smaller file. This limit is
-not part of the API contract; increasing it may significantly extend job runtime.
+The browser counts FASTA headers after upload and displays the count, but the
+local frontend does not impose a maximum sequence count. Large inputs can
+significantly extend job runtime and resource usage.
 The Nearest K numeric control is likewise constrained only in the frontend to
 integer values from `1` through `15`; the API and CLI remain unchanged.
 When BSI is enabled, the sidebar fixes the representation to `morgan_1024_r2`,

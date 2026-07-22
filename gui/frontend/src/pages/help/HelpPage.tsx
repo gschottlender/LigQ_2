@@ -274,19 +274,14 @@ export function HelpPage() {
                     <span className="font-jetbrains-mono text-xs">.fa</span>, or{' '}
                     <span className="font-jetbrains-mono text-xs">.faa</span> file.
                     Each sequence in the file becomes one query. The frontend counts sequences immediately and
-                    displays the count alongside the current maximum. Files above the default limit of 200 are
-                    blocked from submission.
+                    displays the count without imposing a maximum. Large inputs can substantially increase
+                    runtime and resource usage.
                   </Param>
                   <Param name="Method">
                     Check one or more search strategies:{' '}
                     <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
                     <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
                     <InfoBadge label="Domain" color="amber" /> (HMMER).
-                  </Param>
-                  <Param name="Advanced options">
-                    Change the maximum number of FASTA sequences accepted by the frontend. The default is 200,
-                    and any positive integer can be used. Increasing this limit can make searches take
-                    substantially longer to complete.
                   </Param>
                 </div>
               </Card>

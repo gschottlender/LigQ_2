@@ -302,10 +302,9 @@ user-friendly form.
 6. Select one or more candidate-protein methods.
 7. Select **Run Search**.
 
-The frontend counts FASTA sequences before submission. Its default limit is 200
-sequences and can be changed to any positive integer under **Advanced options**.
-This is a frontend safety control: larger inputs remain possible through the
-CLI, but may make the run very long.
+The frontend counts FASTA sequences before submission and displays the count
+without imposing a maximum. Large inputs can make the run very long and may
+substantially increase resource usage.
 
 Frontend defaults and constraints:
 
@@ -317,7 +316,6 @@ Frontend defaults and constraints:
 | Tanimoto minimum cutoff | Cannot be lower than 0.20 |
 | Cosine minimum cutoff | Cannot be lower than 0.75 |
 | Maximum cutoff | Defaults to 1.00 |
-| Maximum FASTA sequences | 200 by default; configurable in Advanced options |
 
 The minimum structural cutoff initially uses the selected representation's
 registered pipeline default, rounded upward to two decimal places. The browser
@@ -532,9 +530,10 @@ python run_ligq_2.py -i queries.fasta -o results_domains --domains
 | Output behavior | `--known-only`, `--keep-repeated-ligands` |
 | Rebuild controls | `--force-rebuild-known-binding`, `--force-rebuild-protein-domains`, `--force-rebuild-predicted-cache` |
 
-The CLI deliberately does not apply the frontend's 200-sequence, K ≤ 15, or
-minimum-cutoff safety limits. Use larger values carefully because runtime,
-output size, RAM, and cache growth can increase substantially.
+Neither the local frontend nor the CLI caps the FASTA sequence count. The CLI
+also does not apply the frontend's K ≤ 15 or minimum-cutoff safety limits. Use
+large inputs carefully because runtime, output size, RAM, and cache growth can
+increase substantially.
 
 ### Keep repeated ligand rows
 

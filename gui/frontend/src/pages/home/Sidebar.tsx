@@ -1,13 +1,11 @@
 import {
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FolderOpen,
   Info,
   Loader2,
   Play,
-  Settings2,
 } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
@@ -167,7 +165,6 @@ const TANIMOTO_MIN_THRESHOLD = 0.2;
 const COSINE_MIN_THRESHOLD = 0.75;
 const BSI_MIN_THRESHOLD = 0.97;
 const BSI_DEFAULT_THRESHOLD = 0.98;
-const DEFAULT_MAX_FASTA_SEQUENCES = 200;
 const MIN_NEAREST_K = 1;
 const MAX_NEAREST_K = 15;
 
@@ -230,8 +227,6 @@ export function Sidebar({
   const [representationId, setRepresentationId] = useState('');
   const [fastaFile, setFastaFile] = useState<File | null>(null);
   const [fastaSequenceCount, setFastaSequenceCount] = useState<number | null>(null);
-  const [maxFastaSequences, setMaxFastaSequences] = useState(DEFAULT_MAX_FASTA_SEQUENCES);
-  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const [minCutoffValue, setMinCutoffValue] = useState<number | null>(null);
   const [maxCutoff, setMaxCutoff] = useState(1);
   const [useBsi, setUseBsi] = useState(false);
@@ -281,8 +276,6 @@ export function Sidebar({
   const minCutoff = Math.max(storedMinCutoff, structuralMinCutoff);
   const activeMinCutoff = useBsi ? bsiThreshold : minCutoff;
   const activeMaxCutoff = useBsi ? 1 : maxCutoff;
-  const fastaSequenceLimitExceeded = fastaSequenceCount !== null
-    && fastaSequenceCount > maxFastaSequences;
 
   const handleDatabaseChange = (nextDatabaseId: string) => {
     const nextRepresentations = getRepresentationsForDatabase(nextDatabaseId);
@@ -360,14 +353,6 @@ export function Sidebar({
     reader.readAsText(file);
   };
 
-  const handleMaxFastaSequencesChange = (value: string) => {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isInteger(parsed) && parsed >= 1) {
-      setMaxFastaSequences(parsed);
-      setValidationError('');
-    }
-  };
-
   const handleNearestKChange = (value: string) => {
     const parsed = Number.parseInt(value, 10);
     const nextValue = Number.isNaN(parsed) ? MIN_NEAREST_K : parsed;
@@ -377,12 +362,6 @@ export function Sidebar({
   const validate = () => {
     if (!fastaFile) {
       if (!fastaError) setValidationError(VALIDATION_MESSAGES.fasta);
-      return false;
-    }
-    if (fastaSequenceLimitExceeded) {
-      setValidationError(
-        `FASTA contains ${fastaSequenceCount} sequences; the current maximum is ${maxFastaSequences}.`,
-      );
       return false;
     }
     if (methodNearestK && (kValue < MIN_NEAREST_K || kValue > MAX_NEAREST_K)) {
@@ -451,7 +430,7 @@ export function Sidebar({
     setTimeout(() => setIsOpen(true), 50);
   };
 
-  const buttonDisabled = isRunning || isSubmitting || fastaValidating || fastaSequenceLimitExceeded;
+  const buttonDisabled = isRunning || isSubmitting || fastaValidating;
 
   return (
     <section className={`relative w-full border-b sm:border-b-0 sm:border-r border-gray-300 dark:border-gray-700 sm:sticky top-0 h-auto sm:h-full sm:shrink-0 transition-all duration-300 ${isOpen ? 'sm:w-72' : 'sm:w-16'} dark:bg-[#1a2330]`}>
@@ -574,26 +553,8 @@ export function Sidebar({
               <p className="text-xs text-red-500 dark:text-red-400">{fastaError}</p>
             )}
             {fastaSequenceCount !== null && !fastaValidating && (
-              <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-dm-sans
-                ${fastaSequenceLimitExceeded
-                  ? 'text-red-600 dark:text-red-400'
-                  : 'text-gray-500 dark:text-gray-400'}`}>
-                <span>
-                  Sequences: <strong className="font-semibold">{fastaSequenceCount.toLocaleString()}</strong>
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>
-                  Maximum: <strong className="font-semibold">{maxFastaSequences.toLocaleString()}</strong>
-                </span>
-                <Tooltip content="The maximum number of FASTA sequences can be changed in Advanced options.">
-                  <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
-                </Tooltip>
-              </div>
-            )}
-            {fastaSequenceLimitExceeded && !fastaValidating && (
-              <p className="text-xs text-red-500 dark:text-red-400">
-                This FASTA exceeds the current sequence limit. Increase the maximum in Advanced options or
-                upload a smaller file.
+              <p className="text-xs font-dm-sans text-gray-500 dark:text-gray-400">
+                Sequences: <strong className="font-semibold">{fastaSequenceCount.toLocaleString()}</strong>
               </p>
             )}
           </section>
@@ -630,47 +591,6 @@ export function Sidebar({
               />
             </div>
           </div>
-
-          {/* Advanced options */}
-          <section className="mt-5 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
-            <button
-              type="button"
-              aria-expanded={showAdvancedOptions}
-              onClick={() => setShowAdvancedOptions((current) => !current)}
-              className="flex w-full cursor-pointer items-center justify-between gap-3 px-3 py-2.5 text-left
-                text-sm font-dm-sans font-semibold text-gray-600 transition-colors hover:bg-gray-50
-                dark:text-gray-300 dark:hover:bg-gray-800/60"
-            >
-              <span className="flex items-center gap-2">
-                <Settings2 className="w-4 h-4 text-gray-400" />
-                Advanced options
-              </span>
-              {showAdvancedOptions
-                ? <ChevronDown className="w-4 h-4 text-gray-400" />
-                : <ChevronRight className="w-4 h-4 text-gray-400" />
-              }
-            </button>
-            {showAdvancedOptions && (
-              <div className="border-t border-gray-200 px-3 py-3 dark:border-gray-700">
-                <label className="flex flex-col gap-2 text-xs font-dm-sans font-medium text-gray-600 dark:text-gray-300">
-                  <span>Maximum FASTA sequences</span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={maxFastaSequences}
-                    onChange={(event) => handleMaxFastaSequencesChange(event.target.value)}
-                    className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-600
-                      focus:outline-none focus:ring-1 focus:ring-teal-500 dark:border-gray-600 dark:bg-gray-800
-                      dark:text-gray-200"
-                  />
-                </label>
-                <p className="mt-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
-                  Large FASTA inputs can make the search take substantially longer to complete.
-                </p>
-              </div>
-            )}
-          </section>
 
           {validationError && (
             <p className="mt-3 text-xs text-red-500 dark:text-red-400">{validationError}</p>
