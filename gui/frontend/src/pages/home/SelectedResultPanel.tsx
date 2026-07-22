@@ -15,6 +15,43 @@ interface SelectedResultPanelProps {
   onClose: () => void;
 }
 
+interface CompoundPageLink {
+  href: string;
+  database: string;
+}
+
+function getCompoundPageLink(selected: SelectedItem): CompoundPageLink | null {
+  const compoundId = selected.item.chem_comp_id.trim();
+  if (!compoundId) return null;
+
+  if (selected.kind === 'known') {
+    const encodedId = encodeURIComponent(compoundId.toUpperCase());
+    if (selected.item.source === 'pdb') {
+      return {
+        href: `https://www.rcsb.org/ligand/${encodedId}`,
+        database: 'RCSB PDB',
+      };
+    }
+    if (selected.item.source === 'chembl') {
+      return {
+        href: `https://www.ebi.ac.uk/chembl/explore/compound/${encodedId}`,
+        database: 'ChEMBL',
+      };
+    }
+  }
+
+  const zincMatch = compoundId.match(/^ZINC(\d+)$/i);
+  if (selected.kind === 'predicted' && zincMatch) {
+    const normalizedId = `ZINC${zincMatch[1].padStart(12, '0')}`;
+    return {
+      href: `https://zinc20.docking.org/substances/${normalizedId}/`,
+      database: 'ZINC20',
+    };
+  }
+
+  return null;
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
 
@@ -72,6 +109,7 @@ function TanimotoBar({ value }: { value: number }) {
 export function SelectedResultPanel({ selected, onClose }: SelectedResultPanelProps) {
   const smiles = selected.item.smiles;
   const compoundId = selected.item.chem_comp_id;
+  const compoundPage = getCompoundPageLink(selected);
 
   const [sdfError, setSdfError] = useState(false);
   const [showViewer, setShowViewer] = useState(false);
@@ -135,6 +173,21 @@ export function SelectedResultPanel({ selected, onClose }: SelectedResultPanelPr
               </>
             )}
             <Row label="Search type" value={<SearchTypeBadge type={selected.item.search_type} />} />
+            {compoundPage && (
+              <Row label="Compound page" value={
+                <a
+                  href={compoundPage.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open ${compoundId} on ${compoundPage.database} in a new tab`}
+                  className="inline-flex items-center gap-1 font-medium text-teal-700 hover:text-teal-600 hover:underline
+                    dark:text-teal-300 dark:hover:text-teal-200"
+                >
+                  View on {compoundPage.database}
+                  <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                </a>
+              } />
+            )}
             {selected.kind === 'predicted' && (
               <Row label="Similarity score" value={
                 <TanimotoBar value={selected.item.tanimoto ?? selected.item.similarity ?? selected.item.bsi_score ?? 0} />

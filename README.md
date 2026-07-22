@@ -385,7 +385,8 @@ Each FASTA query has up to three result views:
 
 The tables support filtering, sorting, column selection, and pagination. Select
 a known or predicted ligand to inspect its metadata, SMILES, and 2D structure.
-The detail panel can export SDF and open an interactive 3D molecular viewer.
+When available, the detail panel links to the compound's official ZINC20, RCSB
+PDB, or ChEMBL page. It can also export SDF and open an interactive 3D molecular viewer.
 Complete search results can be downloaded from the results interface.
 
 ### Search history
@@ -1407,7 +1408,7 @@ higher-ranked protein during deduplication.
 - [ChEMBL](https://www.ebi.ac.uk/chembl/)
 - [UniProt](https://www.uniprot.org/)
 - [Pfam](https://www.ebi.ac.uk/interpro/entry/pfam/)
-- [ZINC](https://zinc.docking.org/)
+- [ZINC20](https://zinc20.docking.org/)
 
 The processed default dataset is distributed through
 [gschottlender/LigQ_2 on Hugging Face](https://huggingface.co/datasets/gschottlender/LigQ_2).
