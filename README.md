@@ -960,6 +960,67 @@ python update_zinc_databases.py \
   --temp-data-dir temp_data
 ```
 
+### Refresh ZINC and precompute caches for fast searches
+
+Use the following workflow after a ZINC update to make subsequent predicted-
+ligand searches reuse a complete cache instead of computing each candidate
+protein on demand.
+
+> **Long-running operation:** downloading and rebuilding ZINC, generating its
+> representations, and precomputing a complete cache can take several hours or
+> days, depending on the network connection, CPU/GPU, storage speed, and number
+> of proteins. Do not run searches or another cache writer at the same time.
+
+1. Update ZINC. By default, this also moves the old ZINC representations and
+   predicted caches to timestamped backup directories:
+
+   ```bash
+   python update_zinc_databases.py \
+     --output-dir databases \
+     --temp-data-dir temp_data
+   ```
+
+2. Precompute the default ECFP/Morgan cache. The `0.4` cache covers the stricter
+   default Morgan search threshold and can therefore be reused by normal runs:
+
+   ```bash
+   python precompute_predicted_cache.py \
+     --data-dir databases \
+     --ligand-provider zinc \
+     --search-representation morgan_1024_r2 \
+     --search-metric tanimoto \
+     --search-threshold 0.4 \
+     --search-device cuda
+   ```
+
+3. **Optional:** add the FCFP/Morgan-feature representation and precompute its
+   independent cache. With `--base zinc`, the representation is generated for
+   both ZINC and the required PDB/ChEMBL reference base:
+
+   ```bash
+   python add_new_representation.py \
+     --output-dir databases \
+     --base zinc \
+     --representation-type rdkit \
+     --rdkit-fp-kind morgan_feature \
+     --n-bits 1024 \
+     --rep-name morgan_feature_1024_r2 \
+     --n-jobs 16 \
+     --chunksize 500
+
+   python precompute_predicted_cache.py \
+     --data-dir databases \
+     --ligand-provider zinc \
+     --search-representation morgan_feature_1024_r2 \
+     --search-metric tanimoto \
+     --search-threshold 0.5 \
+     --search-device cuda
+   ```
+
+The precompute commands are resumable. A successful run verifies complete
+protein coverage in `cached_proteins.json`. Systems without CUDA can use
+`--search-device cpu`, but cache generation will generally be much slower.
+
 Runtime tables can also be rebuilt from an existing local merged database:
 
 ```bash
