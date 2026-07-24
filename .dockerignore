@@ -2,6 +2,8 @@
 
 !/*.py
 !/search_threshold_defaults.json
+!/ligq_support/
+!/ligq_support/**
 !/compound_processing/
 !/compound_processing/**
 !/query_processing/

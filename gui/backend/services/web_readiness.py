@@ -43,7 +43,8 @@ async def inspect_web_readiness(*, force: bool = False) -> dict[str, Any]:
 
         process = await asyncio.create_subprocess_exec(
             sys.executable,
-            str(PIPELINE_ROOT / "validate_web_data.py"),
+            "-m",
+            "ligq_support.validate_web_data",
             "--data-dir",
             str(DATABASES_DIR),
             "--json",

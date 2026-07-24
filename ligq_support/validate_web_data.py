@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from prepare_ligq_2_data import (
+from ligq_support.prepare_ligq_2_data import (
     CORE_DATA_PATHS,
     ECFP_CACHE_PATHS,
     FCFP_CACHE_PATHS,

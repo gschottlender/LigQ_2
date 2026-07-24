@@ -23,7 +23,7 @@ LigQ 2 has three layers:
                      │  asyncio.create_subprocess_exec
 ┌────────────────────▼────────────────────────────────────┐
 │  Pipeline  (repository root)                            │
-│  prepare_ligq_2_data.py · run_ligq_2.py                 │
+│  ligq_support/prepare_ligq_2_data.py · run_ligq_2.py    │
 │  build_compound_database.py · add_new_representation.py │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -186,7 +186,7 @@ compiled packages such as RDKit load the C++ runtime shipped with that environme
 
 | Job type | Script |
 |---|---|
-| `setup` | `prepare_ligq_2_data.py` |
+| `setup` | `python -m ligq_support.prepare_ligq_2_data` |
 | `search` | `run_ligq_2.py` |
 | `build_database` | `build_compound_database.py` |
 | `add_representation` | `add_new_representation.py` |

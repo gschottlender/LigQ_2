@@ -57,7 +57,7 @@ services:
   prepare-data:
     <<: *api-image
     profiles: ["admin"]
-    entrypoint: ["python", "/app/prepare_ligq_2_data.py"]
+    entrypoint: ["python", "-m", "ligq_support.prepare_ligq_2_data"]
     command:
       - --data-dir
       - /app/databases
@@ -73,7 +73,7 @@ services:
   validate-data:
     <<: *api-image
     profiles: ["admin"]
-    entrypoint: ["python", "/app/validate_web_data.py"]
+    entrypoint: ["python", "-m", "ligq_support.validate_web_data"]
     command: ["--data-dir", "/app/databases"]
     volumes:
       - web_databases:/app/databases:ro

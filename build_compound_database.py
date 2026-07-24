@@ -14,7 +14,7 @@ from compound_processing.compound_helpers import (
     build_ligand_index,
     build_morgan_representation,
 )
-from progress_reporting import ProgressEmitter
+from ligq_support.progress_reporting import ProgressEmitter
 
 
 COMMON_ID_COLUMNS = [

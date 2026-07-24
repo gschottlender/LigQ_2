@@ -10,7 +10,7 @@ from typing import Any
 from core.config import DATABASES_DIR, PIPELINE_ROOT
 
 
-SETUP_SCRIPT = PIPELINE_ROOT / "prepare_ligq_2_data.py"
+SETUP_MODULE = "ligq_support.prepare_ligq_2_data"
 HF_REPO_ID = "gschottlender/LigQ_2"
 HF_REVISION = "main"
 
@@ -182,7 +182,8 @@ async def inspect_setup_status(*, active: bool = False) -> dict[str, Any]:
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        str(SETUP_SCRIPT),
+        "-m",
+        SETUP_MODULE,
         "--data-dir",
         str(DATABASES_DIR),
         "--status-json",
@@ -220,7 +221,8 @@ def setup_job_args(
     include_fcfp_cache: bool = False,
 ) -> list[str]:
     args = [
-        str(SETUP_SCRIPT),
+        "-m",
+        SETUP_MODULE,
         "--data-dir",
         str(DATABASES_DIR),
         "--repo-id",

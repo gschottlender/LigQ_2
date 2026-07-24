@@ -42,7 +42,7 @@ from query_processing.predicted_cache import (
     ensure_provider_cache,
     load_provider_cache_read_only,
 )
-from progress_reporting import ProgressEmitter
+from ligq_support.progress_reporting import ProgressEmitter
 
 
 def ensure_dir(path: str | Path) -> Path:

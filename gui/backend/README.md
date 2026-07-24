@@ -110,7 +110,8 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
   `LIGQ_DATABASES_DIR`, `LIGQ_RESULTS_DIR`, `LIGQ_UPLOADS_DIR`,
   `LIGQ_TEMP_RESULTS_DIR`, and `LIGQ_STATE_DIR` environment variables. Native
   execution keeps the repository paths as defaults.
-- Initial setup is launched through `prepare_ligq_2_data.py`. It downloads only
+- Initial setup is launched through
+  `python -m ligq_support.prepare_ligq_2_data`. It downloads only
   missing files from `gschottlender/LigQ_2` directly into `databases/`. The
   required package always includes the default databases and BSI models;
   `POST /api/setup/download` accepts `include_ecfp_cache` (default `true`) and

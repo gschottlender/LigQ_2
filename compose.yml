@@ -48,7 +48,7 @@ services:
   init-data:
     <<: *api-common
     profiles: ["tools"]
-    entrypoint: ["python", "/app/prepare_ligq_2_data.py"]
+    entrypoint: ["python", "-m", "ligq_support.prepare_ligq_2_data"]
     command:
       - --data-dir
       - /app/databases

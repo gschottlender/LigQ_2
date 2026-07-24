@@ -13,7 +13,7 @@ from typing import Any, Iterable
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub import file_download as hf_file_download
 
-from progress_reporting import ProgressEmitter
+from ligq_support.progress_reporting import ProgressEmitter
 
 
 HF_REPO_ID = "gschottlender/LigQ_2"

@@ -18,7 +18,7 @@ from compound_processing.compound_helpers import (
     build_huggingface_representation,
     build_rdkit_representation,
 )
-from progress_reporting import ProgressEmitter
+from ligq_support.progress_reporting import ProgressEmitter
 
 
 DEFAULT_LOCAL_ROOT = Path("compound_data/pdb_chembl")

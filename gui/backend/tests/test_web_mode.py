@@ -30,7 +30,8 @@ from query_processing.predicted_cache import (  # noqa: E402
 from services.uploads import inspect_fasta_details  # noqa: E402
 from services.web_access import require_job_access  # noqa: E402
 from services import search_artifacts  # noqa: E402
-import validate_web_data  # noqa: E402
+from services.setup_service import setup_job_args  # noqa: E402
+from ligq_support import validate_web_data  # noqa: E402
 import run_ligq_2  # noqa: E402
 
 
@@ -156,6 +157,12 @@ class WebPolicyTests(unittest.TestCase):
 
         self.assertFalse(status["ready"])
         self.assertTrue(any("fcfp.dat" in error for error in status["errors"]))
+
+    def test_setup_job_runs_the_packaged_support_module(self):
+        self.assertEqual(
+            setup_job_args()[:2],
+            ["-m", "ligq_support.prepare_ligq_2_data"],
+        )
 
     def test_command_line_read_only_guards_remain_opt_in(self):
         with patch.object(
