@@ -20,6 +20,7 @@ from services.resource_artifacts import (
     cleanup_resource_job_artifacts,
     finalize_resource_job_artifacts,
 )
+from services.search_artifacts import cleanup_web_search_artifacts
 
 import logging
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class _QueuedJob:
     args: list[str]
     output_dir: Optional[Path] = None
     n_queries: int = 0
+    timeout_seconds: float | None = None
 
 
 _job_queue: asyncio.Queue[_QueuedJob] | None = None
@@ -114,6 +116,25 @@ async def cleanup_stale_resource_jobs() -> None:
             await _cleanup_resource_job(job)
         elif job.job_type in RESOURCE_JOB_TYPES and job.status in _COMPLETED_STATUSES:
             await _finalize_resource_job(job)
+
+
+async def cleanup_stale_web_search_jobs() -> None:
+    """Reconcile persisted public-search artifacts after an unclean restart."""
+    for job in state.get_all_jobs():
+        if job.job_type != "search" or job.owner_session_hash is None:
+            continue
+        if job.status in _CLEANUP_STATUSES:
+            await asyncio.to_thread(
+                cleanup_web_search_artifacts,
+                job,
+                remove_results=True,
+            )
+        elif job.status in _COMPLETED_STATUSES:
+            await asyncio.to_thread(
+                cleanup_web_search_artifacts,
+                job,
+                remove_results=False,
+            )
 
 
 async def _watch_fs(job_id: str, output_dir: Path, n_queries: int) -> None:
@@ -337,9 +358,27 @@ async def _tail_stdout(
 
     async with state._lock:
         state.processes.pop(job_id, None)
+    latest_job = await state.get_job(job_id)
+    if latest_job is not None and latest_job.owner_session_hash is not None:
+        remove_results = latest_job.status in {
+            JobStatus.failed,
+            JobStatus.cancelled,
+            JobStatus.interrupted,
+        }
+        await asyncio.to_thread(
+            cleanup_web_search_artifacts,
+            latest_job,
+            remove_results=remove_results,
+        )
 
 
-async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = None, n_queries: int = 0,) -> None:
+async def run_job(
+    job_id: str,
+    args: list[str],
+    output_dir: Optional[Path] = None,
+    n_queries: int = 0,
+    timeout_seconds: float | None = None,
+) -> None:
     logger.info("[job %s] Starting with args: %s", job_id, args)
     logger.info("[job %s] Python: %s", job_id, sys.executable)
     logger.info("[job %s] CWD: %s", job_id, str(PIPELINE_ROOT))
@@ -395,6 +434,43 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
                 stderr_done.set()
 
         stderr_task = asyncio.create_task(_tail_stderr(process))        
+        timeout_task: asyncio.Task | None = None
+        if timeout_seconds is not None:
+            async def _enforce_timeout() -> None:
+                await asyncio.sleep(timeout_seconds)
+                current = await state.get_job(job_id)
+                if current is None or current.status not in _ACTIVE_STATUSES:
+                    return
+                now = datetime.now(timezone.utc)
+                message = (
+                    f"The public search exceeded the {round(timeout_seconds / 60)} minute limit."
+                )
+                failure = JobFailure(label="Time limit exceeded", message=message)
+                timed_out = await state.update_job_if_status(
+                    job_id,
+                    _ACTIVE_STATUSES,
+                    status=JobStatus.failed,
+                    finished_at=now,
+                    elapsed_seconds=(
+                        (now - current.started_at).total_seconds()
+                        if current.started_at
+                        else timeout_seconds
+                    ),
+                    error=message,
+                    failure=failure,
+                )
+                if timed_out is not None:
+                    await _terminate_process(process, grace_seconds=5)
+                    await asyncio.to_thread(
+                        cleanup_web_search_artifacts,
+                        timed_out,
+                        remove_results=True,
+                    )
+
+            timeout_task = asyncio.create_task(
+                _enforce_timeout(),
+                name=f"ligq-job-timeout-{job_id}",
+            )
 
         watcher: Optional[asyncio.Task] = None
         if output_dir:
@@ -418,6 +494,12 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
                     await watcher
                 except asyncio.CancelledError:
                     pass
+            if timeout_task is not None:
+                timeout_task.cancel()
+                try:
+                    await timeout_task
+                except asyncio.CancelledError:
+                    pass
 
     except Exception as exc:
         job = await state.get_job(job_id)
@@ -437,6 +519,13 @@ async def run_job(job_id: str, args: list[str], output_dir: Optional[Path] = Non
         )
         async with state._lock:
             state.processes.pop(job_id, None)
+        latest_job = await state.get_job(job_id)
+        if latest_job is not None:
+            await asyncio.to_thread(
+                cleanup_web_search_artifacts,
+                latest_job,
+                remove_results=True,
+            )
 
 
 async def _terminate_process(
@@ -491,6 +580,7 @@ async def _queue_worker() -> None:
                 queued_job.args,
                 queued_job.output_dir,
                 queued_job.n_queries,
+                queued_job.timeout_seconds,
             )
         finally:
             _job_queue.task_done()
@@ -509,12 +599,15 @@ async def enqueue_job(
     args: list[str],
     output_dir: Optional[Path] = None,
     n_queries: int = 0,
+    timeout_seconds: float | None = None,
 ) -> None:
     if _stopping:
         raise RuntimeError("The job queue is shutting down.")
     await start_worker()
     assert _job_queue is not None
-    await _job_queue.put(_QueuedJob(job_id, args, output_dir, n_queries))
+    await _job_queue.put(
+        _QueuedJob(job_id, args, output_dir, n_queries, timeout_seconds)
+    )
 
 
 async def stop_worker() -> None:
@@ -525,6 +618,13 @@ async def stop_worker() -> None:
         for job in state.get_all_jobs()
         if job.job_type in RESOURCE_JOB_TYPES
         and job.status in {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
+    ]
+    active_web_searches = [
+        job
+        for job in state.get_all_jobs()
+        if job.job_type == "search"
+        and job.owner_session_hash is not None
+        and job.status in _ACTIVE_STATUSES
     ]
     await state.mark_unfinished_interrupted(
         "The backend stopped before this job finished."
@@ -539,6 +639,14 @@ async def stop_worker() -> None:
         )
     for job in active_resource_jobs:
         await _cleanup_resource_job(job)
+    for job in active_web_searches:
+        interrupted = await state.get_job(job.job_id)
+        if interrupted is not None:
+            await asyncio.to_thread(
+                cleanup_web_search_artifacts,
+                interrupted,
+                remove_results=True,
+            )
 
     if _worker_task is not None:
         _worker_task.cancel()

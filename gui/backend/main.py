@@ -15,7 +15,14 @@ from core.config import (
     UPLOADS_DIR,
 )
 from routers import databases, files, jobs, results, setup, system
-from services.job_runner import cleanup_stale_resource_jobs, start_worker, stop_worker
+from services.job_runner import (
+    cleanup_stale_resource_jobs,
+    cleanup_stale_web_search_jobs,
+    start_worker,
+    stop_worker,
+)
+from services.web_access import prepare_web_session, set_web_session_cookie
+from services.web_cleanup import start_web_cleanup, stop_web_cleanup
 
 import logging
 
@@ -38,10 +45,13 @@ async def lifespan(_app: FastAPI):
         directory.mkdir(parents=True, exist_ok=True)
     await state.initialize()
     await cleanup_stale_resource_jobs()
+    await cleanup_stale_web_search_jobs()
     await start_worker()
+    await start_web_cleanup()
     try:
         yield
     finally:
+        await stop_web_cleanup()
         await stop_worker()
 
 
@@ -60,6 +70,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def anonymous_web_session(request: Request, call_next):
+    new_session_token = prepare_web_session(request)
+    response = await call_next(request)
+    set_web_session_cookie(response, new_session_token)
+    return response
 
 app.include_router(databases.router)
 app.include_router(jobs.router)

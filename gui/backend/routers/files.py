@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from core.config import UPLOADS_DIR
 from services.fs_inspector import read_file_columns
 from services.uploads import UploadTooLargeError, save_upload_stream
+from services.web_access import require_resource_management
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
@@ -13,6 +14,7 @@ _ALLOWED_EXTENSIONS = {".smi", ".csv", ".tsv", ".parquet"}
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
+    require_resource_management()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
         raise HTTPException(

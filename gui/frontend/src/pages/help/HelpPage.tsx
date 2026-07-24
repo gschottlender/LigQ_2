@@ -13,6 +13,7 @@ import {
   Play,
   Sparkles,
 } from 'lucide-react';
+import { useSystemPolicy } from '../../context/SystemPolicyContext';
 
 interface Section {
   id: string;
@@ -151,6 +152,10 @@ function InfoBadge({ label, color = 'teal' }: { label: string; color?: 'teal' | 
 }
 
 export function HelpPage() {
+  const { isWeb, policy } = useSystemPolicy();
+  const visibleSections = isWeb
+    ? SECTIONS.filter((section) => !['add-database', 'add-representation'].includes(section.id))
+    : SECTIONS;
   const scrollTo = (id: string) => {
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
@@ -163,7 +168,7 @@ export function HelpPage() {
           Contents
         </p>
         <nav className="flex gap-1 overflow-x-auto sm:flex-col sm:gap-0.5 sm:overflow-visible">
-          {SECTIONS.map((s) => (
+          {visibleSections.map((s) => (
             <button
               key={s.id}
               onClick={() => scrollTo(s.id)}
@@ -191,6 +196,23 @@ export function HelpPage() {
                 FASTA file, and the system finds structurally similar proteins in PDB/ChEMBL, collects their known
                 ligands, and retrieves compounds from external databases with high molecular similarity.
               </p>
+              {isWeb ? (
+                <Card>
+                  <div className="flex items-center gap-2 text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200">
+                    <Database className="w-4 h-4 text-[#0d5c6b] dark:text-teal-300" />
+                    Public web service
+                  </div>
+                  <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
+                    The public interface searches ZINC through the installed Morgan ECFP and Morgan Feature
+                    FCFP caches, or can return Known ligands only. It accepts at most{' '}
+                    {policy.search.max_fasta_sequences} FASTA records,{' '}
+                    {policy.search.max_fasta_residues?.toLocaleString()} total residues and{' '}
+                    {(policy.search.max_fasta_bytes / 1_048_576).toFixed(0)} MB per file. One search runs at a
+                    time on the server, accepted searches are limited to{' '}
+                    {policy.search.rate_limit_count} per IP per hour, and a search is stopped after 60 minutes.
+                  </p>
+                </Card>
+              ) : (
               <Card>
                 <div className="flex items-center gap-2 text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200">
                   <Database className="w-4 h-4 text-[#0d5c6b] dark:text-teal-300" />
@@ -205,6 +227,7 @@ export function HelpPage() {
                   the background download. Databases become available automatically when setup completes.
                 </p>
               </Card>
+              )}
             </div>
           </section>
 
@@ -223,25 +246,40 @@ export function HelpPage() {
                   Search Parameters (left sidebar)
                 </div>
                 <div className="flex flex-col divide-y divide-gray-100 dark:divide-gray-700/60">
+                  <Param name="Search mode">
+                    Use{' '}
+                    <InfoBadge
+                      label={isWeb ? 'ZINC predicted + known' : 'Predicted + known'}
+                      color="teal"
+                    />{' '}
+                    for the default compound search, or{' '}
+                    <InfoBadge label="Known ligands only" color="blue" /> to skip the compound database
+                    and return curated PDB/ChEMBL ligands.
+                  </Param>
                   <Param name="Search database">
-                    Select a processed compound database (e.g. ZINC, LOTUS, or a custom database you added).
+                    {isWeb
+                      ? 'The public service is fixed to ZINC.'
+                      : 'Select a processed compound database (e.g. ZINC, LOTUS, or a custom database you added). This control is hidden in Known ligands only mode.'}
                   </Param>
                   <Param name="Representation">
-                    Molecular fingerprint or embedding used for similarity comparison (e.g. Morgan 1024, MACCS).
+                    {isWeb
+                      ? 'Choose Morgan ECFP (cache available from 0.4) or Morgan Feature FCFP (cache available from 0.5). This control is hidden in Known ligands only mode.'
+                      : 'Molecular fingerprint or embedding used for similarity comparison (e.g. Morgan 1024, MACCS). This control is hidden in Known ligands only mode.'}
                   </Param>
                   <Param name="Metric">
                     Auto-detected from the representation.{' '}
                     <InfoBadge label="Tanimoto" color="teal" /> for binary fingerprints,{' '}
                     <InfoBadge label="Cosine" color="blue" /> for embeddings.
                   </Param>
-                  <Param name="BSI">
+                  {!isWeb && <Param name="BSI">
                     Enables the Bioactivity Similarity Index for protein families with a trained Pfam-specific
                     model. BSI fixes the representation to{' '}
                     <span className="font-jetbrains-mono text-xs">morgan_1024_r2</span> and reports a learned{' '}
                     <InfoBadge label="BSI Score" color="teal" /> instead of structural similarity. The graphical
                     interface enables BSI only when the backend detects a usable CUDA GPU; CPU-only Docker
                     deployments keep the control disabled. Command-line BSI remains available for administrative
-                    runs. To avoid prohibitively expensive domain-wide expansion, BSI mode supports only{' '}
+                    runs. BSI is hidden in Known ligands only mode. To avoid prohibitively expensive domain-wide
+                    expansion, BSI mode supports only{' '}
                     <InfoBadge label="Sequence" color="teal" /> and{' '}
                     <InfoBadge label="Nearest K" color="blue" />; Domain is cleared and disabled.
                     <span className="mt-2 block">
@@ -259,23 +297,32 @@ export function HelpPage() {
                         ))}
                       </span>
                     </span>
-                  </Param>
+                  </Param>}
                   <Param name="Min / Max cutoff">
-                    Similarity threshold for predicted ligands. Only compounds with similarity inside this range
+                    {isWeb ? (
+                      <>
+                        Similarity range for cached ZINC predictions. The minimum can be raised but not lowered
+                        below 0.40 for Morgan ECFP or 0.50 for Morgan Feature FCFP. The default minimums are
+                        0.42 and 0.51, respectively. These controls are hidden in Known ligands only mode.
+                      </>
+                    ) : (
+                      <>Similarity threshold for predicted ligands. Only compounds with similarity inside this range
                     are included (0.0 to 1.0). The minimum uses the selected representation's pipeline default,
                     rounded upward to two decimals; representations without a registered default start at 0.9.
                     In the frontend, the minimum cannot be lowered below 0.20 for Tanimoto representations or
                     0.75 for Cosine representations. The maximum starts at 1.0, and both controls advance in
                     0.01 increments. In BSI mode, the minimum starts at 0.98, cannot be lowered below 0.97, and
-                    remains adjustable up to 1.0; the maximum is fixed at 1.0.
+                    remains adjustable up to 1.0; the maximum is fixed at 1.0. These controls are hidden in Known
+                    ligands only mode.</>
+                    )}
                   </Param>
                   <Param name="Input FASTA">
                     Click the folder icon to upload your <span className="font-jetbrains-mono text-xs">.fasta</span>,{' '}
                     <span className="font-jetbrains-mono text-xs">.fa</span>, or{' '}
                     <span className="font-jetbrains-mono text-xs">.faa</span> file.
-                    Each sequence in the file becomes one query. The frontend counts sequences immediately and
-                    displays the count without imposing a maximum. Large inputs can substantially increase
-                    runtime and resource usage.
+                    Each sequence in the file becomes one query. {isWeb
+                      ? `The public service accepts no more than ${policy.search.max_fasta_sequences} records, ${policy.search.max_fasta_residues?.toLocaleString()} total residues and ${(policy.search.max_fasta_bytes / 1_048_576).toFixed(0)} MB; FASTA identifiers must be unique.`
+                      : 'The frontend counts sequences immediately and displays the count without imposing a maximum. Large inputs can substantially increase runtime and resource usage.'}
                   </Param>
                   <Param name="Method">
                     Check one or more search strategies:{' '}
@@ -287,14 +334,19 @@ export function HelpPage() {
               </Card>
 
               <div className="flex flex-col gap-2">
-                <Step n={1}>Select your database, representation, and similarity cutoffs, or enable BSI.</Step>
+                <Step n={1}>
+                  {isWeb
+                    ? 'Choose ZINC or Known ligands only. For ZINC, select ECFP or FCFP and the cached similarity range.'
+                    : 'Choose Predicted + known or Known ligands only. For predicted ligands, select your database, representation, and similarity cutoffs, or enable BSI.'}
+                </Step>
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
                 <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
                 <Step n={4}>
                   Click <strong>Run Search</strong>. The status panel shows the current step. Structural-similarity
                   searches also show processed items, ETA, and elapsed time. BSI searches show only the active step
                   because processing time can vary substantially between proteins. Results appear progressively as
-                  each query completes.
+                  each query completes. {isWeb && 'If another public search is active, try again after the indicated delay. '}
+                  You may cancel an active search; its partial results and temporary files are deleted.
                 </Step>
                 <Step n={5}>
                   Collapse the sidebar with the{' '}
@@ -317,9 +369,11 @@ export function HelpPage() {
               <div>
                 <h3 className="text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200 mb-2">Metric cards</h3>
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
-                  The four cards at the top summarise the current search run: total Queries, proteins in the
-                  Protein Ranking, Known Bindings, and Predicted Ligands. Hover over any number to see a
-                  breakdown by search method (sequence / nearest K / domain).
+                  The cards at the top summarise the current search run: total Queries, proteins in the
+                  Protein Ranking, Known Bindings
+                  {isWeb ? ' and, for ZINC searches, Predicted Ligands.' : ' and Predicted Ligands.'}
+                  {' '}Hover over any number to see a breakdown by search
+                  method (sequence / nearest K / domain).
                 </p>
               </div>
 
@@ -338,8 +392,8 @@ export function HelpPage() {
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                   Click a query row to load its results below. Use the{' '}
                   <strong className="text-gray-700 dark:text-gray-200">Protein Ranking</strong>,{' '}
-                  <strong className="text-gray-700 dark:text-gray-200">Known Bindings</strong>, or{' '}
-                  <strong className="text-gray-700 dark:text-gray-200">Predicted Ligands</strong> buttons on the
+                  <strong className="text-gray-700 dark:text-gray-200">Known Bindings</strong>
+                  {isWeb ? ', and Predicted Ligands when using ZINC' : ', or Predicted Ligands'} buttons on the
                   row to jump directly to that tab.
                 </p>
               </div>
@@ -356,10 +410,13 @@ export function HelpPage() {
                       Ligands from PDB crystal structures or ChEMBL bioactivity records associated with the
                       candidate proteins. Includes pChEMBL potency and binding-site Pfam domains where available.
                     </Param>
-                    <Param name="Predicted Ligands">
-                      Compounds retrieved from the search database by structural similarity to known ligands.
-                      Each row shows the Tanimoto (or Cosine) score and the query/hit protein pair.
-                    </Param>
+                    {(!isWeb || policy.search.allowed_modes.includes('zinc')) && (
+                      <Param name="Predicted Ligands">
+                        Compounds retrieved from the search database by structural similarity to known ligands.
+                        Each row shows the {isWeb ? 'Tanimoto' : 'Tanimoto (or Cosine)'} score and the
+                        query/hit protein pair. {isWeb && 'This tab is omitted entirely in Known ligands only mode.'}
+                      </Param>
+                    )}
                   </div>
                 </Card>
               </div>
@@ -367,7 +424,7 @@ export function HelpPage() {
               <div>
                 <h3 className="text-sm font-semibold font-dm-sans text-gray-700 dark:text-gray-200 mb-2">Selected result panel</h3>
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
-                  Click any row in the Known Bindings or Predicted Ligands table to open the detail panel on
+                  Click any row in the Known Bindings or {isWeb ? 'available Predicted Ligands' : 'Predicted Ligands'} table to open the detail panel on
                   the right. It shows compound metadata, the full SMILES string, a 2D structure preview, and
                   a link to the official ZINC20, RCSB PDB, or ChEMBL compound page when available. It also provides
                   two action buttons:
@@ -385,8 +442,9 @@ export function HelpPage() {
             <SectionHeader id="history" icon={<History className="w-4 h-4" />} title="Search History" />
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
-                LigQ 2 stores every search run on disk. You can reload any previous run without re-running
-                the pipeline.
+                {isWeb
+                  ? 'The public service keeps completed searches only in this anonymous browser session. Results can be reloaded for up to two hours after completion.'
+                  : 'LigQ 2 stores every search run on disk. You can reload any previous run without re-running the pipeline.'}
               </p>
               <div className="flex flex-col gap-2">
                 <Step n={1}>
@@ -404,15 +462,25 @@ export function HelpPage() {
                 </Step>
               </div>
               <p className="text-xs font-dm-sans text-gray-400 dark:text-gray-500">
-                Results are stored under{' '}
-                <span className="font-jetbrains-mono">results/{'<job_id>'}/search_results/</span> in the
-                project directory. Clearing history cannot be undone.
+                {isWeb ? (
+                  <>
+                    History is not shared with other browser sessions. Uploaded FASTA and temporary files are
+                    deleted when the job finishes; failed or cancelled result artifacts are deleted immediately.
+                  </>
+                ) : (
+                  <>
+                    Results are stored under{' '}
+                    <span className="font-jetbrains-mono">results/{'<job_id>'}/search_results/</span> in the
+                    project directory. Cancelling a search deletes that run's partial result folder and temporary
+                    files. Clearing history cannot be undone.
+                  </>
+                )}
               </p>
             </div>
           </section>
 
           {/* ── 5. Adding a Database ── */}
-          <section>
+          {!isWeb && <section>
             <SectionHeader id="add-database" icon={<Database className="w-4 h-4" />} title="Adding a New Database" />
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -447,10 +515,10 @@ export function HelpPage() {
                 </Step>
               </div>
             </div>
-          </section>
+          </section>}
 
           {/* ── 6. Adding a Representation ── */}
-          <section>
+          {!isWeb && <section>
             <SectionHeader id="add-representation" icon={<Layers className="w-4 h-4" />} title="Adding a New Representation" />
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -527,7 +595,7 @@ export function HelpPage() {
                 </div>
               </Card>
             </div>
-          </section>
+          </section>}
 
           {/* ── 7. Glossary ── */}
           <section>

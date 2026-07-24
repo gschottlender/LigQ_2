@@ -38,7 +38,10 @@ from query_processing.results_tables import (
     save_known_binding_table,
 )
 from query_processing.ligand_providers import build_provider
-from query_processing.predicted_cache import ensure_provider_cache
+from query_processing.predicted_cache import (
+    ensure_provider_cache,
+    load_provider_cache_read_only,
+)
 from progress_reporting import ProgressEmitter
 
 
@@ -173,6 +176,7 @@ def ensure_base_data_from_hf(
     provider_name: str = "zinc",
     download_optional_predicted_cache: bool = True,
     include_bsi_models: bool = False,
+    read_only: bool = False,
 ) -> None:
     data_dir = Path(data_dir)
     required_rel_paths = _required_base_paths(provider_name, include_bsi_models=include_bsi_models)
@@ -184,6 +188,12 @@ def ensure_base_data_from_hf(
     if not missing_paths:
         print("[INFO] Found default-ready base data in data_dir. Skipping HF download.")
         return
+    if read_only:
+        missing_str = "\n".join(f"  - {path}" for path in missing_paths)
+        raise FileNotFoundError(
+            "Read-only data mode requires all base files to be prepared in advance. "
+            f"Missing paths:\n{missing_str}"
+        )
 
     if snapshot_download is None:
         raise ImportError(
@@ -241,12 +251,21 @@ def ensure_base_data_from_hf(
         )
 
 
-def ensure_known_binding_table(data_dir: Path, force_rebuild: bool = False) -> pd.DataFrame:
-    results_db_dir = ensure_dir(data_dir / "results_databases")
+def ensure_known_binding_table(
+    data_dir: Path,
+    force_rebuild: bool = False,
+    read_only: bool = False,
+) -> pd.DataFrame:
+    results_db_dir = data_dir / "results_databases"
     known_path = results_db_dir / "known_binding_data.parquet"
 
     if known_path.is_file() and not force_rebuild:
         return pd.read_parquet(known_path)
+    if read_only:
+        raise FileNotFoundError(
+            f"Read-only data mode requires a prepared known-binding table: {known_path}"
+        )
+    results_db_dir = ensure_dir(results_db_dir)
 
     binding_path = data_dir / "merged_databases" / "binding_data_merged.parquet"
     smiles_path = data_dir / "merged_databases" / "ligs_smiles_merged.parquet"
@@ -264,12 +283,49 @@ def ensure_known_binding_table(data_dir: Path, force_rebuild: bool = False) -> p
     return known_binding
 
 
-def ensure_protein_domains_table(data_dir: Path, force_rebuild: bool = False) -> None:
-    results_db_dir = ensure_dir(data_dir / "results_databases")
+def ensure_protein_domains_table(
+    data_dir: Path,
+    force_rebuild: bool = False,
+    read_only: bool = False,
+) -> None:
+    results_db_dir = data_dir / "results_databases"
     dom_path = results_db_dir / "protein_domains.parquet"
     if dom_path.is_file() and not force_rebuild:
         return
+    if read_only:
+        raise FileNotFoundError(
+            f"Read-only data mode requires a prepared protein-domain table: {dom_path}"
+        )
+    results_db_dir = ensure_dir(results_db_dir)
     build_protein_domains_table(data_dir=data_dir, results_dir=results_db_dir)
+
+
+def validate_complementary_databases_read_only(
+    data_dir: Path,
+    *,
+    require_pfam: bool,
+    require_blast: bool,
+) -> None:
+    required: list[Path] = []
+    if require_blast:
+        blast_root = data_dir / "complementary_databases" / "blast"
+        required.extend(
+            blast_root / f"target_sequences.{suffix}"
+            for suffix in ("pdb", "phr", "pin", "pjs", "pot", "psq", "ptf", "pto")
+        )
+    if require_pfam:
+        pfam_root = data_dir / "complementary_databases" / "pfam"
+        required.append(pfam_root / "Pfam-A.hmm")
+        required.extend(
+            pfam_root / f"Pfam-A.hmm.{suffix}"
+            for suffix in ("h3f", "h3i", "h3m", "h3p")
+        )
+    missing = [path for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "Read-only data mode requires prepared BLAST/Pfam indexes. Missing: "
+            + ", ".join(str(path) for path in missing)
+        )
 
 
 def resolve_search_threshold(args: argparse.Namespace) -> None:
@@ -430,6 +486,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force-rebuild-known-binding", action="store_true")
     parser.add_argument("--force-rebuild-protein-domains", action="store_true")
     parser.add_argument("--force-rebuild-predicted-cache", action="store_true")
+    parser.add_argument(
+        "--data-read-only",
+        action="store_true",
+        help=(
+            "Require all base data and search indexes to exist and never download "
+            "or regenerate them."
+        ),
+    )
+    parser.add_argument(
+        "--predicted-cache-read-only",
+        action="store_true",
+        help=(
+            "Require a complete compatible predicted-ligand cache and never create "
+            "or update cache artifacts."
+        ),
+    )
     parser.add_argument("--block3-query-chunk-size", type=int, default=100)
     parser.add_argument(
         "--block3-predicted-filter-batch-size",
@@ -481,6 +553,16 @@ def main() -> None:
         raise ValueError("--search-per-iteration-topk must be > 0.")
     if not args.known_only and args.search_global_topk <= 0:
         raise ValueError("--search-global-topk must be > 0.")
+    if args.data_read_only and (
+        args.force_rebuild_known_binding
+        or args.force_rebuild_protein_domains
+    ):
+        raise ValueError("Read-only data mode is incompatible with forced data rebuilds.")
+    if args.predicted_cache_read_only and args.force_rebuild_predicted_cache:
+        raise ValueError(
+            "--predicted-cache-read-only is incompatible with "
+            "--force-rebuild-predicted-cache."
+        )
 
     input_fasta = Path(args.input_fasta)
     data_dir = Path(args.data_dir)
@@ -558,17 +640,30 @@ def main() -> None:
             not args.known_only and not args.bsi and not args.skip_hf_predicted_cache
         ),
         include_bsi_models=(not args.known_only and args.bsi),
+        read_only=args.data_read_only,
     )
     if use_domains or use_nearest_k or (not args.known_only and args.bsi):
-        ensure_protein_domains_table(data_dir=data_dir, force_rebuild=args.force_rebuild_protein_domains)
+        ensure_protein_domains_table(
+            data_dir=data_dir,
+            force_rebuild=args.force_rebuild_protein_domains,
+            read_only=args.data_read_only,
+        )
 
     report_search_progress("complementary_databases")
-    print("[INFO] Preparing complementary databases...")
-    prepare_complementary_databases(
-        data_dir=data_dir,
-        prepare_pfam=(use_domains or use_nearest_k),
-        prepare_blast=(use_sequence or use_nearest_k or use_domains),
-    )
+    if args.data_read_only:
+        print("[INFO] Verifying prepared complementary databases (read-only)...")
+        validate_complementary_databases_read_only(
+            data_dir=data_dir,
+            require_pfam=(use_domains or use_nearest_k),
+            require_blast=(use_sequence or use_nearest_k or use_domains),
+        )
+    else:
+        print("[INFO] Preparing complementary databases...")
+        prepare_complementary_databases(
+            data_dir=data_dir,
+            prepare_pfam=(use_domains or use_nearest_k),
+            prepare_blast=(use_sequence or use_nearest_k or use_domains),
+        )
 
     if temp_results_dir.exists():
         shutil.rmtree(temp_results_dir)
@@ -668,6 +763,7 @@ def main() -> None:
     known_db = ensure_known_binding_table(
         data_dir=data_dir,
         force_rebuild=args.force_rebuild_known_binding,
+        read_only=args.data_read_only,
     )
 
     proteins_needed = set(df_candidates_all["sseqid"].astype(str).unique()) if not df_candidates_all.empty else set()
@@ -706,20 +802,34 @@ def main() -> None:
             bsi_max_known_ligands=args.bsi_max_known_ligands,
         )
 
-        predicted_db = ensure_provider_cache(
-            data_dir=data_dir,
-            provider=provider,
-            known_binding=known_db,
-            proteins_needed=proteins_needed,
-            force_rebuild_cache=args.force_rebuild_predicted_cache,
-            load_dataframe=False,
-            progress_callback=lambda current, total: report_search_progress(
+        if args.predicted_cache_read_only:
+            predicted_db = load_provider_cache_read_only(
+                data_dir=data_dir,
+                provider=provider,
+                proteins_needed=proteins_needed,
+                load_dataframe=False,
+            )
+            report_search_progress(
                 "predicted_cache",
-                current=current,
-                total=total,
+                current=len(proteins_needed),
+                total=len(proteins_needed),
                 unit="proteins",
-            ),
-        )
+            )
+        else:
+            predicted_db = ensure_provider_cache(
+                data_dir=data_dir,
+                provider=provider,
+                known_binding=known_db,
+                proteins_needed=proteins_needed,
+                force_rebuild_cache=args.force_rebuild_predicted_cache,
+                load_dataframe=False,
+                progress_callback=lambda current, total: report_search_progress(
+                    "predicted_cache",
+                    current=current,
+                    total=total,
+                    unit="proteins",
+                ),
+            )
         predicted_score_col = getattr(provider, "score_column", None)
 
     predicted_threshold_min = args.bsi_threshold if args.bsi else args.search_threshold

@@ -53,6 +53,8 @@ Interactive docs are served at `http://localhost:8000/api/docs`.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
+| GET | `/api/system/policy` | Deployment mode and server-enforced capabilities |
+| GET | `/api/system/readiness` | Strict public-data/cache readiness |
 | GET | `/api/setup/status` | Inspect default-data readiness, required download size, and free disk space |
 | POST | `/api/setup/download` | Start or reconnect to setup; JSON can select ECFP and FCFP cache packages |
 | GET | `/api/databases` | List available compound databases |
@@ -93,6 +95,13 @@ Allowed origins by default: `http://localhost:5173`, `http://localhost:3000`.
 Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
 
 ## Notes
+
+- `LIGQ_DEPLOYMENT_MODE` defaults to `local`. In `web` mode, policy checks are
+  enforced in the API rather than relying on hidden frontend controls: ZINC
+  ECFP/FCFP cached searches and Known-only are allowed, resource mutations and
+  BSI are rejected, databases are consumed read-only, anonymous sessions own
+  their jobs, and FASTA/rate/concurrency/timeout/retention limits apply. See
+  [`WEB_DEPLOYMENT.md`](../../WEB_DEPLOYMENT.md).
 
 - Heavy jobs run through a single FIFO queue. Job metadata is persisted in
   `gui/backend/state/jobs.sqlite3`; completed history survives restarts and

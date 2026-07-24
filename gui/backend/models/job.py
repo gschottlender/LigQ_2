@@ -58,6 +58,9 @@ class Job(BaseModel):
     completed_queries: list[str] = Field(default_factory=list)
     all_queries: list[str] = Field(default_factory=list)
     n_queries: Optional[int] = None
+    owner_session_hash: Optional[str] = None
+    search_mode: Optional[str] = None
+    input_path: Optional[str] = None
 
 
 class AddRepresentationRequest(BaseModel):

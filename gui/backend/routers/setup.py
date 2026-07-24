@@ -11,6 +11,9 @@ from core import state
 from models.job import Job, JobStatus
 from services.job_runner import enqueue_job
 from services.setup_service import inspect_setup_status, is_default_setup_ready, setup_job_args
+from core.policy import is_web_mode
+from services.web_access import require_resource_management
+from services.web_readiness import inspect_web_readiness
 
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
@@ -28,6 +31,20 @@ async def _latest_setup_job() -> Job | None:
 
 @router.get("/status")
 async def setup_status():
+    if is_web_mode():
+        readiness = await inspect_web_readiness()
+        return {
+            "ready": bool(readiness.get("ready")),
+            "state": "ready" if readiness.get("ready") else "maintenance",
+            "message": (
+                "Public search data is ready."
+                if readiness.get("ready")
+                else "The public service data is being maintained."
+            ),
+            "packages": [],
+            "job_id": None,
+            "job_status": None,
+        }
     latest = await _latest_setup_job()
     active_job = latest if latest and latest.status in ACTIVE_STATUSES else None
     status = await inspect_setup_status(active=active_job is not None)
@@ -38,6 +55,7 @@ async def setup_status():
 
 @router.post("/download", status_code=201)
 async def start_setup_download(options: SetupDownloadRequest | None = None):
+    require_resource_management()
     latest = await _latest_setup_job()
     if latest and latest.status in ACTIVE_STATUSES:
         return JSONResponse(

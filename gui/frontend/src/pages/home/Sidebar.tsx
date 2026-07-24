@@ -9,10 +9,11 @@ import {
 } from 'lucide-react';
 import { useEffect, useState, useRef } from 'react';
 import { useDatabase } from '../../context/DatabaseContext';
+import { useSystemPolicy } from '../../context/SystemPolicyContext';
 import { Tooltip } from '../../components/Tooltip';
 import { api } from '../../lib/api';
 import { JobFailurePanel, JobProgressPanel } from '../../components/JobProgressPanel';
-import type { JobFailure, JobProgress } from '../../types';
+import type { JobFailure, JobProgress, SearchMode } from '../../types';
 
 interface SidebarProps {
   isRunning: boolean;
@@ -22,7 +23,7 @@ interface SidebarProps {
   failure: JobFailure | null;
   jobError: string | null;
   startedAt: string | null;
-  onJobCreated: (jobId: string) => void;
+  onJobCreated: (jobId: string, searchMode: SearchMode) => void;
 }
 
 interface SelectFieldProps {
@@ -31,6 +32,7 @@ interface SelectFieldProps {
   onChange: (value: string) => void;
   options: { value: string; label: string }[];
   info?: string;
+  infoPosition?: 'top' | 'bottom' | 'left' | 'right';
   disabled?: boolean;
 }
 
@@ -59,13 +61,21 @@ interface HardwareCapabilities {
 
 type GpuStatus = 'checking' | 'available' | 'unavailable' | 'error';
 
-function SelectField({ label, value, onChange, options, info, disabled }: SelectFieldProps) {
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  info,
+  infoPosition = 'top',
+  disabled,
+}: SelectFieldProps) {
   return (
     <section className="flex flex-col gap-2 mt-4">
       <label className="text-sm font-dm-sans font-semibold text-gray-500 dark:text-gray-200 flex items-center gap-1.5">
         {label}
         {info && (
-          <Tooltip content={info}>
+          <Tooltip content={info} position={infoPosition}>
             <Info className="w-3.5 h-3.5 text-gray-400 cursor-default" />
           </Tooltip>
         )}
@@ -182,22 +192,45 @@ function structuralMinimumForMetric(metric: 'tanimoto' | 'cosine' | undefined): 
   return 0;
 }
 
-function validateFasta(text: string): string | null {
+interface FastaStats {
+  sequenceCount: number;
+  residueCount: number;
+  duplicateIds: string[];
+}
+
+function inspectFasta(text: string): { error: string | null; stats: FastaStats } {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const hasHeader = lines.some((l) => l.startsWith('>'));
   const seqLines = lines.filter((l) => !l.startsWith('>'));
   const hasSequence = seqLines.some((l) => l.length > 0);
+  const ids = lines
+    .filter((line) => line.startsWith('>'))
+    .map((line) => line.slice(1).trim().split(/\s+/, 1)[0])
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const duplicateIds = [...new Set(ids.filter((id) => {
+    if (seen.has(id)) return true;
+    seen.add(id);
+    return false;
+  }))];
+  const stats = {
+    sequenceCount: ids.length,
+    residueCount: seqLines.reduce((total, line) => total + line.length, 0),
+    duplicateIds,
+  };
   if (!hasHeader || !hasSequence) {
-    return 'File does not appear to be a valid FASTA file. Make sure it contains protein sequences with > headers.';
+    return {
+      error: 'File does not appear to be a valid FASTA file. Make sure it contains protein sequences with > headers.',
+      stats,
+    };
   }
   if (seqLines.some((l) => !VALID_AA_RE.test(l))) {
-    return 'File does not appear to be a valid FASTA file. Make sure it contains protein sequences with > headers.';
+    return {
+      error: 'File does not appear to be a valid FASTA file. Make sure it contains protein sequences with > headers.',
+      stats,
+    };
   }
-  return null;
-}
-
-function countFastaSequences(text: string): number {
-  return text.match(/^[ \t]*>/gm)?.length ?? 0;
+  return { error: null, stats };
 }
 
 const VALIDATION_MESSAGES = {
@@ -220,13 +253,17 @@ export function Sidebar({
   onJobCreated,
 }: SidebarProps) {
   const { databases, getRepresentationsForDatabase } = useDatabase();
+  const { policy, isWeb } = useSystemPolicy();
   const [isOpen, setIsOpen] = useState(true);
   const [showButton, setShowButton] = useState(false);
 
+  const [searchMode, setSearchMode] = useState<SearchMode>(policy.search.default_mode);
   const [databaseId, setDatabaseId] = useState('');
   const [representationId, setRepresentationId] = useState('');
   const [fastaFile, setFastaFile] = useState<File | null>(null);
   const [fastaSequenceCount, setFastaSequenceCount] = useState<number | null>(null);
+  const [fastaResidueCount, setFastaResidueCount] = useState<number | null>(null);
+  const [fastaDuplicateIds, setFastaDuplicateIds] = useState<string[]>([]);
   const [minCutoffValue, setMinCutoffValue] = useState<number | null>(null);
   const [maxCutoff, setMaxCutoff] = useState(1);
   const [useBsi, setUseBsi] = useState(false);
@@ -246,6 +283,7 @@ export function Sidebar({
   const fastaValidationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (isWeb) return;
     let active = true;
     api.get<HardwareCapabilities>('/system/capabilities')
       .then(({ data }) => {
@@ -257,25 +295,34 @@ export function Sidebar({
         setGpuStatus('error');
       });
     return () => { active = false; };
-  }, []);
+  }, [isWeb]);
 
-  const resolvedDatabaseId = databaseId || databases[0]?.id || '';
+  const knownOnly = searchMode === 'known_only';
+  const effectiveUseBsi = !knownOnly && !isWeb && useBsi;
+  const resolvedDatabaseId = isWeb ? 'zinc' : databaseId || databases[0]?.id || '';
   const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
   const normalRepresentationId = availableReps.some((r) => r.id === representationId)
     ? representationId
     : availableReps[0]?.id ?? '';
   const bsiAvailable = availableReps.some((r) => r.id === BSI_REPRESENTATION);
   const bsiDisabled = !bsiAvailable || gpuStatus !== 'available';
-  const resolvedRepresentationId = useBsi ? BSI_REPRESENTATION : normalRepresentationId;
+  const resolvedRepresentationId = effectiveUseBsi ? BSI_REPRESENTATION : normalRepresentationId;
   const selectedRepresentation = availableReps.find((r) => r.id === resolvedRepresentationId);
-  const metric = useBsi ? 'bsi' : selectedRepresentation?.metric ?? 'tanimoto';
-  const structuralMinCutoff = structuralMinimumForMetric(selectedRepresentation?.metric);
+  const selectedWebRepresentation = policy.search.representations.find(
+    (representation) => representation.name === resolvedRepresentationId,
+  );
+  const metric = effectiveUseBsi ? 'bsi' : selectedRepresentation?.metric ?? 'tanimoto';
+  const structuralMinCutoff = isWeb
+    ? selectedWebRepresentation?.cache_threshold_min ?? 0.4
+    : structuralMinimumForMetric(selectedRepresentation?.metric);
   const storedMinCutoff = minCutoffValue
-    ?? representationDefault(selectedRepresentation?.defaultThreshold)
+    ?? representationDefault(
+      isWeb ? selectedWebRepresentation?.default_threshold : selectedRepresentation?.defaultThreshold,
+    )
     ?? 0.9;
   const minCutoff = Math.max(storedMinCutoff, structuralMinCutoff);
-  const activeMinCutoff = useBsi ? bsiThreshold : minCutoff;
-  const activeMaxCutoff = useBsi ? 1 : maxCutoff;
+  const activeMinCutoff = effectiveUseBsi ? bsiThreshold : minCutoff;
+  const activeMaxCutoff = effectiveUseBsi ? 1 : maxCutoff;
 
   const handleDatabaseChange = (nextDatabaseId: string) => {
     const nextRepresentations = getRepresentationsForDatabase(nextDatabaseId);
@@ -292,9 +339,16 @@ export function Sidebar({
 
   const handleRepresentationChange = (nextRepresentationId: string) => {
     const nextRepresentation = availableReps.find((rep) => rep.id === nextRepresentationId);
+    const nextWebRepresentation = policy.search.representations.find(
+      (rep) => rep.name === nextRepresentationId,
+    );
     setRepresentationId(nextRepresentationId);
-    const nextMinimum = structuralMinimumForMetric(nextRepresentation?.metric);
-    const nextDefault = representationDefault(nextRepresentation?.defaultThreshold) ?? minCutoff;
+    const nextMinimum = isWeb
+      ? nextWebRepresentation?.cache_threshold_min ?? 0.4
+      : structuralMinimumForMetric(nextRepresentation?.metric);
+    const nextDefault = representationDefault(
+      isWeb ? nextWebRepresentation?.default_threshold : nextRepresentation?.defaultThreshold,
+    ) ?? minCutoff;
     setMinCutoffValue(Math.max(nextDefault, nextMinimum));
   };
 
@@ -307,16 +361,29 @@ export function Sidebar({
     }
   };
 
+  const handleSearchModeChange = (value: string) => {
+    const nextMode = value as SearchMode;
+    setSearchMode(nextMode);
+    if (nextMode === 'known_only') setUseBsi(false);
+  };
+
   const handleFastaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setFastaFile(null);
     setFastaSequenceCount(null);
+    setFastaResidueCount(null);
+    setFastaDuplicateIds([]);
     setValidationError('');
     const ext = file.name.split('.').pop()?.toLowerCase();
     if (!['fasta', 'fa', 'faa'].includes(ext ?? '')) {
       setFastaError('Invalid file type. Accepted: .fasta, .fa, .faa');
+      if (fastaInputRef.current) fastaInputRef.current.value = '';
+      return;
+    }
+    if (isWeb && file.size > policy.search.max_fasta_bytes) {
+      setFastaError(`The public service accepts FASTA files up to ${(policy.search.max_fasta_bytes / 1_048_576).toFixed(0)} MB.`);
       if (fastaInputRef.current) fastaInputRef.current.value = '';
       return;
     }
@@ -330,16 +397,20 @@ export function Sidebar({
       if (fastaValidationTimerRef.current) clearTimeout(fastaValidationTimerRef.current);
       setFastaValidating(false);
       const text = ev.target?.result as string;
-      const error = validateFasta(text);
+      const { error, stats } = inspectFasta(text);
       if (error) {
         setFastaError(error);
         setFastaFile(null);
         setFastaSequenceCount(null);
+        setFastaResidueCount(null);
+        setFastaDuplicateIds([]);
         if (fastaInputRef.current) fastaInputRef.current.value = '';
       } else {
         setFastaError('');
         setFastaFile(file);
-        setFastaSequenceCount(countFastaSequences(text));
+        setFastaSequenceCount(stats.sequenceCount);
+        setFastaResidueCount(stats.residueCount);
+        setFastaDuplicateIds(stats.duplicateIds);
       }
     };
     reader.onerror = () => {
@@ -348,6 +419,8 @@ export function Sidebar({
       setFastaError('FASTA file could not be read. Please try again.');
       setFastaFile(null);
       setFastaSequenceCount(null);
+      setFastaResidueCount(null);
+      setFastaDuplicateIds([]);
       if (fastaInputRef.current) fastaInputRef.current.value = '';
     };
     reader.readAsText(file);
@@ -368,10 +441,40 @@ export function Sidebar({
       setValidationError(VALIDATION_MESSAGES.kValue);
       return false;
     }
-    if (availableReps.length === 0) { setValidationError(VALIDATION_MESSAGES.noRepresentation); return false; }
-    if (useBsi && !bsiAvailable) { setValidationError(VALIDATION_MESSAGES.bsiUnavailable); return false; }
-    if (useBsi && gpuStatus !== 'available') { setValidationError(VALIDATION_MESSAGES.bsiGpuRequired); return false; }
-    if (!useBsi && maxCutoff < minCutoff) { setValidationError(VALIDATION_MESSAGES.thresholdRange); return false; }
+    if (isWeb && !methodSequence && !methodNearestK && !methodDomain) {
+      setValidationError('Select at least one search method.');
+      return false;
+    }
+    if (
+      isWeb
+      && policy.search.max_fasta_sequences !== null
+      && (fastaSequenceCount ?? 0) > policy.search.max_fasta_sequences
+    ) {
+      setValidationError(`The public service accepts up to ${policy.search.max_fasta_sequences} FASTA sequences.`);
+      return false;
+    }
+    if (
+      isWeb
+      && policy.search.max_fasta_residues !== null
+      && (fastaResidueCount ?? 0) > policy.search.max_fasta_residues
+    ) {
+      setValidationError(`The public service accepts up to ${policy.search.max_fasta_residues.toLocaleString()} total residues.`);
+      return false;
+    }
+    if (isWeb && fastaDuplicateIds.length > 0) {
+      setValidationError(`Duplicate FASTA identifier: ${fastaDuplicateIds[0]}. Each identifier must be unique.`);
+      return false;
+    }
+    if (!knownOnly && availableReps.length === 0) {
+      setValidationError(VALIDATION_MESSAGES.noRepresentation);
+      return false;
+    }
+    if (effectiveUseBsi && !bsiAvailable) { setValidationError(VALIDATION_MESSAGES.bsiUnavailable); return false; }
+    if (effectiveUseBsi && gpuStatus !== 'available') { setValidationError(VALIDATION_MESSAGES.bsiGpuRequired); return false; }
+    if (!knownOnly && !effectiveUseBsi && maxCutoff < minCutoff) {
+      setValidationError(VALIDATION_MESSAGES.thresholdRange);
+      return false;
+    }
     setValidationError('');
     return true;
   };
@@ -383,10 +486,14 @@ export function Sidebar({
       const formData = new FormData();
       formData.append('fasta_file', fastaFile);
       formData.append('ligand_provider', resolvedDatabaseId);
-      formData.append('search_representation', resolvedRepresentationId);
+      formData.append(
+        'search_representation',
+        resolvedRepresentationId || policy.search.representations[0]?.name || BSI_REPRESENTATION,
+      );
       formData.append('search_metric', metric);
-      formData.append('use_bsi', String(useBsi));
-      if (useBsi) {
+      formData.append('use_bsi', String(effectiveUseBsi));
+      formData.append('known_only', String(knownOnly));
+      if (effectiveUseBsi) {
         formData.append('bsi_threshold', String(bsiThreshold));
       } else {
         formData.append('search_threshold', String(minCutoff));
@@ -395,17 +502,19 @@ export function Sidebar({
       formData.append('use_sequence', String(methodSequence));
       formData.append('use_nearest_k', String(methodNearestK));
       formData.append('nearest_k', String(kValue));
-      formData.append('use_domains', String(useBsi ? false : methodDomain));
+      formData.append('use_domains', String(effectiveUseBsi ? false : methodDomain));
 
       const response = await api.post<{ job_id: string; status: string; output_dir: string }>(
         '/jobs/search',
         formData,
       );
-      setActiveSearchUsesBsi(useBsi);
-      onJobCreated(response.data.job_id);
+      setActiveSearchUsesBsi(effectiveUseBsi);
+      onJobCreated(response.data.job_id, knownOnly ? 'known_only' : 'zinc');
 
       setFastaFile(null);
       setFastaSequenceCount(null);
+      setFastaResidueCount(null);
+      setFastaDuplicateIds([]);
       setFastaError('');
       if (fastaInputRef.current) fastaInputRef.current.value = '';
 
@@ -451,66 +560,110 @@ export function Sidebar({
             </button>
           </div>
 
+          <SelectField
+            label="Search mode"
+            value={searchMode}
+            onChange={handleSearchModeChange}
+            info={isWeb
+              ? 'Search ZINC with a precomputed cache, or return only known PDB/ChEMBL ligands.'
+              : 'Search the selected compound database for predicted ligands, or return only known PDB/ChEMBL ligands.'}
+            infoPosition="bottom"
+            options={[
+              {
+                value: 'zinc',
+                label: isWeb ? 'ZINC predicted + known ligands' : 'Predicted + known ligands',
+              },
+              { value: 'known_only', label: 'Known ligands only' },
+            ]}
+          />
+
           {/* Search database */}
-          <SelectField
-            label="Search database"
-            value={resolvedDatabaseId}
-            onChange={handleDatabaseChange}
-            info="The compound database to search for similar ligands."
-            options={databases.map((db) => ({ value: db.id, label: db.label }))}
-          />
-
-          {/* Representation */}
-          <SelectField
-            label="Representation"
-            value={resolvedRepresentationId}
-            onChange={handleRepresentationChange}
-            info="Molecular representation used for similarity search."
-            options={availableReps.map((r) => ({ value: r.id, label: r.label }))}
-            disabled={useBsi || availableReps.length === 0}
-          />
-
-          {/* Metric (read-only — derived from selected representation) */}
-          <SelectField
-            label="Metric"
-            value={metric}
-            onChange={() => {}}
-            info={useBsi
-              ? 'BSI reports a learned bioactivity similarity score.'
-              : 'Similarity metric determined by the representation. Fingerprints use Tanimoto; embeddings use Cosine similarity.'}
-            options={useBsi
-              ? [{ value: 'bsi', label: 'BSI Score' }]
-              : [
-                  { value: 'tanimoto', label: 'Tanimoto' },
-                  { value: 'cosine', label: 'Cosine similarity' },
-                ]}
-            disabled
-          />
-
-          <div className="mt-5">
-            <CheckboxField
-              label="BSI"
-              checked={useBsi}
-              onChange={handleBsiChange}
-              disabled={bsiDisabled}
-              info={gpuStatus === 'available'
-                ? 'Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model.'
-                : 'BSI requires a CUDA-capable GPU and the morgan_1024_r2 representation in the graphical interface.'}
+          {(!knownOnly || isWeb) && (
+            <SelectField
+              label="Search database"
+              value={resolvedDatabaseId}
+              onChange={handleDatabaseChange}
+              info="The compound database to search for similar ligands."
+              options={isWeb
+                ? [{ value: 'zinc', label: 'ZINC' }]
+                : databases.map((db) => ({ value: db.id, label: db.label }))}
+              disabled={isWeb}
             />
-          </div>
+          )}
 
-          <SliderField
-            label="Minimum cutoff"
-            value={activeMinCutoff}
-            onChange={useBsi ? setBsiThreshold : setMinCutoffValue}
-            min={useBsi ? BSI_MIN_THRESHOLD : structuralMinCutoff}
-          />
-          <SliderField
-            label="Maximum cutoff"
-            value={activeMaxCutoff}
-            onChange={setMaxCutoff}
-            disabled={useBsi}
-          />
+          {!knownOnly && (
+            <>
+              {/* Representation */}
+              <SelectField
+                label="Representation"
+                value={resolvedRepresentationId}
+                onChange={handleRepresentationChange}
+                info="Molecular representation used for similarity search."
+                options={availableReps.map((representation) => ({
+                  value: representation.id,
+                  label: policy.search.representations.find(
+                    (item) => item.name === representation.id,
+                  )?.label ?? representation.label,
+                }))}
+                disabled={useBsi || availableReps.length === 0}
+              />
+
+              {/* Metric (read-only — derived from selected representation) */}
+              <SelectField
+                label="Metric"
+                value={metric}
+                onChange={() => {}}
+                info={useBsi
+                  ? 'BSI reports a learned bioactivity similarity score.'
+                  : 'Similarity metric determined by the representation. Fingerprints use Tanimoto; embeddings use Cosine similarity.'}
+                options={useBsi
+                  ? [{ value: 'bsi', label: 'BSI Score' }]
+                  : [
+                      { value: 'tanimoto', label: 'Tanimoto' },
+                      { value: 'cosine', label: 'Cosine similarity' },
+                    ]}
+                disabled
+              />
+            </>
+          )}
+
+          {!isWeb && !knownOnly && (
+            <div className="mt-5">
+              <CheckboxField
+                label="BSI"
+                checked={useBsi}
+                onChange={handleBsiChange}
+                disabled={bsiDisabled}
+                info={gpuStatus === 'available'
+                  ? 'Bioactivity Similarity Index (BSI) is a learned model that estimates molecular similarity from bioactivity patterns. It requires morgan_1024_r2 and is available only for protein families with a trained Pfam-specific model.'
+                  : 'BSI requires a CUDA-capable GPU and the morgan_1024_r2 representation in the graphical interface.'}
+              />
+            </div>
+          )}
+
+          {!knownOnly && (
+            <>
+              <SliderField
+                label="Minimum cutoff"
+                value={activeMinCutoff}
+                onChange={useBsi ? setBsiThreshold : setMinCutoffValue}
+                min={useBsi ? BSI_MIN_THRESHOLD : structuralMinCutoff}
+              />
+              <SliderField
+                label="Maximum cutoff"
+                value={activeMaxCutoff}
+                onChange={setMaxCutoff}
+                disabled={useBsi}
+              />
+            </>
+          )}
+
+          {knownOnly && (
+            <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200">
+              This mode returns curated PDB and ChEMBL ligands without running the{' '}
+              {isWeb ? 'predicted ZINC search' : 'predicted compound-database search'}.
+            </div>
+          )}
 
           {/* Input FASTA */}
           <section className="flex flex-col gap-2 mt-5">
@@ -555,6 +708,21 @@ export function Sidebar({
             {fastaSequenceCount !== null && !fastaValidating && (
               <p className="text-xs font-dm-sans text-gray-500 dark:text-gray-400">
                 Sequences: <strong className="font-semibold">{fastaSequenceCount.toLocaleString()}</strong>
+                {isWeb && fastaResidueCount !== null && (
+                  <> · Residues: <strong className="font-semibold">{fastaResidueCount.toLocaleString()}</strong></>
+                )}
+              </p>
+            )}
+            {isWeb && fastaDuplicateIds.length > 0 && !fastaValidating && (
+              <p className="text-xs text-red-500 dark:text-red-400">
+                Duplicate identifier: {fastaDuplicateIds[0]}
+              </p>
+            )}
+            {isWeb && (
+              <p className="text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">
+                Maximum {policy.search.max_fasta_sequences} sequences,{' '}
+                {policy.search.max_fasta_residues?.toLocaleString()} residues and{' '}
+                {(policy.search.max_fasta_bytes / 1_048_576).toFixed(0)} MB. Identifiers must be unique.
               </p>
             )}
           </section>

@@ -8,6 +8,11 @@ databases (ZINC, LOTUS, or custom) using molecular fingerprint similarity.
 This folder contains the web interface: a React frontend and a FastAPI backend
 that wraps the LigQ 2 pipeline.
 
+The same frontend/backend also supports a restricted public deployment without
+changing the default local behavior. See
+[WEB_DEPLOYMENT.md](../WEB_DEPLOYMENT.md) for its policy and isolated Docker
+test workflow.
+
 ---
 
 ## Structure
@@ -152,8 +157,11 @@ application.
 
 **Run a search**
 1. Open **Run Search** in the top navigation.
-2. Upload a FASTA file, select a database and representation, optionally enable BSI, and choose search methods.
-3. Click **Run Search** — the status panel shows the current pipeline step while
+2. Choose **Predicted + known ligands** or **Known ligands only**. Predicted
+   searches also require a database and representation and can optionally use
+   BSI.
+3. Upload a FASTA file and choose the protein search methods.
+4. Click **Run Search** — the status panel shows the current pipeline step while
    results appear per query. Structural-similarity searches also show processed
    items, ETA, and elapsed time. BSI searches show only the active step because
    processing time can vary substantially between proteins.
@@ -197,6 +205,9 @@ are preserved.
 - The backend must be running before opening the frontend.
 - Jobs (search, build database, add representation) run as background processes
   and survive browser refreshes.
+- Active searches can be cancelled beside the job name. The API first stops the
+  worker processes, then deletes the uploaded FASTA, temporary files, and the
+  incomplete result folder.
 - Database and representation jobs can be cancelled from Manage Resources. The
   API waits for worker termination and cleanup before reporting cancellation.
 - A failed job identifies the active step in a red status panel and includes the

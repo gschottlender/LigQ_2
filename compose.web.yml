@@ -1,0 +1,93 @@
+name: ligq2-web
+
+x-api-image: &api-image
+  image: ${LIGQ_API_IMAGE:-ghcr.io/gschottlender/ligq-2-api:main}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.api
+  platform: linux/amd64
+
+x-api-environment: &api-environment
+  LIGQ_PIPELINE_ROOT: /app
+  LIGQ_DATABASES_DIR: /app/databases
+  LIGQ_RESULTS_DIR: /app/results
+  LIGQ_UPLOADS_DIR: /app/gui/backend/uploads
+  LIGQ_TEMP_RESULTS_DIR: /app/temp_results
+  LIGQ_STATE_DIR: /app/state
+  LIGQ_DEPLOYMENT_MODE: web
+  LIGQ_SESSION_SECRET: ${LIGQ_SESSION_SECRET:-ligq2-local-web-test-secret-change-before-public-deployment}
+  LIGQ_SESSION_COOKIE_SECURE: ${LIGQ_SESSION_COOKIE_SECURE:-false}
+  LIGQ_TRUST_PROXY_HEADERS: "true"
+  LIGQ_WEB_RATE_LIMIT_COUNT: ${LIGQ_WEB_RATE_LIMIT_COUNT:-20}
+  HF_HOME: /cache/huggingface
+
+services:
+  api:
+    <<: *api-image
+    environment:
+      <<: *api-environment
+    volumes:
+      - web_databases:/app/databases:ro
+      - web_results:/app/results
+      - web_uploads:/app/gui/backend/uploads
+      - web_state:/app/state
+      - web_temp:/app/temp_results
+    tmpfs:
+      - /tmp
+    read_only: true
+    init: true
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  web:
+    image: ${LIGQ_WEB_IMAGE:-ghcr.io/gschottlender/ligq-2-web:main}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    platform: linux/amd64
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${LIGQ_WEB_BIND:-127.0.0.1}:${LIGQ_WEB_PORT:-18081}:8080"
+    volumes:
+      - ./docker/nginx.web.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped
+
+  prepare-data:
+    <<: *api-image
+    profiles: ["admin"]
+    entrypoint: ["python", "/app/prepare_ligq_2_data.py"]
+    command:
+      - --data-dir
+      - /app/databases
+      - --include-fcfp-cache
+      - --progress-json
+    environment:
+      HF_HOME: /cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - web_databases:/app/databases
+      - web_huggingface:/cache/huggingface
+
+  validate-data:
+    <<: *api-image
+    profiles: ["admin"]
+    entrypoint: ["python", "/app/validate_web_data.py"]
+    command: ["--data-dir", "/app/databases"]
+    volumes:
+      - web_databases:/app/databases:ro
+
+volumes:
+  web_databases:
+    name: ${LIGQ_WEB_DATABASE_VOLUME:-ligq2_web_databases}
+  web_results:
+    name: ${LIGQ_WEB_RESULTS_VOLUME:-ligq2_web_results}
+  web_uploads:
+    name: ${LIGQ_WEB_UPLOADS_VOLUME:-ligq2_web_uploads}
+  web_state:
+    name: ${LIGQ_WEB_STATE_VOLUME:-ligq2_web_state}
+  web_temp:
+    name: ${LIGQ_WEB_TEMP_VOLUME:-ligq2_web_temp}
+  web_huggingface:
+    name: ${LIGQ_WEB_HF_VOLUME:-ligq2_web_huggingface}

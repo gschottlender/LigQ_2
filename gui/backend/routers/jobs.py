@@ -7,11 +7,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from core.config import DATABASES_DIR, PIPELINE_ROOT, RESULTS_DIR, TEMP_RESULTS_DIR, UPLOADS_DIR
+from core.config import (
+    DATABASES_DIR,
+    MAX_UPLOAD_BYTES,
+    PIPELINE_ROOT,
+    RESULTS_DIR,
+    TEMP_RESULTS_DIR,
+    UPLOADS_DIR,
+    WEB_MAX_FASTA_BYTES,
+    WEB_MAX_FASTA_RESIDUES,
+    WEB_MAX_FASTA_SEQUENCES,
+    WEB_RATE_LIMIT_COUNT,
+    WEB_SEARCH_TIMEOUT_SECONDS,
+)
 from core import state
+from core.policy import is_web_mode, web_representation_policy
 from models.job import AddRepresentationRequest, Job, JobFailure, JobStatus
 from services.fs_inspector import (
     database_exists,
@@ -20,7 +33,21 @@ from services.fs_inspector import (
 from services.hardware import get_hardware_capabilities
 from services.job_runner import enqueue_job, terminate_job_process
 from services.resource_artifacts import RESOURCE_JOB_TYPES, cleanup_resource_job_artifacts
-from services.uploads import UploadTooLargeError, inspect_fasta, save_upload_stream
+from services.uploads import (
+    UploadTooLargeError,
+    inspect_fasta,
+    inspect_fasta_details,
+    save_upload_stream,
+)
+from services.web_access import (
+    client_ip_hash,
+    require_job_access,
+    require_resource_management,
+    session_hash,
+)
+from services.web_limits import rate_limit_status, record_accepted_search
+from services.web_readiness import inspect_web_readiness
+from services.search_artifacts import cleanup_search_artifacts, cleanup_web_search_artifacts
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -30,11 +57,27 @@ BSI_DEFAULT_THRESHOLD = 0.98
 _ACTIVE_JOB_STATUSES = {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
 
 
-def _err(code: str, message: str, status_code: int = 400, details=None):
+def _err(
+    code: str,
+    message: str,
+    status_code: int = 400,
+    details=None,
+    headers: dict[str, str] | None = None,
+):
     return JSONResponse(
         status_code=status_code,
         content={"error": code, "message": message, "details": details},
+        headers=headers,
     )
+
+
+def _job_payload(job: Job) -> dict:
+    if is_web_mode():
+        payload = job.model_dump(exclude={"owner_session_hash", "input_path"})
+        if job.output_dir:
+            payload["output_dir"] = Path(job.output_dir).name
+        return payload
+    return job.model_dump()
 
 
 def _valid_fasta(content: bytes) -> bool:
@@ -74,6 +117,7 @@ def _build_search_args(
     known_only: bool,
     use_bsi: bool,
     bsi_threshold: float,
+    immutable_web_data: bool = False,
 ) -> list[str]:
     effective_representation = BSI_REPRESENTATION if use_bsi else search_representation
     effective_metric = BSI_CLI_METRIC if use_bsi else search_metric
@@ -103,6 +147,8 @@ def _build_search_args(
         args.append("--domains")
     if known_only:
         args.append("--known-only")
+    if immutable_web_data:
+        args += ["--data-read-only", "--predicted-cache-read-only"]
     return args
 
 
@@ -111,6 +157,7 @@ def _build_search_args(
 
 @router.post("/search", status_code=201)
 async def start_search(
+    request: Request,
     fasta_file: UploadFile = File(...),
     ligand_provider: str = Form(...),
     search_representation: str = Form(...),
@@ -125,6 +172,96 @@ async def start_search(
     use_bsi: bool = Form(False),
     bsi_threshold: float = Form(BSI_DEFAULT_THRESHOLD),
 ):
+    web_mode = is_web_mode()
+    ip_hash = client_ip_hash(request) if web_mode else ""
+    if web_mode:
+        readiness = await inspect_web_readiness()
+        if not readiness.get("ready"):
+            return _err(
+                "service_unavailable",
+                "The public search data or precomputed caches are unavailable.",
+                status_code=503,
+            )
+        allowed, retry_after = await rate_limit_status(ip_hash)
+        if not allowed:
+            return _err(
+                "rate_limit_exceeded",
+                (
+                    "This address has reached the limit of "
+                    f"{WEB_RATE_LIMIT_COUNT} accepted searches per hour."
+                ),
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        if use_bsi:
+            return _err(
+                "search_policy_violation",
+                "BSI is not available on the public web service.",
+                status_code=422,
+                details={"field": "use_bsi"},
+            )
+        if ligand_provider != "zinc":
+            return _err(
+                "search_policy_violation",
+                "The public web service supports only the ZINC provider.",
+                status_code=422,
+                details={"field": "ligand_provider"},
+            )
+        if not (use_sequence or use_nearest_k or use_domains):
+            return _err(
+                "search_policy_violation",
+                "Select at least one protein recovery method.",
+                status_code=422,
+                details={"field": "methods"},
+            )
+        if use_nearest_k and not 1 <= nearest_k <= 15:
+            return _err(
+                "search_policy_violation",
+                "nearest_k must be between 1 and 15.",
+                status_code=422,
+                details={"field": "nearest_k"},
+            )
+        if not known_only:
+            representation_policy = web_representation_policy(search_representation)
+            if representation_policy is None:
+                return _err(
+                    "search_policy_violation",
+                    "The selected representation is not available on the public web service.",
+                    status_code=422,
+                    details={"field": "search_representation"},
+                )
+            if search_metric != representation_policy.metric:
+                return _err(
+                    "search_policy_violation",
+                    "The selected metric is not allowed for this representation.",
+                    status_code=422,
+                    details={"field": "search_metric"},
+                )
+            effective_min = (
+                representation_policy.default_threshold
+                if search_threshold is None
+                else search_threshold
+            )
+            if not representation_policy.cache_threshold_min <= effective_min <= 1.0:
+                return _err(
+                    "search_policy_violation",
+                    (
+                        f"The minimum cutoff for {representation_policy.label} must be "
+                        f"between {representation_policy.cache_threshold_min} and 1.0."
+                    ),
+                    status_code=422,
+                    details={"field": "search_threshold"},
+                )
+            search_threshold = effective_min
+            if search_threshold_max is None:
+                search_threshold_max = 1.0
+        elif use_bsi:
+            return _err(
+                "search_policy_violation",
+                "Known-only mode cannot be combined with BSI.",
+                status_code=422,
+            )
+
     if use_bsi:
         capabilities = await asyncio.to_thread(get_hardware_capabilities)
         if not capabilities.cuda_available:
@@ -137,11 +274,14 @@ async def start_search(
                 status_code=422,
             )
 
-    if not database_exists(ligand_provider):
+    if not known_only and not database_exists(ligand_provider):
         return _err("database_not_found", f"Ligand provider '{ligand_provider}' not found.")
 
     effective_representation = BSI_REPRESENTATION if use_bsi else search_representation
-    if not representation_is_search_ready(ligand_provider, effective_representation):
+    if (
+        not known_only
+        and not representation_is_search_ready(ligand_provider, effective_representation)
+    ):
         return _err(
             "representation_not_ready",
             (
@@ -184,17 +324,67 @@ async def start_search(
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     fasta_path = UPLOADS_DIR / f"{job_id}.fasta"
     try:
-        uploaded_bytes = await save_upload_stream(fasta_file, fasta_path)
+        uploaded_bytes = await save_upload_stream(
+            fasta_file,
+            fasta_path,
+            max_bytes=WEB_MAX_FASTA_BYTES if web_mode else MAX_UPLOAD_BYTES,
+        )
     except UploadTooLargeError as exc:
         return _err("file_too_large", str(exc), status_code=413)
     if uploaded_bytes == 0:
         fasta_path.unlink(missing_ok=True)
         return _err("invalid_fasta", "FASTA file is empty or contains no valid sequences.")
 
-    valid_fasta, all_queries = inspect_fasta(fasta_path)
+    if web_mode:
+        fasta_inspection = inspect_fasta_details(fasta_path)
+        valid_fasta = fasta_inspection.valid
+        all_queries = fasta_inspection.query_ids
+    else:
+        valid_fasta, all_queries = inspect_fasta(fasta_path)
     if not valid_fasta:
         fasta_path.unlink(missing_ok=True)
         return _err("invalid_fasta", "FASTA file is empty or contains no valid sequences.")
+    if web_mode:
+        if fasta_inspection.sequence_count > WEB_MAX_FASTA_SEQUENCES:
+            fasta_path.unlink(missing_ok=True)
+            return _err(
+                "fasta_limit",
+                f"Public searches accept at most {WEB_MAX_FASTA_SEQUENCES} FASTA records.",
+                status_code=422,
+                details={"field": "sequence_count", "actual": fasta_inspection.sequence_count},
+            )
+        if fasta_inspection.total_residues > WEB_MAX_FASTA_RESIDUES:
+            fasta_path.unlink(missing_ok=True)
+            return _err(
+                "fasta_limit",
+                f"Public searches accept at most {WEB_MAX_FASTA_RESIDUES} total residues.",
+                status_code=422,
+                details={"field": "total_residues", "actual": fasta_inspection.total_residues},
+            )
+        if fasta_inspection.duplicate_ids:
+            fasta_path.unlink(missing_ok=True)
+            return _err(
+                "fasta_limit",
+                "FASTA identifiers must be unique on the public web service.",
+                status_code=422,
+                details={"field": "identifiers", "duplicates": fasta_inspection.duplicate_ids[:10]},
+            )
+        unsafe_ids = [
+            query_id
+            for query_id in fasta_inspection.query_ids
+            if query_id in {".", ".."}
+            or "/" in query_id
+            or "\\" in query_id
+            or not query_id.isprintable()
+        ]
+        if unsafe_ids:
+            fasta_path.unlink(missing_ok=True)
+            return _err(
+                "invalid_fasta_identifier",
+                "FASTA identifiers cannot contain path separators or control characters.",
+                status_code=422,
+                details={"field": "identifiers", "invalid": unsafe_ids[:10]},
+            )
     n_queries = len(all_queries)
 
     stem = re.sub(r"[^\w-]", "_", Path(fasta_file.filename or "queries").stem)
@@ -218,6 +408,7 @@ async def start_search(
         known_only=known_only,
         use_bsi=use_bsi,
         bsi_threshold=bsi_threshold,
+        immutable_web_data=web_mode,
     )
 
     job = Job(
@@ -228,9 +419,46 @@ async def start_search(
         output_dir=str(output_dir),
         all_queries=all_queries,
         n_queries=n_queries,
+        owner_session_hash=session_hash(request) if web_mode else None,
+        search_mode="known_only" if known_only else "zinc",
+        input_path=str(fasta_path),
     )
-    await state.set_job(job)
-    await enqueue_job(job_id, args, output_dir, n_queries)
+    if web_mode:
+        admitted = await state.try_set_exclusive_web_search(job)
+        if not admitted:
+            fasta_path.unlink(missing_ok=True)
+            return _err(
+                "server_busy",
+                "The public server is currently processing another search. Please try again later.",
+                status_code=503,
+                headers={"Retry-After": "30"},
+            )
+    else:
+        await state.set_job(job)
+    try:
+        await enqueue_job(
+            job_id,
+            args,
+            output_dir,
+            n_queries,
+            timeout_seconds=WEB_SEARCH_TIMEOUT_SECONDS if web_mode else None,
+        )
+    except Exception:
+        if web_mode:
+            await asyncio.to_thread(
+                cleanup_web_search_artifacts,
+                job,
+                remove_results=True,
+            )
+            await state.delete_job(job_id)
+            return _err(
+                "service_unavailable",
+                "The public search could not be accepted. Please try again.",
+                status_code=503,
+            )
+        raise
+    if web_mode:
+        await record_accepted_search(ip_hash)
 
     return {"job_id": job_id, "status": "queued", "output_dir": output_dir_rel}
 
@@ -245,6 +473,7 @@ async def build_database(
     id_column: str = Form(""),
     smiles_column: str = Form(""),
 ):
+    require_resource_management()
     if not re.match(r"^[a-zA-Z0-9_]+$", base_name):
         return _err(
             "invalid_name",
@@ -308,6 +537,7 @@ async def build_database(
 async def add_representation(
     body: AddRepresentationRequest,
 ):
+    require_resource_management()
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", body.rep_name):
         return _err(
             "invalid_name",
@@ -382,32 +612,25 @@ async def add_representation(
 
 
 @router.get("")
-async def list_jobs(limit: int = 20, job_type: Optional[str] = None):
+async def list_jobs(request: Request, limit: int = 20, job_type: Optional[str] = None):
     all_jobs = state.get_all_jobs()
+    if is_web_mode():
+        owner = session_hash(request)
+        all_jobs = [job for job in all_jobs if job.owner_session_hash == owner]
     if job_type:
         all_jobs = [j for j in all_jobs if j.job_type == job_type]
-    return {"jobs": [j.model_dump() for j in all_jobs[:limit]]}
+    return {"jobs": [_job_payload(job) for job in all_jobs[:limit]]}
 
 
 @router.get("/{job_id}")
-async def get_job(job_id: str):
-    job = await state.get_job(job_id)
-    if job is None:
-        raise HTTPException(
-            404,
-            detail={"error": "job_not_found", "message": f"Job '{job_id}' not found.", "details": None},
-        )
-    return job.model_dump()
+async def get_job(request: Request, job_id: str):
+    job = require_job_access(request, await state.get_job(job_id))
+    return _job_payload(job)
 
 
 @router.delete("/{job_id}", status_code=204)
-async def cancel_job(job_id: str):
-    job = await state.get_job(job_id)
-    if job is None:
-        raise HTTPException(
-            404,
-            detail={"error": "job_not_found", "message": f"Job '{job_id}' not found.", "details": None},
-        )
+async def cancel_job(request: Request, job_id: str):
+    job = require_job_access(request, await state.get_job(job_id))
     if job.status in {
         JobStatus.completed,
         JobStatus.completed_with_warnings,
@@ -435,3 +658,9 @@ async def cancel_job(job_id: str):
     await terminate_job_process(job_id)
     if cancelled_job.job_type in RESOURCE_JOB_TYPES:
         await asyncio.to_thread(cleanup_resource_job_artifacts, job_id)
+    if cancelled_job.job_type == "search":
+        await asyncio.to_thread(
+            cleanup_search_artifacts,
+            cancelled_job,
+            remove_results=True,
+        )

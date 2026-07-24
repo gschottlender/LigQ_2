@@ -1,4 +1,6 @@
 export type SearchType = 'sequence' | 'nearest_k' | 'domain';
+export type SearchMode = 'zinc' | 'known_only';
+export type DeploymentMode = 'local' | 'web';
 export type RankingSource = 'blast' | 'hmmer';
 export type LigandSource = 'pdb' | 'chembl';
 export type SearchState = 'idle' | 'running' | 'done';
@@ -135,6 +137,50 @@ export interface Job {
   completed_queries: string[];
   all_queries: string[];
   n_queries: number | null;
+  search_mode?: SearchMode | null;
+}
+
+export interface WebRepresentationPolicy {
+  name: string;
+  label: string;
+  metric: 'tanimoto';
+  cache_threshold_min: number;
+  default_threshold: number;
+}
+
+export interface SystemPolicy {
+  mode: DeploymentMode;
+  allow_resource_management: boolean;
+  allow_setup_download: boolean;
+  allow_bsi: boolean;
+  history_scope: 'global' | 'session';
+  search: {
+    default_mode: SearchMode;
+    allowed_modes: SearchMode[];
+    provider: string | null;
+    representations: WebRepresentationPolicy[];
+    allowed_methods: SearchType[];
+    nearest_k_min: number;
+    nearest_k_max: number;
+    nearest_k_default: number;
+    max_fasta_sequences: number | null;
+    max_fasta_bytes: number;
+    max_fasta_residues: number | null;
+    max_active_jobs: number | null;
+    queue_limit: number | null;
+    timeout_seconds: number | null;
+    rate_limit_count: number | null;
+    rate_limit_window_seconds: number | null;
+    result_retention_seconds: number | null;
+    predicted_cache_mode: 'read_only' | 'read_write';
+  };
+}
+
+export interface WebReadiness {
+  ready: boolean;
+  mode: DeploymentMode;
+  checks: Record<string, unknown>;
+  errors: string[];
 }
 
 export interface SetupStatus {

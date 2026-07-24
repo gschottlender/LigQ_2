@@ -1,0 +1,10 @@
+# Development-only overlay: reuse the native repository data read-only while
+# keeping web jobs, state, uploads and results in isolated Docker volumes.
+services:
+  api:
+    volumes:
+      - ./databases:/app/databases:ro
+
+  validate-data:
+    volumes:
+      - ./databases:/app/databases:ro

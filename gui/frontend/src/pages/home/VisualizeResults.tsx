@@ -6,11 +6,13 @@ import { MetricCards } from './MetricCards';
 import { QueryList } from './QueryList';
 import { ResultsPanel } from './ResultsPanel';
 import { JobFailurePanel } from '../../components/JobProgressPanel';
-import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, JobFailure, JobProgress } from '../../types';
+import { CancelJobButton } from '../../components/CancelJobButton';
+import type { SearchState, QueryResult, JobStatus, SearchResultsSummary, Job, JobFailure, JobProgress, SearchMode } from '../../types';
 import type { SelectedItem } from './SelectedResultPanel';
 import { SelectedResultPanel } from './SelectedResultPanel';
 import { api } from '../../lib/api';
 import { Tooltip } from '../../components/Tooltip';
+import { useSystemPolicy } from '../../context/SystemPolicyContext';
 
 type ResultTab = 'protein_ranking' | 'known_bindings' | 'predicted_ligands';
 
@@ -25,10 +27,12 @@ const QUERY_HAS_RESULTS: JobStatus[] = ['partial_results', 'completed', 'complet
 
 interface HistoryEntry {
   result_id: string;
+  result_label?: string;
   created_at: string;
   n_queries: number;
   queries: string[];
   status: 'completed' | 'partial';
+  search_mode?: SearchMode;
 }
 
 interface ClearHistoryResponse {
@@ -79,7 +83,9 @@ function resultLabel(result_id: string): string {
 }
 
 export function VisualizeResults() {
+  const { policy, isWeb } = useSystemPolicy();
   const [searchState, setSearchState] = useState<SearchState>('idle');
+  const [activeSearchMode, setActiveSearchMode] = useState<SearchMode>('zinc');
   const [results, setResults] = useState<QueryResult[]>([]);
   const [selectedQueryId, setSelectedQueryId] = useState<string | null>(null);
   const [activeResultTab, setActiveResultTab] = useState<ResultTab>('protein_ranking');
@@ -92,6 +98,7 @@ export function VisualizeResults() {
   const [jobFailure, setJobFailure] = useState<JobFailure | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
   const [jobStartedAt, setJobStartedAt] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
   const [activeResultFolder, setActiveResultFolder] = useState<string | null>(null);
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -103,8 +110,10 @@ export function VisualizeResults() {
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const resultsPanelRef = useRef<HTMLDivElement>(null);
 
-  const handleJobCreated = useCallback((id: string) => {
+  const handleJobCreated = useCallback((id: string, searchMode: SearchMode) => {
     setJobId(id);
+    setActiveSearchMode(searchMode);
+    setActiveResultTab('protein_ranking');
     setSearchState('running');
     setResults([]);
     setSelectedQueryId(null);
@@ -118,7 +127,7 @@ export function VisualizeResults() {
   }, []);
 
   // ── Load a past result from disk ──────────────────────────────────────────
-  const loadResultFromDisk = useCallback(async (resultId: string) => {
+  const loadResultFromDisk = useCallback(async (resultId: string, searchMode: SearchMode = 'zinc') => {
     try {
       const { data } = await api.get(`/jobs/${resultId}/summary`);
       const summaryQueries = (data.queries ?? []) as Record<string, unknown>[];
@@ -129,6 +138,8 @@ export function VisualizeResults() {
       }));
       setResults(queryResults);
       setJobId(resultId);
+      setActiveSearchMode(searchMode);
+      setActiveResultTab('protein_ranking');
       setSearchState('done');
       setJobFailure(null);
       setJobError(null);
@@ -160,7 +171,8 @@ export function VisualizeResults() {
       const { data } = await api.delete<ClearHistoryResponse>('/results');
       await fetchHistory();
 
-      if (activeResultFolder && data.deleted_results.includes(activeResultFolder)) {
+      const activeResultId = isWeb ? jobId : activeResultFolder;
+      if (activeResultId && data.deleted_results.includes(activeResultId)) {
         setResults([]);
         setSelectedQueryId(null);
         setSelectedItem(null);
@@ -188,16 +200,31 @@ export function VisualizeResults() {
     } finally {
       setHistoryClearing(false);
     }
-  }, [activeResultFolder, fetchHistory]);
+  }, [activeResultFolder, fetchHistory, isWeb, jobId]);
 
   // ── Auto-load most recent result on mount ─────────────────────────────────
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    fetchHistory().then((entries) => {
-      if (entries.length > 0) {
-        loadResultFromDisk(entries[0].result_id);
+    const restore = async () => {
+      try {
+        const { data } = await api.get<{ jobs: Job[] }>('/jobs', {
+          params: { job_type: 'search' },
+        });
+        const active = data.jobs.find((job) =>
+          ['queued', 'running', 'partial_results'].includes(job.status),
+        );
+        if (active) {
+          handleJobCreated(active.job_id, active.search_mode ?? 'zinc');
+          return;
+        }
+      } catch {
+        // Fall through to completed history.
       }
-    });
+      const entries = await fetchHistory();
+      if (entries.length > 0) {
+        await loadResultFromDisk(entries[0].result_id, entries[0].search_mode ?? 'zinc');
+      }
+    };
+    restore();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -242,6 +269,7 @@ export function VisualizeResults() {
         setJobFailure(job.failure ?? null);
         setJobError(job.error ?? null);
         setJobStartedAt(job.started_at ?? null);
+        if (job.search_mode) setActiveSearchMode(job.search_mode);
         if (job.output_dir) {
           setActiveResultFolder((job.output_dir as string).split('/').pop() ?? null);
         }
@@ -268,6 +296,13 @@ export function VisualizeResults() {
 
         if (queryResults.length > 0) setResults(queryResults);
 
+        if (job.status === 'cancelled') {
+          setResults([]);
+          setSelectedQueryId(null);
+          setSelectedItem(null);
+          setActiveResultTab('protein_ranking');
+        }
+
         if (TERMINAL_STATUSES.includes(job.status as JobStatus)) {
           setSearchState('done');
         }
@@ -283,7 +318,11 @@ export function VisualizeResults() {
 
   const handleSelectQuery = useCallback((qseqid: string, tab?: ResultTab) => {
     setSelectedQueryId(qseqid);
-    setActiveResultTab(tab ?? 'protein_ranking');
+    setActiveResultTab(
+      activeSearchMode === 'known_only' && tab === 'predicted_ligands'
+        ? 'known_bindings'
+        : tab ?? 'protein_ranking',
+    );
 
     const query = results.find((result) => result.summary.qseqid === qseqid);
     if (query && QUERY_HAS_RESULTS.includes(query.status)) {
@@ -291,7 +330,7 @@ export function VisualizeResults() {
         resultsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
-  }, [results]);
+  }, [activeSearchMode, results]);
 
   const selectedResult = results.find((r) => r.summary.qseqid === selectedQueryId) ?? null;
 
@@ -323,7 +362,7 @@ export function VisualizeResults() {
           <div key={entry.result_id} className="px-4 py-3 flex items-start justify-between gap-3 hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors">
             <div className="min-w-0">
               <p className="text-xs font-semibold text-gray-700 dark:text-gray-200 truncate">
-                {resultLabel(entry.result_id)}
+                {entry.result_label ?? resultLabel(entry.result_id)}
               </p>
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
                 {fmtDate(entry.created_at)}
@@ -331,11 +370,16 @@ export function VisualizeResults() {
               <p className="text-xs text-gray-400 dark:text-gray-500">
                 {entry.n_queries} {entry.n_queries === 1 ? 'query' : 'queries'}
                 {entry.status === 'partial' && <span className="ml-1 text-amber-500">· partial</span>}
+                <span className="ml-1">
+                  · {entry.search_mode === 'known_only'
+                    ? 'known only'
+                    : isWeb ? 'ZINC' : 'predicted + known'}
+                </span>
               </p>
             </div>
             <button
               onClick={() => {
-                loadResultFromDisk(entry.result_id);
+                loadResultFromDisk(entry.result_id, entry.search_mode ?? 'zinc');
                 setShowHistory(false);
               }}
               className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg
@@ -350,6 +394,12 @@ export function VisualizeResults() {
       </div>
 
       <div className="border-t border-gray-100 px-4 py-3 dark:border-gray-700/60">
+        {isWeb && (
+          <p className="mb-2 text-xs leading-relaxed text-gray-400 dark:text-gray-500">
+            This browser session only. Results expire after{' '}
+            {Math.round((policy.search.result_retention_seconds ?? 7200) / 3600)} hours.
+          </p>
+        )}
         <div className="flex justify-end">
           <Tooltip content="Permanently deletes stored search results to free disk space. Active searches are preserved." position="left">
             <button
@@ -404,8 +454,9 @@ export function VisualizeResults() {
                   Clear search history?
                 </h2>
                 <p id="clear-history-description" className="mt-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
-                  This permanently deletes all stored search result folders and cannot be undone. Results from
-                  an active search will be preserved.
+                  {isWeb
+                    ? 'This permanently deletes the completed results from this browser session and cannot be undone. An active search will be preserved.'
+                    : 'This permanently deletes all stored search result folders and cannot be undone. Results from an active search will be preserved.'}
                 </p>
               </div>
             </div>
@@ -488,6 +539,35 @@ export function VisualizeResults() {
           </div>
         )}
 
+        {(searchState === 'running' || searchState === 'done') && activeResultFolder && (
+          <div className="flex flex-wrap items-center gap-3 px-4 pt-4 pr-32 text-gray-700 dark:text-gray-200 sm:px-6">
+            <FileDigit className="h-5 w-5 shrink-0" />
+            <span
+              className="min-w-0 max-w-full truncate rounded-lg border border-gray-200 bg-gray-200 px-3 py-1 text-sm font-jetbrains-mono dark:bg-gray-800"
+              title="Results folder"
+            >
+              {activeResultFolder}
+            </span>
+            {searchState === 'running' && jobId && (
+              <CancelJobButton
+                jobId={jobId}
+                resourceLabel="search"
+                description={isWeb
+                  ? 'The running search and any partial artifacts will be deleted immediately.'
+                  : 'The running search will stop and its partial results and temporary files will be deleted.'}
+                cancelling={cancelling}
+                onCancelStarted={() => setCancelling(true)}
+                onCancelFinished={() => setCancelling(false)}
+                onCancelError={(message) => {
+                  setCancelling(false);
+                  setJobError(message);
+                }}
+                compact
+              />
+            )}
+          </div>
+        )}
+
         {searchState === 'idle' && (
           <div className="flex flex-col items-center justify-center h-full min-h-96 gap-4 text-center px-6">
             <div className="text-5xl select-none">⬡</div>
@@ -510,22 +590,16 @@ export function VisualizeResults() {
 
         {(searchState === 'running' || searchState === 'done') && results.length > 0 && (
           <div className="p-4 sm:p-6 flex flex-col gap-0">
-            <div className="flex items-center gap-3 mb-4 pr-28 text-gray-700 dark:text-gray-200">
-            <FileDigit className='w-5 h-5'/>
-              {activeResultFolder && (
-                <span
-                  className="text-sm font-jetbrains-mono bg-gray-200 dark:bg-gray-800 border border-gray-200 px-3 py-1 rounded-lg"
-                  title="Results folder"
-                >
-                  {activeResultFolder}
-                </span>
-              )}
-            </div>
-            <MetricCards summaries={results.map((r) => r.summary)} results={results} />
+            <MetricCards
+              summaries={results.map((r) => r.summary)}
+              results={results}
+              showPredicted={activeSearchMode !== 'known_only'}
+            />
             <QueryList
               results={results}
               selectedQueryId={selectedQueryId}
               onSelectQuery={handleSelectQuery}
+              showPredicted={activeSearchMode !== 'known_only'}
             />
             {selectedResult && (
               <div ref={resultsPanelRef} className="scroll-mt-4">
@@ -536,6 +610,7 @@ export function VisualizeResults() {
                   selectedItem={selectedItem}
                   onSelectItem={setSelectedItem}
                   jobId={jobId ?? ''}
+                  knownOnly={activeSearchMode === 'known_only'}
                 />
               </div>
             )}

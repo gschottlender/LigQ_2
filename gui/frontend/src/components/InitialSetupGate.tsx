@@ -1,8 +1,9 @@
-import { Database, Download, HardDrive, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Database, Download, HardDrive, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useDatabase } from '../context/DatabaseContext';
+import { useSystemPolicy } from '../context/SystemPolicyContext';
 import { api } from '../lib/api';
-import type { Job, SetupPackageStatus, SetupStatus } from '../types';
+import type { Job, SetupPackageStatus, SetupStatus, WebReadiness } from '../types';
 import { Header } from './Header';
 import { JobFailurePanel, JobProgressPanel } from './JobProgressPanel';
 
@@ -46,6 +47,93 @@ function errorMessage(error: unknown): string {
 }
 
 export function InitialSetupGate({ children }: { children: ReactNode }) {
+  const { isWeb } = useSystemPolicy();
+  return isWeb
+    ? <WebReadinessGate>{children}</WebReadinessGate>
+    : <LocalInitialSetupGate>{children}</LocalInitialSetupGate>;
+}
+
+function WebReadinessGate({ children }: { children: ReactNode }) {
+  const [status, setStatus] = useState<WebReadiness | null>(null);
+  const [checking, setChecking] = useState(true);
+
+  const loadStatus = useCallback(async () => {
+    setChecking(true);
+    try {
+      const { data } = await api.get<WebReadiness>('/system/readiness', { timeout: 130_000 });
+      setStatus(data);
+    } catch {
+      setStatus({
+        ready: false,
+        mode: 'web',
+        checks: {},
+        errors: ['The public search service could not validate its required data.'],
+      });
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Initial API synchronization intentionally owns the gate's loading state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadStatus();
+    const interval = window.setInterval(loadStatus, 30_000);
+    return () => window.clearInterval(interval);
+  }, [loadStatus]);
+
+  if (status?.ready) return children;
+
+  return (
+    <>
+      <Header />
+      <main className="flex min-h-[calc(100vh-80px)] items-start justify-center bg-gray-50 px-4 py-12 dark:bg-[#111827]">
+        <div className="w-full max-w-xl rounded-2xl border border-gray-200 bg-white p-7 shadow-sm dark:border-gray-700 dark:bg-[#1a2330] sm:p-9">
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+              {checking && !status
+                ? <Loader2 className="h-5 w-5 animate-spin" />
+                : <AlertTriangle className="h-5 w-5" />}
+            </div>
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
+                Public service
+              </p>
+              <h1 className="mt-1 text-xl font-semibold text-gray-800 dark:text-gray-100 sm:text-2xl">
+                {checking && !status ? 'Checking search data' : 'Search temporarily unavailable'}
+              </h1>
+              <p className="mt-2 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                The web service requires the core databases and both precomputed ZINC caches
+                before it can accept any search, including Known ligands only searches.
+              </p>
+            </div>
+          </div>
+
+          {status?.errors && status.errors.length > 0 && (
+            <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+              <p className="font-semibold">Administrator action is required.</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-xs leading-relaxed">
+                {status.errors.slice(0, 4).map((item) => <li key={item}>{item}</li>)}
+              </ul>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={loadStatus}
+            disabled={checking}
+            className="mt-6 inline-flex cursor-pointer items-center gap-2 rounded-xl bg-cyan-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${checking ? 'animate-spin' : ''}`} />
+            Check again
+          </button>
+        </div>
+      </main>
+    </>
+  );
+}
+
+function LocalInitialSetupGate({ children }: { children: ReactNode }) {
   const { refetchDatabases } = useDatabase();
   const [status, setStatus] = useState<SetupStatus | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);

@@ -1,22 +1,30 @@
-import { BrowserRouter, useLocation } from 'react-router-dom';
+import { BrowserRouter, Navigate, useLocation } from 'react-router-dom';
 import { VisualizeResults } from './pages/home/VisualizeResults';
 import { ConfigureSearch } from './pages/config/ConfigureSearch';
 import { HelpPage } from './pages/help/HelpPage';
 import { Header } from './components/Header';
 import { InitialSetupGate } from './components/InitialSetupGate';
 import { DatabaseProvider } from './context/DatabaseContext';
+import { SystemPolicyProvider, useSystemPolicy } from './context/SystemPolicyContext';
 
 function Layout() {
   const { pathname } = useLocation();
-  const isConfigure = pathname.startsWith('/configure');
+  const { isWeb } = useSystemPolicy();
+  const isConfigure = !isWeb && pathname.startsWith('/configure');
   const isHelp = pathname.startsWith('/help');
+
+  if (isWeb && pathname.startsWith('/configure')) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <>
       <Header />
-      <div className={isConfigure ? 'block' : 'hidden'}>
-        <ConfigureSearch />
-      </div>
+      {!isWeb && (
+        <div className={isConfigure ? 'block' : 'hidden'}>
+          <ConfigureSearch />
+        </div>
+      )}
       <div className={isHelp ? 'block' : 'hidden'}>
         <HelpPage />
       </div>
@@ -29,12 +37,14 @@ function Layout() {
 
 export function App() {
   return (
-    <DatabaseProvider>
-      <BrowserRouter>
-        <InitialSetupGate>
-          <Layout />
-        </InitialSetupGate>
-      </BrowserRouter>
-    </DatabaseProvider>
+    <SystemPolicyProvider>
+      <DatabaseProvider>
+        <BrowserRouter>
+          <InitialSetupGate>
+            <Layout />
+          </InitialSetupGate>
+        </BrowserRouter>
+      </DatabaseProvider>
+    </SystemPolicyProvider>
   );
 }

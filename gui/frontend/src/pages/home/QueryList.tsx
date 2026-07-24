@@ -7,6 +7,7 @@ interface QueryListProps {
   results: QueryResult[];
   selectedQueryId: string | null;
   onSelectQuery: (qseqid: string, tab?: ResultTab) => void;
+  showPredicted?: boolean;
 }
 
 /* ─── Action button */
@@ -39,7 +40,7 @@ const SHOW_ACTIONS: JobStatus[] = ['completed', 'completed_with_warnings', 'part
 
 const TH = "px-5 py-2.5 text-left text-xs font-dm-sans font-semibold uppercase tracking-widest text-gray-600 dark:text-gray-400 border-b border-gray-100 dark:border-gray-600/50"
 
-export function QueryList({ results, selectedQueryId, onSelectQuery }: QueryListProps) {
+export function QueryList({ results, selectedQueryId, onSelectQuery, showPredicted = true }: QueryListProps) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-sm overflow-hidden mt-6">
       <div className="flex items-center justify-between gap-3 px-5 py-3 border-b border-gray-100 dark:border-gray-600">
@@ -132,15 +133,17 @@ export function QueryList({ results, selectedQueryId, onSelectQuery }: QueryList
                           onSelectQuery(summary.qseqid, 'known_bindings');
                         }}
                       />
-                      <ActionButton
-                        count={nPredicted}
-                        label="Predicted Ligands"
-                        pillClass="bg-purple-100 text-purple-700 dark:bg-purple-800 dark:text-purple-200"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onSelectQuery(summary.qseqid, 'predicted_ligands');
-                        }}
-                      />
+                      {showPredicted && (
+                        <ActionButton
+                          count={nPredicted}
+                          label="Predicted Ligands"
+                          pillClass="bg-purple-100 text-purple-700 dark:bg-purple-800 dark:text-purple-200"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectQuery(summary.qseqid, 'predicted_ligands');
+                          }}
+                        />
+                      )}
                     </div>
                   ) : (
                     <span className="text-xs text-gray-300 dark:text-gray-600 block text-right">—</span>

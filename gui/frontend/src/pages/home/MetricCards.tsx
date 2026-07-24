@@ -5,6 +5,7 @@ import { Tooltip } from '../../components/Tooltip';
 interface MetricCardsProps {
   summaries: SearchResultsSummary[];
   results: QueryResult[];
+  showPredicted?: boolean;
 }
 
 const SOURCE_LABELS: Record<string, string> = { pdb: 'PDB', chembl: 'ChEMBL' };
@@ -47,7 +48,7 @@ function Card({ title, value, icon, iconBgClass, tooltipContent, subtitle }: Car
   );
 }
 
-export function MetricCards({ summaries, results }: MetricCardsProps) {
+export function MetricCards({ summaries, results, showPredicted = true }: MetricCardsProps) {
   const totalProteinsSeq = summaries.reduce((a, s) => a + s.n_proteins_sequence, 0);
   const totalProteinsNK = summaries.reduce((a, s) => a + s.n_proteins_nearest_k, 0);
   const totalProteinsDomain = summaries.reduce((a, s) => a + s.n_proteins_domain, 0);
@@ -84,7 +85,7 @@ export function MetricCards({ summaries, results }: MetricCardsProps) {
       : 'from PDB & ChEMBL';
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+    <div className={`grid grid-cols-1 md:grid-cols-2 ${showPredicted ? 'xl:grid-cols-4' : 'xl:grid-cols-3'} gap-4`}>
       <Card
         title="Queries"
         value={summaries.length}
@@ -114,14 +115,16 @@ export function MetricCards({ summaries, results }: MetricCardsProps) {
         tooltipContent={knownTooltip}
         subtitle={sourcesLabel}
       />
-      <Card
-        title="Predicted ligands"
-        value={totalPred}
-        icon={<TrendingUpDown className="w-5 h-5 text-purple-600 dark:text-purple-200" />}
-        iconBgClass="bg-purple-50 dark:bg-purple-800"
-        tooltipContent={predTooltip}
-        subtitle={`across ${completedCount} finished ${completedCount === 1 ? 'query' : 'queries'}`}
-      />
+      {showPredicted && (
+        <Card
+          title="Predicted ligands"
+          value={totalPred}
+          icon={<TrendingUpDown className="w-5 h-5 text-purple-600 dark:text-purple-200" />}
+          iconBgClass="bg-purple-50 dark:bg-purple-800"
+          tooltipContent={predTooltip}
+          subtitle={`across ${completedCount} finished ${completedCount === 1 ? 'query' : 'queries'}`}
+        />
+      )}
     </div>
   );
 }

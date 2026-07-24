@@ -445,6 +445,116 @@ def find_compatible_cache_dir(
     return cache_dir
 
 
+class ReadOnlyCacheError(RuntimeError):
+    """Raised when a compatible predicted cache cannot be consumed read-only."""
+
+
+def load_provider_cache_read_only(
+    data_dir: Path,
+    provider,
+    proteins_needed: set[str],
+    *,
+    load_dataframe: bool = True,
+) -> pd.DataFrame | Path:
+    """Load a complete compatible cache without creating or modifying files."""
+    data_dir = Path(data_dir)
+    cache_root = data_dir / "results_databases" / "predicted_bindings"
+    requested_threshold_min, requested_threshold_max = _requested_cache_coverage(provider)
+    method_signature = _cache_method_signature(provider)
+    db_fingerprint = provider.database_fingerprint(data_dir)
+    db_fingerprint_version = _provider_database_fingerprint_version(provider)
+    cache_dir, selected_manifest = _discover_compatible_cache(
+        cache_root=cache_root,
+        provider=provider,
+        data_dir=data_dir,
+        requested_threshold_min=requested_threshold_min,
+        requested_threshold_max=requested_threshold_max,
+        proteins_needed=set(proteins_needed),
+    )
+    if cache_dir is None or selected_manifest is None:
+        raise ReadOnlyCacheError(
+            "No compatible precomputed cache is available for "
+            f"{provider.provider_name} with {method_signature}."
+        )
+    if selected_manifest.get(_MIGRATE_DB_FINGERPRINT_KEY):
+        raise ReadOnlyCacheError(
+            f"Cache metadata requires migration and cannot be used read-only: {cache_dir}"
+        )
+
+    required_paths = {
+        filename: cache_dir / filename
+        for filename in _CACHE_ARTIFACT_FILENAMES
+    }
+    missing = [path for path in required_paths.values() if not path.is_file()]
+    if missing:
+        raise ReadOnlyCacheError(
+            "The precomputed cache is incomplete. Missing: "
+            + ", ".join(str(path) for path in missing)
+        )
+
+    try:
+        manifest = _normalize_manifest(
+            json.loads(required_paths["manifest.json"].read_text(encoding="utf-8"))
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ReadOnlyCacheError(f"Cache manifest is unreadable: {cache_dir}") from exc
+    if not _manifest_matches_method(
+        manifest,
+        method_signature,
+        db_fingerprint,
+        db_fingerprint_version,
+    ):
+        raise ReadOnlyCacheError(
+            f"Cache fingerprint or method is incompatible: {cache_dir}"
+        )
+    if not _cache_covers_request(
+        manifest,
+        requested_threshold_min,
+        requested_threshold_max,
+    ):
+        raise ReadOnlyCacheError(
+            f"Cache threshold coverage is insufficient: {cache_dir}"
+        )
+
+    try:
+        cached_proteins = _read_cached_protein_index(
+            required_paths["cached_proteins.json"]
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ReadOnlyCacheError(
+            f"Cache protein index is unreadable: {cache_dir}"
+        ) from exc
+    requested = {str(value) for value in proteins_needed}
+    missing_proteins = requested - (cached_proteins or set())
+    if missing_proteins:
+        preview = ", ".join(sorted(missing_proteins)[:5])
+        suffix = "" if len(missing_proteins) <= 5 else f" and {len(missing_proteins) - 5} more"
+        raise ReadOnlyCacheError(
+            "The precomputed cache does not cover every requested protein: "
+            f"{preview}{suffix}."
+        )
+
+    try:
+        json.loads(required_paths["predicted_binding_progress.json"].read_text(encoding="utf-8"))
+        json.loads(required_paths["predicted_binding_rowgroup_index.json"].read_text(encoding="utf-8"))
+        pq.ParquetFile(required_paths["predicted_binding_data.parquet"])
+    except Exception as exc:
+        raise ReadOnlyCacheError(
+            f"One or more cache artifacts are unreadable: {cache_dir}"
+        ) from exc
+
+    predicted_path = required_paths["predicted_binding_data.parquet"]
+    if not load_dataframe:
+        return predicted_path
+    try:
+        cached = pd.read_parquet(predicted_path)
+    except Exception as exc:
+        raise ReadOnlyCacheError(
+            f"Predicted cache parquet is unreadable: {predicted_path}"
+        ) from exc
+    return _provider_filter_cached_results(provider, cached)
+
+
 def ensure_provider_cache(
     data_dir: Path,
     provider,

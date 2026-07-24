@@ -16,6 +16,7 @@ interface ResultsPanelProps {
   selectedItem: SelectedItem | null;
   onSelectItem: (item: SelectedItem | null) => void;
   jobId: string;
+  knownOnly?: boolean;
 }
 
 const TABS: { id: ResultTab; label: string; icon: React.ReactNode; accentClass: string }[] = [
@@ -47,7 +48,15 @@ function StatusOverlay({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function ResultsPanel({ queryResult, activeTab, onTabChange, selectedItem, onSelectItem, jobId }: ResultsPanelProps) {
+export function ResultsPanel({
+  queryResult,
+  activeTab,
+  onTabChange,
+  selectedItem,
+  onSelectItem,
+  jobId,
+  knownOnly = false,
+}: ResultsPanelProps) {
   const { summary, status, errorMessage, warningMessage, progressPercent } = queryResult;
 
   const [tabData, setTabData] = useState<{
@@ -60,16 +69,23 @@ export function ResultsPanel({ queryResult, activeTab, onTabChange, selectedItem
   useEffect(() => {
     const showsData = ['completed', 'completed_with_warnings', 'partial_results'].includes(status);
     if (!jobId || !showsData) {
+      // Reset stale table contents when the selected query has no readable result yet.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTabData({ proteins: [], knownLigands: [], predictedLigands: [], loading: false });
       return;
     }
     const qid = encodeURIComponent(summary.qseqid);
     setTabData((prev) => ({ ...prev, loading: true }));
 
+    const predictedRequest = knownOnly
+      ? Promise.resolve({ data: { data: [] } })
+      : api.get(`/jobs/${jobId}/queries/${qid}/predicted-ligands?per_page=900000`)
+        .catch(() => ({ data: { data: [] } }));
+
     Promise.all([
       api.get(`/jobs/${jobId}/queries/${qid}/protein-ranking?per_page=900000`).catch(() => ({ data: { data: [] } })),
       api.get(`/jobs/${jobId}/queries/${qid}/known-ligands?per_page=900000`).catch(() => ({ data: { data: [] } })),
-      api.get(`/jobs/${jobId}/queries/${qid}/predicted-ligands?per_page=900000`).catch(() => ({ data: { data: [] } })),
+      predictedRequest,
     ]).then(([pRes, kRes, predRes]) => {
       setTabData({
         proteins: (pRes.data.data as ProteinRanking[]) ?? [],
@@ -80,7 +96,7 @@ export function ResultsPanel({ queryResult, activeTab, onTabChange, selectedItem
     }).catch(() => {
       setTabData((prev) => ({ ...prev, loading: false }));
     });
-  }, [jobId, summary.qseqid, status]);
+  }, [jobId, knownOnly, summary.qseqid, status]);
 
   const renderContent = () => {
     switch (status) {
@@ -153,7 +169,7 @@ export function ResultsPanel({ queryResult, activeTab, onTabChange, selectedItem
 
             {/* Tabs */}
             <div className="flex border-b border-gray-100 dark:border-gray-700/60 px-4 mt-0">
-              {TABS.map((tab) => {
+              {TABS.filter((tab) => !knownOnly || tab.id !== 'predicted_ligands').map((tab) => {
                 const isActive = activeTab === tab.id;
                 return (
                   <button
@@ -187,7 +203,7 @@ export function ResultsPanel({ queryResult, activeTab, onTabChange, selectedItem
                   onSelectItem={onSelectItem}
                 />
               )}
-              {activeTab === 'predicted_ligands' && (
+              {!knownOnly && activeTab === 'predicted_ligands' && (
                 <PredictedLigandsTable
                   data={tabData.predictedLigands}
                   selectedItem={selectedItem}

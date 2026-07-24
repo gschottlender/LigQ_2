@@ -47,3 +47,5 @@ P00533.fasta
 # Tests are kept locally but are not versioned.
 tests/
 gui/backend/test_*.py
+!gui/backend/tests/
+!gui/backend/tests/**

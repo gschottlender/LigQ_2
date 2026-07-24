@@ -113,6 +113,22 @@ async def set_job(job: Job) -> None:
         _write_job(job)
 
 
+async def try_set_exclusive_web_search(job: Job) -> bool:
+    """Persist a web search only when no other web search is active."""
+    async with _lock:
+        active = any(
+            current.job_type == "search"
+            and current.owner_session_hash is not None
+            and current.status in _UNFINISHED_STATUSES
+            for current in jobs.values()
+        )
+        if active:
+            return False
+        jobs[job.job_id] = job
+        _write_job(job)
+        return True
+
+
 async def update_job(job_id: str, **kwargs) -> Optional[Job]:
     async with _lock:
         job = jobs.get(job_id)

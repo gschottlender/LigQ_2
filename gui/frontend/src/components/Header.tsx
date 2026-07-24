@@ -1,8 +1,10 @@
 import { CircleQuestionMark, Moon, Search, Settings, Sun } from "lucide-react";
 import { useState } from "react";
 import { NavLink } from "react-router-dom";
+import { useSystemPolicy } from "../context/SystemPolicyContext";
 
 export function Header(){
+    const { isWeb } = useSystemPolicy();
     const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center justify-center gap-2 px-3 sm:px-5 py-2 rounded-lg font-semibold font-montserrat transition-all duration-300
     ${isActive ? 'bg-white dark:bg-gray-500 text-gray-500 dark:text-white shadow-xs' : 'text-gray-500 dark:text-gray-400'}`
@@ -23,10 +25,12 @@ export function Header(){
             </div>
 
             <nav className="bg-gray-200 dark:bg-gray-700 p-1 rounded-[10px] flex items-center gap-0 sm:gap-2">
-                <NavLink to="/configure" className={navLinkClass} title="Manage Resources">
-                    <Settings className="w-4 h-4"/>
-                    <p className="hidden sm:block text-sm font-dm-sans">Manage Resources</p>
-                </NavLink>
+                {!isWeb && (
+                    <NavLink to="/configure" className={navLinkClass} title="Manage Resources">
+                        <Settings className="w-4 h-4"/>
+                        <p className="hidden sm:block text-sm font-dm-sans">Manage Resources</p>
+                    </NavLink>
+                )}
 
                 <NavLink to="/" className={navLinkClass} title="Run Search">
                     <Search className="w-4 h-4 hover:text-gray-400"/>

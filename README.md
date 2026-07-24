@@ -24,6 +24,7 @@ LigQ 2 combines:
 
 - [How LigQ 2 works](#how-ligq-2-works)
 - [Choose how to run LigQ 2](#choose-how-to-run-ligq-2)
+- [Restricted public web deployment](#restricted-public-web-deployment)
 - [Docker and web interface: recommended](#docker-and-web-interface-recommended)
 - [Using the web interface](#using-the-web-interface)
 - [Native installation and command-line usage](#native-installation-and-command-line-usage)
@@ -90,6 +91,17 @@ execution.
 > ChemBERTa embeddings, install the native Conda environment. The native
 > installation is also recommended for large workloads that need greater
 > computing capacity.
+
+## Restricted public web deployment
+
+The repository also includes an isolated, fail-closed public deployment mode.
+It keeps the normal local application unchanged while exposing only ZINC
+ECFP/FCFP cached searches and an optional Known ligands only search, with
+anonymous session isolation, server-side FASTA limits, rate limiting, timeout,
+short result retention and read-only database mounts.
+
+See [WEB_DEPLOYMENT.md](WEB_DEPLOYMENT.md) for local testing, mandatory
+ECFP/FCFP data preparation and production proxy guidance.
 
 ## Docker and web interface: recommended
 
@@ -300,18 +312,24 @@ local build.
 The **Run Search** page exposes the main scientific workflow in a constrained,
 user-friendly form.
 
-1. Select a compound database.
-2. Select a molecular representation. Its compatible metric is detected
+1. Choose **Predicted + known ligands** or **Known ligands only**. Known-only
+   searches skip the compound database and predicted-ligand search.
+2. For predicted searches, select a compound database.
+3. Select a molecular representation. Its compatible metric is detected
    automatically: binary fingerprints use Tanimoto and embeddings use Cosine.
-3. Optionally enable BSI.
-4. Choose the minimum and maximum score cutoffs.
-5. Upload a `.fasta`, `.fa`, or `.faa` protein file.
-6. Select one or more candidate-protein methods.
-7. Select **Run Search**.
+4. Optionally enable BSI.
+5. Choose the minimum and maximum score cutoffs.
+6. Upload a `.fasta`, `.fa`, or `.faa` protein file.
+7. Select one or more candidate-protein methods.
+8. Select **Run Search**.
 
 The frontend counts FASTA sequences before submission and displays the count
 without imposing a maximum. Large inputs can make the run very long and may
 substantially increase resource usage.
+
+An active search can be cancelled beside its job name. LigQ 2 waits for the
+worker processes to stop and then deletes the uploaded FASTA, temporary files,
+and the incomplete result folder; partial results are not retained.
 
 Frontend defaults and constraints:
 
