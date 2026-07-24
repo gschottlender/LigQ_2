@@ -13,8 +13,6 @@ from core.config import DATABASES_DIR, PIPELINE_ROOT
 SETUP_SCRIPT = PIPELINE_ROOT / "prepare_ligq_2_data.py"
 HF_REPO_ID = "gschottlender/LigQ_2"
 HF_REVISION = "main"
-FALLBACK_TOTAL_REQUIRED_BYTES = 6_945_959_057
-FALLBACK_TOTAL_FILE_COUNT = 63
 
 BSI_FAMILIES = (
     "PF00001", "PF00002", "PF00026", "PF00067", "PF00069", "PF00089",
@@ -34,10 +32,13 @@ DEFAULT_PREDICTED_CACHE_FILES = (
     "predicted_binding_rowgroup_index.json",
 )
 
-# Match the runtime readiness boundary with concrete leaf files. This avoids
-# treating a partially created directory as ready while a setup job is being
-# resumed. The default predicted cache prevents an expensive first search, and
-# BSI is included because it is a first-class GUI search mode.
+FEATURE_PREDICTED_CACHE_NAMESPACE = (
+    "results_databases/predicted_bindings/zinc/"
+    "search_representation=morgan_feature_1024_r2__search_metric=tanimoto__cache_threshold_min=0.5"
+)
+
+# Runtime readiness depends only on the mandatory package. Optional caches do
+# not keep the setup gate open when a user deliberately leaves them unchecked.
 FAST_READY_PATHS = (
     "sequences/target_sequences.fasta",
     "results_databases/known_binding_data.parquet",
@@ -61,14 +62,46 @@ FAST_READY_PATHS = (
     "compound_data/zinc/ligands.parquet",
     "compound_data/zinc/reps/morgan_1024_r2.dat",
     "compound_data/zinc/reps/morgan_1024_r2.meta.json",
-    *(
-        f"{DEFAULT_PREDICTED_CACHE_NAMESPACE}/{filename}"
-        for filename in DEFAULT_PREDICTED_CACHE_FILES
-    ),
     "bsi_models/mpg_1024/manifest.json",
     "bsi_models/mpg_1024/summary.csv",
     *(f"bsi_models/mpg_1024/{family}/model.pth" for family in BSI_FAMILIES),
     *(f"bsi_models/mpg_1024/{family}/params.json" for family in BSI_FAMILIES),
+)
+
+ECFP_CACHE_PATHS = tuple(
+    f"{DEFAULT_PREDICTED_CACHE_NAMESPACE}/{filename}"
+    for filename in DEFAULT_PREDICTED_CACHE_FILES
+)
+
+FCFP_CACHE_PATHS = (
+    "compound_data/pdb_chembl/reps/morgan_feature_1024_r2.dat",
+    "compound_data/pdb_chembl/reps/morgan_feature_1024_r2.meta.json",
+    "compound_data/zinc/reps/morgan_feature_1024_r2.dat",
+    "compound_data/zinc/reps/morgan_feature_1024_r2.meta.json",
+    *(
+        f"{FEATURE_PREDICTED_CACHE_NAMESPACE}/{filename}"
+        for filename in DEFAULT_PREDICTED_CACHE_FILES
+    ),
+)
+
+SETUP_PACKAGE_PATHS = {
+    "core": FAST_READY_PATHS,
+    "ecfp_cache": ECFP_CACHE_PATHS,
+    "fcfp_cache": FCFP_CACHE_PATHS,
+}
+
+FALLBACK_PACKAGE_METADATA = {
+    "core": {"total_bytes": 5_934_643_866, "total_file_count": 58},
+    "ecfp_cache": {"total_bytes": 679_398_692, "total_file_count": 5},
+    "fcfp_cache": {"total_bytes": 2_024_098_043, "total_file_count": 9},
+}
+FALLBACK_TOTAL_REQUIRED_BYTES = (
+    FALLBACK_PACKAGE_METADATA["core"]["total_bytes"]
+    + FALLBACK_PACKAGE_METADATA["ecfp_cache"]["total_bytes"]
+)
+FALLBACK_TOTAL_FILE_COUNT = (
+    FALLBACK_PACKAGE_METADATA["core"]["total_file_count"]
+    + FALLBACK_PACKAGE_METADATA["ecfp_cache"]["total_file_count"]
 )
 
 
@@ -83,10 +116,41 @@ def _available_bytes(data_dir: Path = DATABASES_DIR) -> int:
     return shutil.disk_usage(probe).free
 
 
+def _fallback_package_status(
+    package_id: str,
+    data_dir: Path = DATABASES_DIR,
+) -> dict[str, Any]:
+    paths = SETUP_PACKAGE_PATHS[package_id]
+    missing_paths = [path for path in paths if not (data_dir / path).is_file()]
+    snapshot = FALLBACK_PACKAGE_METADATA[package_id]
+    return {
+        "id": package_id,
+        "required": package_id == "core",
+        "default_selected": package_id != "fcfp_cache",
+        "installed": not missing_paths,
+        "required_download_bytes": 0 if not missing_paths else snapshot["total_bytes"],
+        "total_bytes": snapshot["total_bytes"],
+        "required_file_count": len(missing_paths),
+        "total_file_count": snapshot["total_file_count"],
+        "missing_paths": missing_paths,
+    }
+
+
 def fallback_setup_status(*, active: bool = False) -> dict[str, Any]:
-    installed = is_default_setup_ready()
+    packages = [
+        _fallback_package_status(package_id)
+        for package_id in SETUP_PACKAGE_PATHS
+    ]
+    packages_by_id = {package["id"]: package for package in packages}
+    default_packages = [
+        packages_by_id["core"],
+        packages_by_id["ecfp_cache"],
+    ]
+    installed = bool(packages_by_id["core"]["installed"])
     ready = installed and not active
-    required_bytes = 0 if installed else FALLBACK_TOTAL_REQUIRED_BYTES
+    required_bytes = sum(
+        package["required_download_bytes"] for package in default_packages
+    )
     available = _available_bytes()
     return {
         "ready": ready,
@@ -97,11 +161,18 @@ def fallback_setup_status(*, active: bool = False) -> dict[str, Any]:
         "total_required_bytes": FALLBACK_TOTAL_REQUIRED_BYTES,
         "available_bytes": available,
         "enough_space": required_bytes <= available,
-        "required_file_count": 0 if installed else FALLBACK_TOTAL_FILE_COUNT,
+        "required_file_count": sum(
+            package["required_file_count"] for package in default_packages
+        ),
         "total_file_count": FALLBACK_TOTAL_FILE_COUNT,
-        "missing_paths": [],
+        "missing_paths": [
+            path
+            for package in default_packages
+            for path in package["missing_paths"]
+        ],
         "size_source": "repository_snapshot",
         "metadata_error": None,
+        "packages": packages,
     }
 
 
@@ -143,8 +214,12 @@ async def inspect_setup_status(*, active: bool = False) -> dict[str, Any]:
         return status
 
 
-def setup_job_args() -> list[str]:
-    return [
+def setup_job_args(
+    *,
+    include_ecfp_cache: bool = True,
+    include_fcfp_cache: bool = False,
+) -> list[str]:
+    args = [
         str(SETUP_SCRIPT),
         "--data-dir",
         str(DATABASES_DIR),
@@ -154,3 +229,8 @@ def setup_job_args() -> list[str]:
         HF_REVISION,
         "--progress-json",
     ]
+    if not include_ecfp_cache:
+        args.append("--skip-ecfp-cache")
+    if include_fcfp_cache:
+        args.append("--include-fcfp-cache")
+    return args

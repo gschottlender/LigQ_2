@@ -151,6 +151,19 @@ export interface SetupStatus {
   missing_paths: string[];
   size_source: 'huggingface' | 'repository_snapshot';
   metadata_error: string | null;
+  packages: SetupPackageStatus[];
   job_id: string | null;
   job_status: JobStatus | null;
+}
+
+export interface SetupPackageStatus {
+  id: 'core' | 'ecfp_cache' | 'fcfp_cache';
+  required: boolean;
+  default_selected: boolean;
+  installed: boolean;
+  required_download_bytes: number;
+  total_bytes: number;
+  required_file_count: number;
+  total_file_count: number;
+  missing_paths: string[];
 }

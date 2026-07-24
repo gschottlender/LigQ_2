@@ -37,11 +37,14 @@ DEFAULT_PREDICTED_CACHE_FILES = (
     "predicted_binding_rowgroup_index.json",
 )
 
-# Complete GUI runtime installation: default structural-search data, its
-# precomputed Morgan/Tanimoto predicted-ligand cache, and the Pfam-specific BSI
-# models exposed by the frontend. Exact paths intentionally exclude the
+FEATURE_PREDICTED_CACHE_NAMESPACE = (
+    "results_databases/predicted_bindings/zinc/"
+    "search_representation=morgan_feature_1024_r2__search_metric=tanimoto__cache_threshold_min=0.5"
+)
+
+# Core GUI runtime installation. Exact paths intentionally exclude the
 # redundant compressed Pfam archive and BSI training diagnostics.
-REQUIRED_DATA_PATHS = (
+CORE_DATA_PATHS = (
     "sequences/target_sequences.fasta",
     "results_databases/known_binding_data.parquet",
     "results_databases/protein_domains.parquet",
@@ -64,31 +67,64 @@ REQUIRED_DATA_PATHS = (
     "compound_data/zinc/ligands.parquet",
     "compound_data/zinc/reps/morgan_1024_r2.dat",
     "compound_data/zinc/reps/morgan_1024_r2.meta.json",
-    *(
-        f"{DEFAULT_PREDICTED_CACHE_NAMESPACE}/{filename}"
-        for filename in DEFAULT_PREDICTED_CACHE_FILES
-    ),
     "bsi_models/mpg_1024/manifest.json",
     "bsi_models/mpg_1024/summary.csv",
     *(f"bsi_models/mpg_1024/{family}/model.pth" for family in BSI_FAMILIES),
     *(f"bsi_models/mpg_1024/{family}/params.json" for family in BSI_FAMILIES),
 )
 
-# Metadata snapshot from the official repository on 2026-07-15. The live Hub
-# tree is the primary source; this value keeps the UI informative if the
-# metadata request is temporarily unavailable.
-FALLBACK_TOTAL_REQUIRED_BYTES = 6_945_959_057
-FALLBACK_TOTAL_FILE_COUNT = 63
+ECFP_CACHE_PATHS = tuple(
+    f"{DEFAULT_PREDICTED_CACHE_NAMESPACE}/{filename}"
+    for filename in DEFAULT_PREDICTED_CACHE_FILES
+)
+
+FCFP_CACHE_PATHS = (
+    "compound_data/pdb_chembl/reps/morgan_feature_1024_r2.dat",
+    "compound_data/pdb_chembl/reps/morgan_feature_1024_r2.meta.json",
+    "compound_data/zinc/reps/morgan_feature_1024_r2.dat",
+    "compound_data/zinc/reps/morgan_feature_1024_r2.meta.json",
+    *(
+        f"{FEATURE_PREDICTED_CACHE_NAMESPACE}/{filename}"
+        for filename in DEFAULT_PREDICTED_CACHE_FILES
+    ),
+)
+
+SETUP_PACKAGE_PATHS = {
+    "core": CORE_DATA_PATHS,
+    "ecfp_cache": ECFP_CACHE_PATHS,
+    "fcfp_cache": FCFP_CACHE_PATHS,
+}
+ALL_SETUP_DATA_PATHS = tuple(
+    path
+    for package_paths in SETUP_PACKAGE_PATHS.values()
+    for path in package_paths
+)
+
+# Legacy alias: command-line callers that do not choose packages retain the
+# previous core + default ECFP cache behavior.
+REQUIRED_DATA_PATHS = CORE_DATA_PATHS + ECFP_CACHE_PATHS
+
+# Metadata snapshot from the official repository on 2026-07-24. Live Hub
+# metadata remains the source of truth.
+FALLBACK_PACKAGE_METADATA = {
+    "core": {"total_bytes": 5_934_643_866, "total_file_count": 58},
+    "ecfp_cache": {"total_bytes": 679_398_692, "total_file_count": 5},
+    "fcfp_cache": {"total_bytes": 2_024_098_043, "total_file_count": 9},
+}
+FALLBACK_TOTAL_REQUIRED_BYTES = (
+    FALLBACK_PACKAGE_METADATA["core"]["total_bytes"]
+    + FALLBACK_PACKAGE_METADATA["ecfp_cache"]["total_bytes"]
+)
+FALLBACK_TOTAL_FILE_COUNT = (
+    FALLBACK_PACKAGE_METADATA["core"]["total_file_count"]
+    + FALLBACK_PACKAGE_METADATA["ecfp_cache"]["total_file_count"]
+)
 
 
 @dataclass(frozen=True)
 class RequiredRepoFile:
     path: str
     size: int
-
-
-def _is_required_repo_path(path: str) -> bool:
-    return path in REQUIRED_DATA_PATHS
 
 
 def _available_bytes(data_dir: Path) -> int:
@@ -103,7 +139,10 @@ def list_required_repo_files(
     api: Any | None = None,
     repo_id: str = HF_REPO_ID,
     revision: str = HF_REVISION,
+    required_paths: Iterable[str] = REQUIRED_DATA_PATHS,
 ) -> list[RequiredRepoFile]:
+    required_paths = tuple(required_paths)
+    required_path_set = set(required_paths)
     validate_manifest = api is None
     api = api or HfApi()
     entries = api.list_repo_tree(
@@ -116,13 +155,13 @@ def list_required_repo_files(
     files = [
         RequiredRepoFile(path=entry.path, size=int(entry.size or 0))
         for entry in entries
-        if getattr(entry, "size", None) is not None and _is_required_repo_path(entry.path)
+        if getattr(entry, "size", None) is not None and entry.path in required_path_set
     ]
     if not files:
         raise RuntimeError(f"No required files were found in Hugging Face dataset '{repo_id}'.")
     if validate_manifest:
         remote_paths = {item.path for item in files}
-        unavailable = sorted(set(REQUIRED_DATA_PATHS) - remote_paths)
+        unavailable = sorted(required_path_set - remote_paths)
         if unavailable:
             preview = ", ".join(unavailable[:5])
             suffix = "" if len(unavailable) <= 5 else f" and {len(unavailable) - 5} more"
@@ -134,8 +173,87 @@ def _missing_files(data_dir: Path, files: Iterable[RequiredRepoFile]) -> list[Re
     return [item for item in files if not (data_dir / item.path).is_file()]
 
 
-def _fallback_missing_roots(data_dir: Path) -> list[str]:
-    return [path for path in REQUIRED_DATA_PATHS if not (data_dir / path).is_file()]
+def _package_status(
+    package_id: str,
+    data_dir: Path,
+    files_by_path: dict[str, RequiredRepoFile],
+) -> dict[str, Any]:
+    paths = SETUP_PACKAGE_PATHS[package_id]
+    files = [files_by_path[path] for path in paths]
+    missing = _missing_files(data_dir, files)
+    return {
+        "id": package_id,
+        "required": package_id == "core",
+        "default_selected": package_id != "fcfp_cache",
+        "installed": not missing,
+        "required_download_bytes": sum(item.size for item in missing),
+        "total_bytes": sum(item.size for item in files),
+        "required_file_count": len(missing),
+        "total_file_count": len(files),
+        "missing_paths": [item.path for item in missing],
+    }
+
+
+def _fallback_package_status(package_id: str, data_dir: Path) -> dict[str, Any]:
+    paths = SETUP_PACKAGE_PATHS[package_id]
+    missing_paths = [path for path in paths if not (data_dir / path).is_file()]
+    snapshot = FALLBACK_PACKAGE_METADATA[package_id]
+    return {
+        "id": package_id,
+        "required": package_id == "core",
+        "default_selected": package_id != "fcfp_cache",
+        "installed": not missing_paths,
+        "required_download_bytes": 0 if not missing_paths else snapshot["total_bytes"],
+        "total_bytes": snapshot["total_bytes"],
+        "required_file_count": len(missing_paths),
+        "total_file_count": snapshot["total_file_count"],
+        "missing_paths": missing_paths,
+    }
+
+
+def _build_setup_status(
+    *,
+    packages: list[dict[str, Any]],
+    available_bytes: int,
+    repo_id: str,
+    revision: str,
+    size_source: str,
+    metadata_error: str | None,
+) -> dict[str, Any]:
+    packages_by_id = {package["id"]: package for package in packages}
+    core = packages_by_id["core"]
+    default_packages = [
+        packages_by_id["core"],
+        packages_by_id["ecfp_cache"],
+    ]
+    required_bytes = sum(package["required_download_bytes"] for package in default_packages)
+    total_bytes = sum(package["total_bytes"] for package in default_packages)
+    missing_paths = [
+        path
+        for package in default_packages
+        for path in package["missing_paths"]
+    ]
+    ready = bool(core["installed"])
+    return {
+        "ready": ready,
+        "state": "ready" if ready else "required",
+        "repo_id": repo_id,
+        "revision": revision,
+        "required_download_bytes": required_bytes,
+        "total_required_bytes": total_bytes,
+        "available_bytes": available_bytes,
+        "enough_space": required_bytes <= available_bytes,
+        "required_file_count": sum(
+            package["required_file_count"] for package in default_packages
+        ),
+        "total_file_count": sum(
+            package["total_file_count"] for package in default_packages
+        ),
+        "missing_paths": missing_paths,
+        "size_source": size_source,
+        "metadata_error": metadata_error,
+        "packages": packages,
+    }
 
 
 def inspect_default_data(
@@ -148,43 +266,38 @@ def inspect_default_data(
     data_dir = Path(data_dir)
     available = _available_bytes(data_dir)
     try:
-        files = list_required_repo_files(api=api, repo_id=repo_id, revision=revision)
-        missing = _missing_files(data_dir, files)
-        required_bytes = sum(item.size for item in missing)
-        total_bytes = sum(item.size for item in files)
-        return {
-            "ready": not missing,
-            "state": "ready" if not missing else "required",
-            "repo_id": repo_id,
-            "revision": revision,
-            "required_download_bytes": required_bytes,
-            "total_required_bytes": total_bytes,
-            "available_bytes": available,
-            "enough_space": required_bytes <= available,
-            "required_file_count": len(missing),
-            "total_file_count": len(files),
-            "missing_paths": [item.path for item in missing],
-            "size_source": "huggingface",
-            "metadata_error": None,
-        }
+        files = list_required_repo_files(
+            api=api,
+            repo_id=repo_id,
+            revision=revision,
+            required_paths=ALL_SETUP_DATA_PATHS,
+        )
+        files_by_path = {item.path: item for item in files}
+        packages = [
+            _package_status(package_id, data_dir, files_by_path)
+            for package_id in SETUP_PACKAGE_PATHS
+        ]
+        return _build_setup_status(
+            packages=packages,
+            available_bytes=available,
+            repo_id=repo_id,
+            revision=revision,
+            size_source="huggingface",
+            metadata_error=None,
+        )
     except Exception as exc:
-        missing_roots = _fallback_missing_roots(data_dir)
-        required_bytes = 0 if not missing_roots else FALLBACK_TOTAL_REQUIRED_BYTES
-        return {
-            "ready": not missing_roots,
-            "state": "ready" if not missing_roots else "required",
-            "repo_id": repo_id,
-            "revision": revision,
-            "required_download_bytes": required_bytes,
-            "total_required_bytes": FALLBACK_TOTAL_REQUIRED_BYTES,
-            "available_bytes": available,
-            "enough_space": required_bytes <= available,
-            "required_file_count": 0 if not missing_roots else FALLBACK_TOTAL_FILE_COUNT,
-            "total_file_count": FALLBACK_TOTAL_FILE_COUNT,
-            "missing_paths": missing_roots,
-            "size_source": "repository_snapshot",
-            "metadata_error": str(exc),
-        }
+        packages = [
+            _fallback_package_status(package_id, data_dir)
+            for package_id in SETUP_PACKAGE_PATHS
+        ]
+        return _build_setup_status(
+            packages=packages,
+            available_bytes=available,
+            repo_id=repo_id,
+            revision=revision,
+            size_source="repository_snapshot",
+            metadata_error=str(exc),
+        )
 
 
 class _TrackedByteProgressBar:
@@ -380,6 +493,8 @@ def prepare_default_data(
     progress: ProgressEmitter,
     repo_id: str = HF_REPO_ID,
     revision: str = HF_REVISION,
+    include_ecfp_cache: bool = True,
+    include_fcfp_cache: bool = False,
 ) -> None:
     data_dir = Path(data_dir)
     progress.emit(
@@ -392,7 +507,16 @@ def prepare_default_data(
     )
 
     try:
-        files = list_required_repo_files(repo_id=repo_id, revision=revision)
+        selected_paths = list(CORE_DATA_PATHS)
+        if include_ecfp_cache:
+            selected_paths.extend(ECFP_CACHE_PATHS)
+        if include_fcfp_cache:
+            selected_paths.extend(FCFP_CACHE_PATHS)
+        files = list_required_repo_files(
+            repo_id=repo_id,
+            revision=revision,
+            required_paths=selected_paths,
+        )
     except Exception as exc:
         raise RuntimeError(f"Could not inspect Hugging Face dataset '{repo_id}': {exc}") from exc
 
@@ -452,6 +576,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--revision", default=HF_REVISION)
     parser.add_argument("--status-json", action="store_true")
     parser.add_argument("--progress-json", action="store_true")
+    parser.add_argument(
+        "--skip-ecfp-cache",
+        action="store_true",
+        help="Install the required base data without the default ECFP cache.",
+    )
+    parser.add_argument(
+        "--include-fcfp-cache",
+        action="store_true",
+        help=(
+            "Also install the Morgan Feature FCFP representations and its "
+            "precomputed ZINC cache."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -476,6 +613,8 @@ def main() -> None:
         progress=ProgressEmitter(enabled=args.progress_json),
         repo_id=args.repo_id,
         revision=args.revision,
+        include_ecfp_cache=not args.skip_ecfp_cache,
+        include_fcfp_cache=args.include_fcfp_cache,
     )
 
 

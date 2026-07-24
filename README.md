@@ -101,11 +101,14 @@ execution.
 - enough free disk space for the images, databases, results, and temporary
   files.
 
-The setup screen calculates the current missing download size from the official
-Hugging Face dataset and compares it with available space before installation.
-The current GUI-ready dataset is approximately 6.95 GB (6.47 GiB), but the live
-Hugging Face metadata is the source of truth. Database updates and large result
-histories may require substantially more space.
+The setup screen divides the initial download into a required database package,
+a recommended Morgan ECFP predicted-ligand cache (selected by default), and an
+optional Morgan Feature FCFP representation/cache package. It calculates each
+package's current missing download size from the official Hugging Face dataset
+and compares the selected total with available space. At the 2026-07-24
+snapshot, the packages are approximately 5.93 GB, 0.68 GB, and 2.02 GB,
+respectively; live Hugging Face metadata is the source of truth. Database
+updates and large result histories may require substantially more space.
 
 The published images target `linux/amd64`. Docker Desktop can run them on other
 host architectures through emulation, with a possible performance cost.
@@ -161,15 +164,19 @@ compatibility.
 If the required databases are missing, the web application displays **Initial
 setup required** instead of the search form. It shows:
 
-- the number and total size of missing files;
+- the mandatory database package plus recommended ECFP and optional FCFP cache
+  packages;
+- the missing-file count and download size for each package;
+- the total size of the selected packages;
 - free space on the database volume;
 - live downloaded GB and completed-file progress.
 
 Select **Download and prepare data**. The backend downloads only missing files
-and can resume an interrupted setup. The default installation includes the
-PDB/ChEMBL runtime data, ZINC, BLAST and Pfam resources, the reusable default
-Morgan/Tanimoto predicted-ligand cache, and supported BSI models. The search
-interface is enabled automatically when setup finishes.
+from the selected packages and can resume an interrupted setup. The mandatory
+package includes PDB/ChEMBL runtime data, ZINC, BLAST/Pfam resources, and
+supported BSI models. The ECFP cache is selected by default; the FCFP
+representations/cache package is opt-in. The search interface is enabled
+automatically when setup finishes.
 
 The same initialization can be started from a terminal:
 

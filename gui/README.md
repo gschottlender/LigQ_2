@@ -119,20 +119,28 @@ separate from `environment.yml`; no CUDA or NVIDIA runtime is needed.
 ## First-time setup
 
 When the default LigQ 2 data is absent, the frontend displays **Initial setup
-required** before exposing the search interface. It reads the required file
-sizes from the official Hugging Face dataset, shows the missing download size
-and available space on the database disk, and disables installation when space
-is insufficient.
+required** before exposing the search interface. It reads package file sizes
+from the official Hugging Face dataset, shows each missing download size and
+available space on the database disk, and disables installation when space is
+insufficient for the selected packages.
+
+The selector offers three packages:
+
+- **Required databases** is always selected. It contains the default
+  ZINC/PDB-ChEMBL data, BLAST/Pfam resources, and supported BSI models.
+- **Morgan ECFP cache** covers Tanimoto scores from `0.4` upward and is selected
+  by default.
+- **Morgan Feature FCFP cache** covers scores from `0.5` upward and is optional.
+  Its package also contains the compatible ZINC and PDB/ChEMBL FCFP
+  representations required to use that cache.
 
 Click **Download and prepare data** to start a background setup job. The job
-installs only missing files directly under `databases/`, reports progress in the
-browser as both downloaded GB/total GB and completed files/total files, and can
-resume after a failed or interrupted download. The complete GUI-ready dataset
-currently contains 63 required files totaling approximately 6.95 GB (6.47 GiB),
-including default ZINC/PDB-ChEMBL data, BLAST/Pfam resources, the reusable
-Morgan/Tanimoto ZINC predicted-ligand cache with minimum coverage `0.4`, and the
-supported BSI models. The live Hugging Face metadata remains the source of truth
-if the repository changes.
+installs only missing files from the selected packages directly under
+`databases/`, reports progress in the browser as both downloaded GB/total GB and
+completed files/total files, and can resume after a failed or interrupted
+download. At the 2026-07-24 snapshot, the three package totals are approximately
+5.93 GB, 0.68 GB, and 2.02 GB, respectively. Live Hugging Face metadata remains
+the source of truth if the repository changes.
 
 Keep the backend running during this operation. When setup finishes, the
 frontend automatically reloads the available databases and opens the normal

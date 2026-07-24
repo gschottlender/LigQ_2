@@ -2,12 +2,34 @@ import { Database, Download, HardDrive, Loader2, RefreshCw, ShieldCheck } from '
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useDatabase } from '../context/DatabaseContext';
 import { api } from '../lib/api';
-import type { Job, SetupStatus } from '../types';
+import type { Job, SetupPackageStatus, SetupStatus } from '../types';
 import { Header } from './Header';
 import { JobFailurePanel, JobProgressPanel } from './JobProgressPanel';
 
 
 const TERMINAL_STATUSES = ['completed', 'completed_with_warnings', 'failed', 'cancelled', 'interrupted'];
+
+const PACKAGE_COPY: Record<SetupPackageStatus['id'], {
+  title: string;
+  description: string;
+  badge: string;
+}> = {
+  core: {
+    title: 'Required databases',
+    description: 'ZINC and PDB/ChEMBL data, BLAST/Pfam resources, and supported BSI models.',
+    badge: 'Required',
+  },
+  ecfp_cache: {
+    title: 'Morgan ECFP cache',
+    description: 'Precomputed ZINC predictions with Tanimoto scores from 0.4 upward.',
+    badge: 'Recommended',
+  },
+  fcfp_cache: {
+    title: 'Morgan Feature FCFP cache',
+    description: 'FCFP representations plus precomputed ZINC predictions from 0.5 upward.',
+    badge: 'Optional',
+  },
+};
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 GB';
@@ -31,6 +53,8 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [includeEcfpCache, setIncludeEcfpCache] = useState(true);
+  const [includeFcfpCache, setIncludeFcfpCache] = useState(false);
 
   const loadStatus = useCallback(async () => {
     setChecking(true);
@@ -70,6 +94,12 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
           if (['failed', 'cancelled', 'interrupted'].includes(data.status)) {
             setError(data.error || data.failure?.message || 'Initial setup failed.');
             setJobId(null);
+            setStatus((current) => current ? {
+              ...current,
+              state: 'required',
+              job_id: null,
+              job_status: data.status,
+            } : current);
           } else {
             await loadStatus();
           }
@@ -93,7 +123,10 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
     setError(null);
     setJob(null);
     try {
-      const { data } = await api.post<{ job_id: string; status: string }>('/setup/download');
+      const { data } = await api.post<{ job_id: string; status: string }>('/setup/download', {
+        include_ecfp_cache: includeEcfpCache,
+        include_fcfp_cache: includeFcfpCache,
+      });
       setJobId(data.job_id);
       setStatus((current) => current ? { ...current, state: 'downloading', job_id: data.job_id } : current);
     } catch (requestError) {
@@ -106,8 +139,33 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
   if (status?.ready) return children;
 
   const isRunning = Boolean(jobId) || status?.state === 'downloading';
-  const requiredBytes = status?.required_download_bytes ?? status?.total_required_bytes ?? 0;
+  const selectedPackageIds = new Set<SetupPackageStatus['id']>([
+    'core',
+    ...(includeEcfpCache ? ['ecfp_cache' as const] : []),
+    ...(includeFcfpCache ? ['fcfp_cache' as const] : []),
+  ]);
+  const selectedPackages = (status?.packages ?? []).filter((item) => selectedPackageIds.has(item.id));
+  const requiredBytes = selectedPackages.reduce(
+    (total, item) => total + item.required_download_bytes,
+    0,
+  );
+  const requiredFileCount = selectedPackages.reduce(
+    (total, item) => total + item.required_file_count,
+    0,
+  );
   const availableBytes = status?.available_bytes ?? 0;
+  const enoughSpace = requiredBytes <= availableBytes;
+
+  const packageSelected = (packageId: SetupPackageStatus['id']) => (
+    packageId === 'core'
+    || (packageId === 'ecfp_cache' && includeEcfpCache)
+    || (packageId === 'fcfp_cache' && includeFcfpCache)
+  );
+
+  const setPackageSelected = (packageId: SetupPackageStatus['id'], selected: boolean) => {
+    if (packageId === 'ecfp_cache') setIncludeEcfpCache(selected);
+    if (packageId === 'fcfp_cache') setIncludeFcfpCache(selected);
+  };
 
   return (
     <>
@@ -130,8 +188,8 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
                 {checking ? 'Checking local data' : isRunning ? 'Preparing LigQ 2' : 'Initial setup required'}
               </h1>
               <p className="mt-2 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
-                LigQ 2 needs its default ZINC and PDB/ChEMBL compound data, BLAST and Pfam resources,
-                the reusable predicted-ligand cache, and the supported BSI family models before searches can run.
+                Install the required search databases and choose which precomputed caches to download.
+                Caches avoid lengthy calculations during the first searches.
               </p>
             </div>
           </div>
@@ -143,17 +201,83 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
             </div>
           ) : (
             <>
-              <div className="mt-7 grid gap-3 sm:grid-cols-2">
+              <div className="mt-7">
+                <div className="mb-3 flex items-end justify-between gap-4">
+                  <div>
+                    <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                      Choose installation data
+                    </h2>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Sizes reflect only files that are not already installed.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {(status?.packages ?? []).map((setupPackage) => {
+                    const copy = PACKAGE_COPY[setupPackage.id];
+                    const selected = packageSelected(setupPackage.id);
+                    const disabled = setupPackage.required || isRunning || starting;
+                    return (
+                      <label
+                        key={setupPackage.id}
+                        className={`flex items-start gap-3 rounded-xl border p-4 transition-colors ${
+                          selected
+                            ? 'border-teal-300 bg-teal-50/70 dark:border-teal-800 dark:bg-teal-950/20'
+                            : 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/40'
+                        } ${disabled ? 'cursor-default' : 'cursor-pointer'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={disabled}
+                          onChange={(event) => setPackageSelected(setupPackage.id, event.target.checked)}
+                          className="mt-0.5 h-4 w-4 shrink-0 accent-teal-700"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+                              {copy.title}
+                            </span>
+                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              setupPackage.required
+                                ? 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                                : setupPackage.default_selected
+                                ? 'bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300'
+                                : 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                            }`}>
+                              {copy.badge}
+                            </span>
+                          </span>
+                          <span className="mt-1 block text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                            {copy.description}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-right">
+                          <span className="block text-sm font-semibold text-gray-700 dark:text-gray-200">
+                            {formatBytes(setupPackage.required_download_bytes)}
+                          </span>
+                          <span className="mt-1 block text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+                            {setupPackage.installed ? 'Installed' : `${setupPackage.required_file_count} files`}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
                   <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
                     <HardDrive className="h-4 w-4" />
-                    Required download
+                    Selected download
                   </div>
                   <p className="mt-2 text-xl font-semibold text-gray-800 dark:text-gray-100">
                     {formatBytes(requiredBytes)}
                   </p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {status?.required_file_count ?? 0} files currently missing
+                    {requiredFileCount} files currently missing
                   </p>
                 </div>
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-800/50">
@@ -164,8 +288,8 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
                   <p className="mt-2 text-xl font-semibold text-gray-800 dark:text-gray-100">
                     {formatBytes(availableBytes)}
                   </p>
-                  <p className={`mt-1 text-xs ${status?.enough_space ? 'text-teal-700 dark:text-teal-300' : 'text-red-600 dark:text-red-400'}`}>
-                    {status?.enough_space ? 'Enough space for installation' : 'More free disk space is required'}
+                  <p className={`mt-1 text-xs ${enoughSpace ? 'text-teal-700 dark:text-teal-300' : 'text-red-600 dark:text-red-400'}`}>
+                    {enoughSpace ? 'Enough space for this selection' : 'More free disk space is required'}
                   </p>
                 </div>
               </div>
@@ -180,7 +304,7 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
                 >
                   {status?.repo_id ?? 'gschottlender/LigQ_2'}
                 </a>
-                . The size is calculated from the required files in the repository; existing files are not downloaded again.
+                . Package sizes are calculated from repository files; existing files are not downloaded again.
                 {status?.metadata_error && (
                   <span className="mt-1 block text-amber-700 dark:text-amber-300">
                     Live metadata is temporarily unavailable, so the latest repository size snapshot is shown.
@@ -201,7 +325,7 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
                 <JobFailurePanel failure={job?.failure} error={error} />
               )}
 
-              {!isRunning && !status?.enough_space && (
+              {!isRunning && !enoughSpace && (
                 <p className="mt-4 text-sm text-red-600 dark:text-red-400">
                   Free at least {formatBytes(Math.max(0, requiredBytes - availableBytes))} more before starting setup.
                 </p>
@@ -211,7 +335,7 @@ export function InitialSetupGate({ children }: { children: ReactNode }) {
                 <button
                   type="button"
                   onClick={startDownload}
-                  disabled={isRunning || starting || !status?.enough_space}
+                  disabled={isRunning || starting || !enoughSpace}
                   className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl bg-cyan-900 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-cyan-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {isRunning || starting

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from core import state
 from models.job import Job, JobStatus
@@ -14,6 +15,11 @@ from services.setup_service import inspect_setup_status, is_default_setup_ready,
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 ACTIVE_STATUSES = {JobStatus.queued, JobStatus.running, JobStatus.partial_results}
+
+
+class SetupDownloadRequest(BaseModel):
+    include_ecfp_cache: bool = True
+    include_fcfp_cache: bool = False
 
 
 async def _latest_setup_job() -> Job | None:
@@ -31,7 +37,7 @@ async def setup_status():
 
 
 @router.post("/download", status_code=201)
-async def start_setup_download():
+async def start_setup_download(options: SetupDownloadRequest | None = None):
     latest = await _latest_setup_job()
     if latest and latest.status in ACTIVE_STATUSES:
         return JSONResponse(
@@ -57,5 +63,12 @@ async def start_setup_download():
         created_at=datetime.now(timezone.utc),
     )
     await state.set_job(job)
-    await enqueue_job(job_id, setup_job_args())
+    selection = options or SetupDownloadRequest()
+    await enqueue_job(
+        job_id,
+        setup_job_args(
+            include_ecfp_cache=selection.include_ecfp_cache,
+            include_fcfp_cache=selection.include_fcfp_cache,
+        ),
+    )
     return {"job_id": job_id, "status": JobStatus.queued.value}

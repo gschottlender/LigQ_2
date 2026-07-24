@@ -103,15 +103,19 @@ Responses are `application/zip` streams.
 | Method | Endpoint | Caller |
 |---|---|---|
 | `GET` | `/api/setup/status` | `InitialSetupGate.tsx` (on mount and after completion) |
-| `POST` | `/api/setup/download` | `InitialSetupGate.tsx` |
+| `POST` | `/api/setup/download` | `InitialSetupGate.tsx`; JSON selects ECFP/FCFP cache packages |
 | `GET` | `/api/jobs/{job_id}` | `InitialSetupGate.tsx` (1-second polling) |
 
 The setup gate remains in front of all application views while required default
-data is missing. Status inspection obtains the required file list and sizes from
-the Hugging Face repository, compares it with `databases/`, and reports both the
-remaining download and free space on that filesystem. After a successful job,
-`DatabaseContext.refetchDatabases()` makes the newly installed ZINC database and
-representations available without a page reload.
+data is missing. Status inspection obtains three package file lists and sizes
+from the Hugging Face repository: mandatory databases, the default-selected
+Morgan ECFP cache, and the optional Morgan Feature FCFP representations/cache.
+It compares them with `databases/` and reports per-package remaining downloads
+plus free space on that filesystem. The setup request sends
+`include_ecfp_cache` and `include_fcfp_cache`; the mandatory package cannot be
+deselected. After a successful job, `DatabaseContext.refetchDatabases()` makes
+the newly installed ZINC database and representations available without a page
+reload.
 
 While the setup job is active, its structured progress includes aggregate
 `downloaded_bytes`/`download_total_bytes` and
@@ -187,12 +191,14 @@ compiled packages such as RDKit load the C++ runtime shipped with that environme
 | `build_database` | `build_compound_database.py` |
 | `add_representation` | `add_new_representation.py` |
 
-The setup script uses Hugging Face metadata to select only missing required
-files and downloads them with `local_dir=databases`. This avoids overwriting
-existing local data and avoids retaining a second full copy in the user's global
-Hugging Face cache. Its required set includes the default structural-search
-resources, the compatible Morgan/Tanimoto ZINC predicted-ligand cache with
-minimum coverage `0.4`, and the Pfam-specific BSI models exposed by the GUI.
+The setup script uses Hugging Face metadata to select only missing files from
+the requested packages and downloads them with `local_dir=databases`. This
+avoids overwriting existing local data and avoids retaining a second full copy
+in the user's global Hugging Face cache. Its mandatory set includes the default
+structural-search resources and Pfam-specific BSI models exposed by the GUI.
+The ECFP cache package adds compatible Morgan/Tanimoto predictions with minimum
+coverage `0.4`; the FCFP package adds both compatible representations and its
+predictions with minimum coverage `0.5`.
 The downloaded structural-cache manifest is portable across the Docker volume:
 local file modification times do not invalidate it. Older manifests are migrated
 only when Hugging Face metadata confirms that all database inputs and cache

@@ -198,11 +198,11 @@ export function HelpPage() {
                 </div>
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                   If the default reference data is missing, LigQ 2 displays an initialization screen before the
-                  search interface. It calculates the required download from the official Hugging Face files,
-                  shows the available disk space, and installs only missing resources after you confirm. Keep the
-                  backend running while the background job downloads ZINC/PDB-ChEMBL data, BLAST/Pfam resources,
-                  the reusable default predicted-ligand cache, and supported BSI models. Databases become available
-                  automatically when setup completes.
+                  search interface. It calculates separate download sizes for the mandatory databases, the
+                  default-selected Morgan ECFP cache (scores from 0.4 upward), and the optional Morgan Feature
+                  FCFP representations/cache (scores from 0.5 upward). The selected total is compared with
+                  available disk space, and only missing files are installed. Keep the backend running during
+                  the background download. Databases become available automatically when setup completes.
                 </p>
               </Card>
             </div>

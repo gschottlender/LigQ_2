@@ -54,7 +54,7 @@ Interactive docs are served at `http://localhost:8000/api/docs`.
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
 | GET | `/api/setup/status` | Inspect default-data readiness, required download size, and free disk space |
-| POST | `/api/setup/download` | Start or reconnect to the default-data setup job |
+| POST | `/api/setup/download` | Start or reconnect to setup; JSON can select ECFP and FCFP cache packages |
 | GET | `/api/databases` | List available compound databases |
 | GET | `/api/databases/{name}/representations` | List representations for a database |
 | GET | `/api/databases/{name}/columns` | Columns of an uploaded file (by temp ID) |
@@ -102,10 +102,13 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
   `LIGQ_TEMP_RESULTS_DIR`, and `LIGQ_STATE_DIR` environment variables. Native
   execution keeps the repository paths as defaults.
 - Initial setup is launched through `prepare_ligq_2_data.py`. It downloads only
-  missing files from `gschottlender/LigQ_2` directly into `databases/`, includes
-  the reusable default Morgan/Tanimoto ZINC predicted-ligand cache and the BSI
-  models, and emits aggregate downloaded-byte and completed-file counters through
-  the same structured progress events used by other GUI jobs.
+  missing files from `gschottlender/LigQ_2` directly into `databases/`. The
+  required package always includes the default databases and BSI models;
+  `POST /api/setup/download` accepts `include_ecfp_cache` (default `true`) and
+  `include_fcfp_cache` (default `false`) to select the two precomputed cache
+  packages. Progress emits aggregate downloaded-byte and completed-file counters
+  for the exact selection through the same structured events used by other GUI
+  jobs.
 - Uploaded files are streamed to `gui/backend/uploads/` with a default 20 GiB
   limit configurable through `LIGQ_MAX_UPLOAD_BYTES`.
 - Result endpoints are read-only except `DELETE /api/results`, which permanently
