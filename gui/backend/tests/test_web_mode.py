@@ -17,6 +17,10 @@ sys.path.insert(0, str(BACKEND_ROOT))
 os.environ["LIGQ_DEPLOYMENT_MODE"] = "web"
 
 from core import state  # noqa: E402
+from core.config import (  # noqa: E402
+    _secret_from_env_or_file,
+    _validate_web_session_secret,
+)
 from core.policy import policy_payload  # noqa: E402
 from models.job import Job, JobStatus  # noqa: E402
 from query_processing.predicted_cache import (  # noqa: E402
@@ -50,6 +54,40 @@ class _FakeProvider:
 
 
 class WebPolicyTests(unittest.TestCase):
+    def test_secret_file_takes_precedence_over_environment_value(self):
+        with tempfile.TemporaryDirectory() as directory:
+            secret_path = Path(directory) / "session_secret"
+            secret_path.write_text("file-secret\n", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "TEST_SESSION_SECRET": "environment-secret",
+                    "TEST_SESSION_SECRET_FILE": str(secret_path),
+                },
+            ):
+                value = _secret_from_env_or_file(
+                    "TEST_SESSION_SECRET",
+                    "TEST_SESSION_SECRET_FILE",
+                    "default-secret",
+                )
+
+        self.assertEqual(value, "file-secret")
+
+    def test_secure_web_mode_rejects_a_weak_session_secret(self):
+        with self.assertRaises(RuntimeError):
+            _validate_web_session_secret(
+                deployment_mode="web",
+                cookie_secure=True,
+                secret="too-short",
+            )
+
+    def test_local_mode_keeps_the_development_secret_compatible(self):
+        _validate_web_session_secret(
+            deployment_mode="local",
+            cookie_secure=False,
+            secret="development",
+        )
+
     def test_policy_is_restricted_and_requires_both_cache_floors(self):
         payload = policy_payload()
         self.assertEqual(payload["mode"], "web")

@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .env
+secrets/
 ligq_2_env/
 
 #  Node / frontend ─

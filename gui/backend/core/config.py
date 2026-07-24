@@ -1,7 +1,11 @@
 import os
+import secrets
 from pathlib import Path
 
 _SOURCE_PIPELINE_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_WEB_SESSION_SECRET = (
+    "ligq2-local-web-test-secret-change-before-public-deployment"
+)
 
 
 def _path_from_env(name: str, default: Path) -> Path:
@@ -14,6 +18,40 @@ def _bool_from_env(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _secret_from_env_or_file(
+    env_name: str,
+    file_env_name: str,
+    default: str,
+) -> str:
+    secret_path = os.environ.get(file_env_name)
+    if secret_path:
+        try:
+            value = Path(secret_path).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not read the secret file configured by {file_env_name}."
+            ) from exc
+        if not value:
+            raise RuntimeError(f"The secret file configured by {file_env_name} is empty.")
+        return value
+    return os.environ.get(env_name, default)
+
+
+def _validate_web_session_secret(
+    *,
+    deployment_mode: str,
+    cookie_secure: bool,
+    secret: str,
+) -> None:
+    if deployment_mode != "web" or not cookie_secure:
+        return
+    if len(secret) < 32 or secrets.compare_digest(secret, _DEFAULT_WEB_SESSION_SECRET):
+        raise RuntimeError(
+            "Secure web deployment requires a non-default session secret "
+            "containing at least 32 characters."
+        )
 
 
 # These defaults preserve the native Conda layout. Docker overrides them with
@@ -54,9 +92,15 @@ WEB_RATE_LIMIT_WINDOW_SECONDS: int = int(
 )
 WEB_SESSION_COOKIE_SECURE: bool = _bool_from_env("LIGQ_SESSION_COOKIE_SECURE", False)
 WEB_TRUST_PROXY_HEADERS: bool = _bool_from_env("LIGQ_TRUST_PROXY_HEADERS", False)
-WEB_SESSION_SECRET: str = os.environ.get(
+WEB_SESSION_SECRET: str = _secret_from_env_or_file(
     "LIGQ_SESSION_SECRET",
-    "ligq2-local-web-test-secret-change-before-public-deployment",
+    "LIGQ_SESSION_SECRET_FILE",
+    _DEFAULT_WEB_SESSION_SECRET,
+)
+_validate_web_session_secret(
+    deployment_mode=DEPLOYMENT_MODE,
+    cookie_secure=WEB_SESSION_COOKIE_SECURE,
+    secret=WEB_SESSION_SECRET,
 )
 
 ALLOWED_ORIGINS: list[str] = os.environ.get(
