@@ -14,6 +14,7 @@ from core.config import (
     TEMP_RESULTS_DIR,
     UPLOADS_DIR,
 )
+from core.policy import is_web_mode
 from routers import databases, files, jobs, results, setup, system
 from services.job_runner import (
     cleanup_stale_resource_jobs,
@@ -23,6 +24,7 @@ from services.job_runner import (
 )
 from services.web_access import prepare_web_session, set_web_session_cookie
 from services.web_cleanup import start_web_cleanup, stop_web_cleanup
+from services.web_readiness import inspect_web_readiness
 
 import logging
 
@@ -31,6 +33,24 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
+logger = logging.getLogger(__name__)
+
+
+async def _warm_web_readiness_cache() -> None:
+    if not is_web_mode():
+        return
+
+    logger.info("Validating public web databases and predicted-ligand caches")
+    readiness = await inspect_web_readiness(force=True)
+    if readiness.get("ready"):
+        logger.info("Public web data validation completed successfully")
+        return
+
+    errors = readiness.get("errors") or ["required web data is unavailable"]
+    logger.warning(
+        "Public web data validation completed in maintenance mode: %s",
+        "; ".join(str(error) for error in errors),
+    )
 
 
 @asynccontextmanager
@@ -43,6 +63,7 @@ async def lifespan(_app: FastAPI):
         STATE_DIR,
     ):
         directory.mkdir(parents=True, exist_ok=True)
+    await _warm_web_readiness_cache()
     await state.initialize()
     await cleanup_stale_resource_jobs()
     await cleanup_stale_web_search_jobs()

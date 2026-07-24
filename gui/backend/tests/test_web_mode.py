@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -32,6 +32,7 @@ from services.web_access import require_job_access  # noqa: E402
 from services import search_artifacts  # noqa: E402
 from services.setup_service import setup_job_args  # noqa: E402
 from ligq_support import validate_web_data  # noqa: E402
+import main as backend_main  # noqa: E402
 import run_ligq_2  # noqa: E402
 
 
@@ -253,6 +254,69 @@ class ExclusiveAdmissionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await state.try_set_exclusive_web_search(first))
         self.assertFalse(await state.try_set_exclusive_web_search(second))
+
+
+class BackendStartupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_readiness_is_warmed_before_the_app_accepts_requests(self):
+        readiness = AsyncMock(
+            return_value={"ready": True, "mode": "web", "errors": []}
+        )
+        initialize = AsyncMock()
+        cleanup_resources = AsyncMock()
+        cleanup_searches = AsyncMock()
+        start_worker = AsyncMock()
+        stop_worker = AsyncMock()
+        start_cleanup = AsyncMock()
+        stop_cleanup = AsyncMock()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(backend_main, "DATABASES_DIR", root / "databases"), patch.object(
+                backend_main, "RESULTS_DIR", root / "results"
+            ), patch.object(
+                backend_main, "UPLOADS_DIR", root / "uploads"
+            ), patch.object(
+                backend_main, "TEMP_RESULTS_DIR", root / "temp_results"
+            ), patch.object(
+                backend_main, "STATE_DIR", root / "state"
+            ), patch.object(
+                backend_main, "is_web_mode", return_value=True
+            ), patch.object(
+                backend_main, "inspect_web_readiness", readiness
+            ), patch.object(
+                backend_main.state, "initialize", initialize
+            ), patch.object(
+                backend_main, "cleanup_stale_resource_jobs", cleanup_resources
+            ), patch.object(
+                backend_main, "cleanup_stale_web_search_jobs", cleanup_searches
+            ), patch.object(
+                backend_main, "start_worker", start_worker
+            ), patch.object(
+                backend_main, "stop_worker", stop_worker
+            ), patch.object(
+                backend_main, "start_web_cleanup", start_cleanup
+            ), patch.object(
+                backend_main, "stop_web_cleanup", stop_cleanup
+            ):
+                async with backend_main.lifespan(backend_main.app):
+                    readiness.assert_awaited_once_with(force=True)
+                    initialize.assert_awaited_once()
+                    start_worker.assert_awaited_once()
+                    start_cleanup.assert_awaited_once()
+
+        stop_cleanup.assert_awaited_once()
+        stop_worker.assert_awaited_once()
+
+    async def test_local_startup_skips_public_data_validation(self):
+        readiness = AsyncMock()
+        with patch.object(
+            backend_main, "is_web_mode", return_value=False
+        ), patch.object(
+            backend_main, "inspect_web_readiness", readiness
+        ):
+            await backend_main._warm_web_readiness_cache()
+
+        readiness.assert_not_awaited()
 
 
 if __name__ == "__main__":

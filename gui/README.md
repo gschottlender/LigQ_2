@@ -9,9 +9,9 @@ This folder contains the web interface: a React frontend and a FastAPI backend
 that wraps the LigQ 2 pipeline.
 
 The same frontend/backend also supports a restricted public deployment without
-changing the default local behavior. See
-[WEB_DEPLOYMENT.md](../WEB_DEPLOYMENT.md) for its policy and isolated Docker
-test workflow.
+changing the default local behavior. Its isolated Docker stack is defined by
+`compose.web.yml`; `./docker/ligq-web.sh start-local-data` runs it against the
+repository's `./databases` directory read-only for local testing.
 
 ---
 

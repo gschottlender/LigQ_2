@@ -100,8 +100,10 @@ ECFP/FCFP cached searches and an optional Known ligands only search, with
 anonymous session isolation, server-side FASTA limits, rate limiting, timeout,
 short result retention and read-only database mounts.
 
-See [WEB_DEPLOYMENT.md](WEB_DEPLOYMENT.md) for local testing, mandatory
-ECFP/FCFP data preparation and production proxy guidance.
+The web backend validates the mandatory databases and both ECFP/FCFP caches
+during startup and warms its readiness cache before accepting traffic. Local
+testing can reuse `./databases` read-only with
+`./docker/ligq-web.sh start-local-data`.
 
 ## Docker and web interface: recommended
 
