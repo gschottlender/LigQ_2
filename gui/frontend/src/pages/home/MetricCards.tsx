@@ -1,6 +1,7 @@
 import { Dna, FileText, TrendingUpDown, WaypointsIcon } from 'lucide-react';
 import type { QueryResult, SearchResultsSummary } from '../../types';
 import { Tooltip } from '../../components/Tooltip';
+import { getKnownLigandDisplaySource } from '../../lib/knownLigandSource';
 
 interface MetricCardsProps {
   summaries: SearchResultsSummary[];
@@ -77,7 +78,11 @@ export function MetricCards({ summaries, results, showPredicted = true }: Metric
   const queuedCount = results.filter((r) => r.status === 'queued').length;
 
   const loadedSources = [
-    ...new Set(results.flatMap((r) => r.knownLigands ?? []).map((l) => l.source)),
+    ...new Set(
+      results
+        .flatMap((r) => r.knownLigands ?? [])
+        .map(getKnownLigandDisplaySource),
+    ),
   ].sort();
   const sourcesLabel =
     loadedSources.length > 0

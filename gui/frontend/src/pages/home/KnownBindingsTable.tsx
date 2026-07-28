@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { ChevronDown, Copy, RefreshCw, Search } from 'lucide-react';
 import type { KnownLigand, SearchType } from '../../types';
 import { SearchTypeBadge, SourceBadge } from '../../components/Badge';
+import { getKnownLigandDisplaySource } from '../../lib/knownLigandSource';
 import type { SelectedItem } from './SelectedResultPanel';
 
 interface KnownBindingsTableProps {
@@ -80,7 +81,9 @@ export function KnownBindingsTable({ data, selectedItem, onSelectItem }: KnownBi
     const lower = filterText.toLowerCase();
     return data.filter((row) => {
       const matchesType = searchTypeFilter === 'all' || row.search_type === searchTypeFilter;
-      const matchesSource = sourceFilter === 'all' || row.source === sourceFilter;
+      const matchesSource =
+        sourceFilter === 'all' ||
+        getKnownLigandDisplaySource(row) === sourceFilter;
       const matchesText =
         lower === '' ||
         row.uniprot_id.toLowerCase().includes(lower) ||
@@ -236,7 +239,9 @@ export function KnownBindingsTable({ data, selectedItem, onSelectItem }: KnownBi
                       </td>
                     )}
                     {visibleCols.has('source') && (
-                      <td className="px-4 py-2.5"><SourceBadge source={row.source} /></td>
+                      <td className="px-4 py-2.5">
+                        <SourceBadge source={getKnownLigandDisplaySource(row)} />
+                      </td>
                     )}
                     {visibleCols.has('smiles') && (
                       <td className="px-4 py-2.5 text-gray-500 dark:text-gray-200">

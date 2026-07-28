@@ -4,6 +4,7 @@ import type { KnownLigand, PredictedLigand } from '../../types';
 import { SearchTypeBadge, SourceBadge } from '../../components/Badge';
 import { MoleculeViewer } from '../../components/MoleculeViewer';
 import { MoleculeViewerModal } from '../../components/MoleculeViewerModal';
+import { getKnownLigandDisplaySource } from '../../lib/knownLigandSource';
 import { getRDKit } from '../../lib/rdkit';
 
 export type SelectedItem =
@@ -25,19 +26,22 @@ function getCompoundPageLink(selected: SelectedItem): CompoundPageLink | null {
   if (!compoundId) return null;
 
   if (selected.kind === 'known') {
-    const encodedId = encodeURIComponent(compoundId.toUpperCase());
-    if (selected.item.source === 'pdb') {
-      return {
-        href: `https://www.rcsb.org/ligand/${encodedId}`,
-        database: 'RCSB PDB',
-      };
-    }
-    if (selected.item.source === 'chembl') {
+    const normalizedId = compoundId.toUpperCase();
+    const encodedId = encodeURIComponent(normalizedId);
+
+    // PDB/ChEMBL unification keeps the evidence source but chooses either a
+    // CHEMBL ID or a PDB CCD ID as the canonical compound ID. Classify the
+    // explicit ChEMBL namespace first; every other known canonical ID is PDB.
+    if (getKnownLigandDisplaySource(selected.item) === 'chembl') {
       return {
         href: `https://www.ebi.ac.uk/chembl/explore/compound/${encodedId}`,
         database: 'ChEMBL',
       };
     }
+    return {
+      href: `https://www.rcsb.org/ligand/${encodedId}`,
+      database: 'RCSB PDB',
+    };
   }
 
   const zincMatch = compoundId.match(/^ZINC(\d+)$/i);
@@ -165,7 +169,14 @@ export function SelectedResultPanel({ selected, onClose }: SelectedResultPanelPr
                 <Row label="UniProt ID" value={
                   <span className="font-jetbrains-mono text-teal-700 dark:text-teal-300">{selected.item.uniprot_id}</span>
                 } />
-                <Row label="Source" value={<SourceBadge source={selected.item.source} />} />
+                <Row
+                  label="Source"
+                  value={
+                    <SourceBadge
+                      source={getKnownLigandDisplaySource(selected.item)}
+                    />
+                  }
+                />
                 <Row label="pChEMBL" value={selected.item.pchembl != null ? selected.item.pchembl.toFixed(2) : '—'} />
                 <Row label="Binding sites" value={selected.item.binding_sites.join(', ') || '—'} />
                 <Row label="PDB IDs" value={selected.item.pdb_ids.join(', ') || '—'} />
