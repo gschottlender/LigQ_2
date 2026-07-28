@@ -1,47 +1,119 @@
-# LigQ 2
+# LigQ2
 
-LigQ 2 is a protein-to-ligand discovery platform. Given one or more protein
+LigQ2 is a protein-to-ligand discovery platform. Given one or more protein
 sequences in FASTA format, it identifies related proteins with ligand evidence,
 collects their experimentally supported ligands from PDB and ChEMBL, and can
 expand those results with compounds from ZINC or a user-provided database.
 
-LigQ 2 combines:
-
-- BLAST sequence similarity;
-- Pfam domain detection with HMMER;
-- curated protein-ligand associations from PDB and ChEMBL;
-- molecular similarity with RDKit fingerprints or learned embeddings;
-- the optional Bioactivity Similarity Index (BSI) for supported protein
-  families;
-- an interactive web interface and a technical command-line interface.
-
 > [!IMPORTANT]
-> LigQ 2 prioritizes candidate ligands computationally. Its results are intended
-> for research use and should be validated experimentally before biological or
-> therapeutic conclusions are drawn.
+> LigQ2 prioritizes candidate compounds computationally. Its results are
+> intended for research use and should be validated experimentally before
+> biological or therapeutic conclusions are drawn.
+
+## Key features
+
+- BLAST sequence similarity and Pfam domain detection with HMMER;
+- curated protein-ligand associations from PDB and ChEMBL;
+- compound prioritization against ZINC or user-provided databases;
+- molecular similarity with RDKit fingerprints or learned embeddings;
+- optional Bioactivity Similarity Index (BSI) models for supported protein
+  families;
+- graphical and command-line interfaces;
+- Docker Compose and native Conda execution;
+- reusable predicted-ligand caches and updateable database resources.
 
 ## Contents
 
-- [How LigQ 2 works](#how-ligq-2-works)
-- [Choose how to run LigQ 2](#choose-how-to-run-ligq-2)
-- [Restricted public web deployment](#restricted-public-web-deployment)
-- [Docker and web interface: recommended](#docker-and-web-interface-recommended)
-- [Using the web interface](#using-the-web-interface)
+- [Quick start](#quick-start)
+- [Publication resources](#publication-resources)
+- [How LigQ2 works](#how-ligq2-works)
+- [Choose how to run LigQ2](#choose-how-to-run-ligq2)
+- [Docker and graphical interface](#docker-and-graphical-interface)
 - [Native installation and command-line usage](#native-installation-and-command-line-usage)
-- [Candidate protein search modes](#candidate-protein-search-modes)
-- [Predicted ligand search](#predicted-ligand-search)
-- [BSI search](#bsi-search)
+- [Candidate protein search strategies](#candidate-protein-search-strategies)
+- [Compound prioritization methods](#compound-prioritization-methods)
 - [Input and output files](#input-and-output-files)
 - [Custom compound databases](#custom-compound-databases)
 - [Additional molecular representations](#additional-molecular-representations)
 - [Database updates](#database-updates)
 - [Cache behavior](#cache-behavior)
-- [Data layout](#data-layout)
 - [Performance and GPU usage](#performance-and-gpu-usage)
+- [Data layout](#data-layout)
 - [Troubleshooting](#troubleshooting)
 - [Data sources](#data-sources)
 
-## How LigQ 2 works
+## Quick start
+
+The small functional example in `examples/quickstart.fasta` is intended to
+verify that the complete LigQ2 workflow operates correctly. It is not a
+performance benchmark.
+
+From the repository root, download the published Docker images and start the
+application:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Copy the example into the host directory shared with the containers:
+
+```bash
+cp examples/quickstart.fasta work/quickstart.fasta
+```
+
+Run the containerized command-line workflow:
+
+```bash
+./docker/ligq.sh cli \
+  --input-fasta /work/quickstart.fasta \
+  --output-dir /work/quickstart_results
+```
+
+The default workflow uses:
+
+- sequence-based and nearest-neighbor candidate recovery;
+- nearest K = 5;
+- ZINC;
+- ECFP4 (`morgan_1024_r2`);
+- Tanimoto similarity.
+
+Expected output:
+
+```text
+work/quickstart_results/
+  search_results_summary.tsv
+  search_results/
+    <QUERY_ID>/
+      protein_ranking.tsv
+      known_ligands.tsv
+      predicted_ligands.tsv
+```
+
+For this functional test, success means:
+
+- the command completes without an unhandled error;
+- every input query appears in `search_results_summary.tsv`;
+- at least one query produces known ligands and/or prioritized candidate
+  compounds.
+
+<!-- TODO: after validating examples/quickstart.fasta, add the tested commit,
+operating system, approximate runtime, and number of completed queries. -->
+
+## Publication resources
+
+- Source code: <https://github.com/gschottlender/LigQ_2>
+- Processed databases and precomputed resources:
+  <https://huggingface.co/datasets/gschottlender/LigQ_2>
+- Target-specific benchmark datasets:
+  <https://huggingface.co/datasets/gschottlender/LigQ_2_benchmark>
+- Software version associated with the manuscript: to be added after a stable
+  release is created.
+- Publication citation: to be added after publication.
+
+<!-- TODO: add the restricted public web implementation URL after deployment. -->
+
+## How LigQ2 works
 
 ```mermaid
 flowchart LR
@@ -71,9 +143,10 @@ For each query sequence, the pipeline:
 6. writes detailed per-query tables and a global summary.
 
 The final protein ranking contains only proteins that contribute at least one
-retained known or predicted ligand after per-query deduplication.
+retained known ligand or prioritized candidate compound after per-query
+deduplication.
 
-## Choose how to run LigQ 2
+## Choose how to run LigQ2
 
 | Mode | Recommended for | Interface | GPU |
 | --- | --- | --- | --- |
@@ -86,26 +159,13 @@ workflow exposes every pipeline option and is the recommended route for GPU
 execution.
 
 > **Docker (CPU) or native installation:** the published Docker images are
-> compatible with CPU-only systems and cover the standard LigQ 2 workflow. For
+> compatible with CPU-only systems and cover the standard LigQ2 workflow. For
 > advanced options that require CUDA, such as BSI or generating and using
 > ChemBERTa embeddings, install the native Conda environment. The native
 > installation is also recommended for large workloads that need greater
 > computing capacity.
 
-## Restricted public web deployment
-
-The repository also includes an isolated, fail-closed public deployment mode.
-It keeps the normal local application unchanged while exposing only ZINC
-ECFP/FCFP cached searches and an optional Known ligands only search, with
-anonymous session isolation, server-side FASTA limits, rate limiting, timeout,
-short result retention and read-only database mounts.
-
-The web backend validates the mandatory databases and both ECFP/FCFP caches
-during startup and warms its readiness cache before accepting traffic. Local
-testing can reuse `./databases` read-only with
-`./docker/ligq-web.sh start-local-data`.
-
-## Docker and web interface: recommended
+## Docker and graphical interface
 
 ### Requirements
 
@@ -135,7 +195,7 @@ host architectures through emulation, with a possible performance cost.
 > impractically long run. Use the native Conda installation with a CUDA-capable
 > GPU when new ChemBERTa embeddings are required.
 
-### Quick start
+### Installation
 
 Clone the repository and enter it:
 
@@ -235,32 +295,6 @@ The repository also provides helper commands:
 
 PowerShell equivalents use `.\docker\ligq.ps1`.
 
-### Uninstall LigQ 2
-
-Open a terminal inside the cloned `LigQ_2` folder. The same commands work on
-Linux, macOS, and Windows PowerShell.
-
-To remove the application while keeping the downloaded databases, cache, and
-results for a future reinstall:
-
-```bash
-docker compose down --remove-orphans --rmi all
-```
-
-To remove **all** LigQ 2 Docker data and start again from an empty installation:
-
-> [!CAUTION]
-> The following command permanently deletes the downloaded databases, predicted
-> cache, search history, uploads, and application state.
-
-```bash
-docker compose down --volumes --remove-orphans --rmi all
-```
-
-Neither option uninstalls Docker itself or deletes the cloned repository. Files
-saved under the local `work/` folder are also preserved. To install LigQ 2 again,
-follow the [Quick start](#quick-start) instructions.
-
 ### Persistent Docker data
 
 Docker stores large application data outside the images:
@@ -295,27 +329,18 @@ The result files appear on the host under `work/results/`. The Docker CLI uses
 the CPU image; use the [native Conda workflow](#native-installation-and-command-line-usage)
 for GPU searches.
 
-### Build the images locally
+### Using the graphical interface
 
-Developers who want images built from the current checkout can use:
+The graphical interface exposes the main search, result exploration, history,
+and resource-management workflows described below.
 
-```bash
-docker compose build
-docker compose up -d
-```
-
-Use `docker compose pull` instead when you want the published images without a
-local build.
-
-## Using the web interface
-
-### Run a search
+### Search configuration
 
 The **Run Search** page exposes the main scientific workflow in a constrained,
 user-friendly form.
 
 1. Choose **Predicted + known ligands** or **Known ligands only**. Known-only
-   searches skip the compound database and predicted-ligand search.
+   searches skip the compound database and compound-prioritization step.
 2. For predicted searches, select a compound database.
 3. Select a molecular representation. Its compatible metric is detected
    automatically: binary fingerprints use Tanimoto and embeddings use Cosine.
@@ -329,7 +354,7 @@ The frontend counts FASTA sequences before submission and displays the count
 without imposing a maximum. Large inputs can make the run very long and may
 substantially increase resource usage.
 
-An active search can be cancelled beside its job name. LigQ 2 waits for the
+An active search can be cancelled beside its job name. LigQ2 waits for the
 worker processes to stop and then deletes the uploaded FASTA, temporary files,
 and the incomplete result folder; partial results are not retained.
 
@@ -384,7 +409,8 @@ model bundle supports:
 | `PF01094` | Receptor family ligand-binding region |
 | `PF07714` | Protein tyrosine and serine/threonine kinase |
 
-Proteins without a supported Pfam family do not produce BSI-predicted ligands.
+Proteins without a supported Pfam family do not produce BSI-prioritized
+candidate compounds.
 
 ### Follow a running job
 
@@ -409,7 +435,8 @@ Each FASTA query has up to three result views:
 - **Predicted Ligands**: compounds retrieved from the selected provider.
 
 The tables support filtering, sorting, column selection, and pagination. Select
-a known or predicted ligand to inspect its metadata, SMILES, and 2D structure.
+a known ligand or prioritized candidate compound to inspect its metadata,
+SMILES, and 2D structure.
 When available, the detail panel links to the compound's official ZINC20, RCSB
 PDB, or ChEMBL page. It can also export SDF and open an interactive 3D molecular viewer.
 Complete search results can be downloaded from the results interface.
@@ -421,7 +448,7 @@ Every completed search is stored under the persistent results location. Open
 history** asks for confirmation and permanently removes old result directories
 to free disk space; results belonging to an active search are preserved.
 
-### Add databases and representations
+### Manage databases and representations
 
 Under **Manage Resources**:
 
@@ -442,6 +469,57 @@ The graphical application enables ChemBERTa/HuggingFace representation builds
 only when its backend can execute CUDA operations. The standard CPU Docker image
 therefore disables these presets. This guard is GUI-specific: native command-line
 generation remains unrestricted and can fall back to CPU.
+
+### Restricted public web deployment
+
+The repository also includes an isolated, fail-closed public deployment mode.
+It keeps the normal local application unchanged while exposing only ZINC
+ECFP/FCFP cached searches and an optional Known ligands only search, with
+anonymous session isolation, server-side FASTA limits, rate limiting, timeout,
+short result retention and read-only database mounts.
+
+The web backend validates the mandatory databases and both ECFP/FCFP caches
+during startup and warms its readiness cache before accepting traffic. Local
+testing can reuse `./databases` read-only with
+`./docker/ligq-web.sh start-local-data`.
+
+### Build images locally
+
+Developers who want images built from the current checkout can use:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+Use `docker compose pull` instead when you want the published images without a
+local build.
+
+### Uninstall LigQ2
+
+Open a terminal inside the cloned `LigQ_2` folder. The same commands work on
+Linux, macOS, and Windows PowerShell.
+
+To remove the application while keeping the downloaded databases, cache, and
+results for a future reinstall:
+
+```bash
+docker compose down --remove-orphans --rmi all
+```
+
+To remove **all** LigQ2 Docker data and start again from an empty installation:
+
+> [!CAUTION]
+> The following command permanently deletes the downloaded databases, predicted
+> cache, search history, uploads, and application state.
+
+```bash
+docker compose down --volumes --remove-orphans --rmi all
+```
+
+Neither option uninstalls Docker itself or deletes the cloned repository. Files
+saved under the local `work/` folder are also preserved. To install LigQ2 again,
+follow the Docker [Installation](#installation) instructions.
 
 ## Native installation and command-line usage
 
@@ -482,11 +560,11 @@ python run_ligq_2.py \
   --output-dir results
 ```
 
-If required default data is missing, LigQ 2 downloads it automatically from the
+If required default data is missing, LigQ2 downloads it automatically from the
 Hugging Face dataset `gschottlender/LigQ_2`. The default run:
 
-- enables strict Sequence and Nearest K candidate recovery;
-- uses `--nearest-k 5` and leaves Domain disabled;
+- enables strict sequence-based and nearest-neighbor candidate recovery;
+- uses `--nearest-k 5` and leaves the domain-based strategy disabled;
 - searches the `zinc` provider;
 - uses `morgan_1024_r2` with Tanimoto;
 - chooses the registered representation-specific minimum threshold;
@@ -571,33 +649,35 @@ query. To preserve repeated protein-ligand rows:
 python run_ligq_2.py -i queries.fasta -o results --keep-repeated-ligands
 ```
 
-## Candidate protein search modes
+## Candidate protein search strategies
 
-### Sequence
+### Sequence-based strategy
 
 `--sequence` uses strict BLAST thresholds to recover closely related reference
 proteins. The defaults require 90% identity, 90% query coverage, 70% subject
 coverage, and an e-value no greater than `1e-5`.
 
-### Nearest K
+### Nearest-neighbor strategy
 
 `--nearest_k` builds a broader BLAST-ranked pool, excludes proteins already
-accepted as strict Sequence hits, and retains only proteins sharing at least one
-Pfam domain with the query. The final K limit is applied after domain filtering.
+accepted as strict sequence-based hits, and retains only proteins sharing at
+least one Pfam domain with the query. The final K limit is applied after domain
+filtering.
 
-### Domain
+### Domain-based strategy
 
 `--domains` detects Pfam domains with HMMER and expands candidates through
-shared domains. Candidates with BLAST evidence rank above domain-only matches;
-domain-only candidates are ranked with Pfam/HMMER evidence. The number retained
-for each query domain is controlled by `--max-domain-candidates-per-domain`.
+shared domains. Domain-based candidates with BLAST evidence rank above
+domain-only matches; domain-only candidates are ranked with Pfam/HMMER
+evidence. The number retained for each query domain is controlled by
+`--max-domain-candidates-per-domain`.
 
-## Predicted ligand search
+## Compound prioritization methods
 
-LigQ 2 uses curated ligands from each recovered reference protein as molecular
-seeds and searches the selected provider database.
+LigQ2 uses curated ligands from each recovered reference protein as molecular
+seeds and prioritizes compounds from the selected provider database.
 
-### Tanimoto search
+### Fingerprint and Tanimoto searches
 
 ```bash
 python run_ligq_2.py \
@@ -608,7 +688,7 @@ python run_ligq_2.py \
   --search-metric tanimoto
 ```
 
-### Cosine search
+### Embedding and cosine searches
 
 The representation must already exist for both `pdb_chembl` and the selected
 provider:
@@ -635,7 +715,7 @@ python run_ligq_2.py \
   --search-threshold-max 1.0
 ```
 
-If `--search-threshold` is omitted, LigQ 2 uses these percentile-99.5 defaults:
+If `--search-threshold` is omitted, LigQ2 uses these percentile-99.5 defaults:
 
 | Representation | Default minimum |
 | --- | ---: |
@@ -650,7 +730,7 @@ If `--search-threshold` is omitted, LigQ 2 uses these percentile-99.5 defaults:
 An unknown representation requires an explicit `--search-threshold`.
 `--search-threshold-max` is inclusive and optional.
 
-## BSI search
+### Bioactivity Similarity Index
 
 The Bioactivity Similarity Index is a learned, protein-family-aware molecular
 similarity model. It uses bioactivity patterns rather than only structural
@@ -701,7 +781,7 @@ python run_ligq_2.py \
 
 ### FASTA input
 
-LigQ 2 expects protein sequences:
+LigQ2 expects protein sequences:
 
 ```fasta
 >query_1 optional description
@@ -732,17 +812,18 @@ there is candidate or ligand information.
 Files with no relevant rows may be absent:
 
 - `known_ligands.tsv` is written when known ligands exist;
-- `predicted_ligands.tsv` is written when predicted ligands exist and is never
-  produced in `--known-only` mode;
+- `predicted_ligands.tsv` is written when prioritized candidate compounds exist
+  and is never produced in `--known-only` mode;
 - `protein_ranking.tsv` can be empty if recovered candidates contribute no
   retained ligand.
 
 ### Protein ranking
 
-`protein_ranking.tsv` contains only ligand-contributing proteins. Sequence and
-Nearest K candidates are ranked by BLAST evidence. Domain candidates with BLAST
-evidence precede domain-only candidates, which are ranked by Pfam/HMMER
-evidence. `n_shared_domains` records shared Pfam domains when available.
+`protein_ranking.tsv` contains only ligand-contributing proteins. Sequence-based
+and nearest-neighbor candidates are ranked by BLAST evidence. Domain-based
+candidates with BLAST evidence precede domain-only candidates, which are ranked
+by Pfam/HMMER evidence. `n_shared_domains` records shared Pfam domains when
+available.
 
 If every ligand from a lower-ranked protein is removed or assigned to a
 higher-ranked protein during duplicate-ligand collapse, that protein is omitted
@@ -754,10 +835,10 @@ from the final ranking.
 known-binding evidence fields. `search_type` records whether the candidate was
 obtained through `sequence`, `nearest_k`, or `domain`.
 
-### Predicted ligands
+### Prioritized compounds
 
-`predicted_ligands.tsv` contains compounds from the selected provider. Its score
-column depends on the method:
+`predicted_ligands.tsv` contains prioritized candidate compounds from the
+selected provider. Its score column depends on the method:
 
 | Search method | Score columns |
 | --- | --- |
@@ -765,13 +846,13 @@ column depends on the method:
 | Cosine embedding | `similarity` |
 | BSI | `bsi_score`, `pfam_id` |
 
-When repeated ligand IDs are collapsed, evidence priority is Sequence, then
-Nearest K, then Domain.
+When repeated ligand IDs are collapsed, evidence priority is sequence-based,
+then nearest-neighbor, then domain-based.
 
 ### Global summary
 
-The summary reports ligand-contributing proteins, known ligands, and predicted
-ligands by candidate source:
+The summary reports ligand-contributing proteins, known ligands, and prioritized
+candidate compounds by candidate source:
 
 ```text
 n_proteins_sequence
@@ -787,7 +868,7 @@ n_predicted_ligands_domain
 
 ## Custom compound databases
 
-LigQ 2 accepts CSV, TSV, SMI, and Parquet compound files. CSV/TSV/Parquet files
+LigQ2 accepts CSV, TSV, SMI, and Parquet compound files. CSV/TSV/Parquet files
 must provide an ID column and a SMILES column. SMI files use:
 
 ```text
@@ -902,7 +983,7 @@ an explicit `--search-threshold`.
 
 First-time setup and database updates are different operations:
 
-- setup installs missing files from the published LigQ 2 dataset;
+- setup installs missing files from the published LigQ2 dataset;
 - update scripts retrieve current upstream source data and rebuild derived
   resources.
 
@@ -1061,8 +1142,8 @@ python run_ligq_2.py \
 
 ## Cache behavior
 
-Predicted searches are incremental. LigQ 2 computes predictions only for
-candidate proteins needed by the current run and records them for reuse.
+Compound-prioritization searches are incremental. LigQ2 computes results only
+for candidate proteins needed by the current run and records them for reuse.
 
 ### Precompute a complete predicted cache
 
@@ -1112,8 +1193,8 @@ replace the default protein universe.
 
 On completion, the command verifies that every requested protein appears in
 `cached_proteins.json`, including proteins that were processed but produced no
-predicted ligands. A wider cache built at a lower minimum threshold can serve
-later searches with stricter cutoffs.
+prioritized candidate compounds. A wider cache built at a lower minimum
+threshold can serve later searches with stricter cutoffs.
 
 Structural similarity caches use:
 
@@ -1152,7 +1233,7 @@ discards and regenerates the compatible namespace selected for the run.
 ### Remove obsolete predicted caches
 
 Predicted-ligand caches are derived data. They can be deleted without removing
-the compound databases or molecular representations; LigQ 2 downloads or
+the compound databases or molecular representations; LigQ2 downloads or
 recomputes the required cache the next time it is needed. That first search can
 therefore be substantially slower.
 
@@ -1224,49 +1305,10 @@ To remove only the inactive update backups, use:
 docker compose --profile tools run --rm --entrypoint sh cli -c 'rm -rf /app/databases/results_databases/old_predicted_bindings_backup /app/databases/compound_data/zinc/old_reps_backup'
 ```
 
-Do not use `docker compose down -v` for cache cleanup: `-v` removes all LigQ 2
+Do not use `docker compose down -v` for cache cleanup: `-v` removes all LigQ2
 volumes, including the downloaded databases, representations, results, uploads,
 and application state. The separate Hugging Face download cache is normally
 best retained because removing it can force large files to be downloaded again.
-
-## Data layout
-
-The default data root is `databases` and can be changed with `--data-dir`.
-
-```text
-databases/
-  db_metadata.json
-  sequences/
-    target_sequences.fasta
-    target_sequences.pkl
-  merged_databases/
-    binding_data_merged.parquet
-    ligs_smiles_merged.parquet
-    uncurated_binding_data.parquet
-  results_databases/
-    known_binding_data.parquet
-    protein_domains.parquet
-    predicted_bindings/
-  compound_data/
-    pdb_chembl/
-      ligands.parquet
-      reps/
-    zinc/
-      ligands.parquet
-      reps/
-  complementary_databases/
-    blast/
-    pfam/
-  bsi_models/
-    mpg_1024/
-```
-
-Regular searches read runtime-ready files from `results_databases/`.
-`merged_databases/` is required when rebuilding those runtime tables locally.
-
-The canonical published data is available at:
-
-<https://huggingface.co/datasets/gschottlender/LigQ_2/tree/main>
 
 ## Performance and GPU usage
 
@@ -1339,6 +1381,45 @@ python benchmark_bsi_search.py \
 
 Use `--target-limit 0` to benchmark the complete provider. Output includes
 elapsed time, throughput, hit count, peak RAM, and peak VRAM.
+
+## Data layout
+
+The default data root is `databases` and can be changed with `--data-dir`.
+
+```text
+databases/
+  db_metadata.json
+  sequences/
+    target_sequences.fasta
+    target_sequences.pkl
+  merged_databases/
+    binding_data_merged.parquet
+    ligs_smiles_merged.parquet
+    uncurated_binding_data.parquet
+  results_databases/
+    known_binding_data.parquet
+    protein_domains.parquet
+    predicted_bindings/
+  compound_data/
+    pdb_chembl/
+      ligands.parquet
+      reps/
+    zinc/
+      ligands.parquet
+      reps/
+  complementary_databases/
+    blast/
+    pfam/
+  bsi_models/
+    mpg_1024/
+```
+
+Regular searches read runtime-ready files from `results_databases/`.
+`merged_databases/` is required when rebuilding those runtime tables locally.
+
+The canonical published data is available at:
+
+<https://huggingface.co/datasets/gschottlender/LigQ_2/tree/main>
 
 ## Native frontend/backend development
 
@@ -1415,7 +1496,7 @@ Confirm `torch.cuda.is_available()` in the activated Conda environment and pass
 `--search-device cuda`. The current Docker images intentionally install
 CPU-only PyTorch and cannot use a host GPU.
 
-### A BSI protein produces no predicted ligands
+### A BSI protein produces no prioritized candidate compounds
 
 Confirm that the protein has a Pfam family supported by the installed BSI model
 bundle and that its known ligand seeds pass preprocessing. Unsupported proteins
@@ -1424,9 +1505,9 @@ are skipped by design.
 ### A protein candidate is absent from Protein Ranking
 
 Protein Ranking reports ligand contributors, not every intermediate candidate.
-A recovered protein is omitted when it contributes no retained known or
-predicted ligand, including cases where all its ligand IDs were assigned to a
-higher-ranked protein during deduplication.
+A recovered protein is omitted when it contributes neither a retained known
+ligand nor a prioritized candidate compound, including cases where all its
+ligand IDs were assigned to a higher-ranked protein during deduplication.
 
 ## Data sources
 
@@ -1439,5 +1520,19 @@ higher-ranked protein during deduplication.
 The processed default dataset is distributed through
 [gschottlender/LigQ_2 on Hugging Face](https://huggingface.co/datasets/gschottlender/LigQ_2).
 
-LigQ 2 is under active development. Pin repository revisions, model revisions,
+LigQ2 is under active development. Pin repository revisions, model revisions,
 container tags, and database versions when strict reproducibility is required.
+
+## Citation
+
+> Citation information for the LigQ2 publication will be added after
+> publication.
+
+## License
+
+> LigQ2 is distributed under the MIT License. See [LICENSE](LICENSE).
+
+## Support and issue reporting
+
+Questions, bug reports, and feature requests can be submitted through the
+[LigQ2 GitHub issue tracker](https://github.com/gschottlender/LigQ_2/issues).
