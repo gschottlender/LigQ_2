@@ -426,7 +426,8 @@ export function HelpPage() {
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                   Click any row in the Known Bindings or {isWeb ? 'available Predicted Ligands' : 'Predicted Ligands'} table to open the detail panel on
                   the right. It shows compound metadata, the full SMILES string, a 2D structure preview, and
-                  a link to the official ZINC20, RCSB PDB, or ChEMBL compound page when available. It also provides
+                  a link to the official ZINC20, RCSB PDB, or ChEMBL compound page when available. Pfam binding-site
+                  IDs and PDB structure IDs link directly to their InterPro and RCSB PDB entries. It also provides
                   two action buttons:
                 </p>
                 <ul className="mt-2 list-disc list-inside text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed space-y-1 pl-1">

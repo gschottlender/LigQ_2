@@ -172,7 +172,8 @@ application.
 - Protein Ranking includes only proteins that contribute at least one retained
   known or predicted ligand after per-query deduplication.
 - Click any compound to open the detail panel with its official ZINC20, RCSB PDB,
-  or ChEMBL page when available, plus 2D structure, Download SDF, and 3D Viewer.
+  or ChEMBL page when available, linked Pfam binding-site and PDB structure IDs,
+  plus 2D structure, Download SDF, and 3D Viewer.
 
 **Add a compound database**
 Go to **Manage Resources → Add new database**, upload a `.smi`, `.csv`, `.tsv`,

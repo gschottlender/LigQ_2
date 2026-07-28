@@ -21,6 +21,47 @@ interface CompoundPageLink {
   database: string;
 }
 
+interface ExternalIdentifierLinksProps {
+  identifiers: string[];
+  database: string;
+  getHref: (identifier: string) => string;
+}
+
+function ExternalIdentifierLinks({
+  identifiers,
+  database,
+  getHref,
+}: ExternalIdentifierLinksProps) {
+  const normalizedIdentifiers = [
+    ...new Set(
+      identifiers
+        .map((identifier) => identifier.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  ];
+
+  if (normalizedIdentifiers.length === 0) return <>—</>;
+
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+      {normalizedIdentifiers.map((identifier) => (
+        <a
+          key={identifier}
+          href={getHref(identifier)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`Open ${identifier} on ${database} in a new tab`}
+          className="inline-flex items-center gap-0.5 font-jetbrains-mono font-medium text-teal-700
+            hover:text-teal-600 hover:underline dark:text-teal-300 dark:hover:text-teal-200"
+        >
+          {identifier}
+          <ExternalLink className="w-3 h-3" aria-hidden="true" />
+        </a>
+      ))}
+    </span>
+  );
+}
+
 function getCompoundPageLink(selected: SelectedItem): CompoundPageLink | null {
   const compoundId = selected.item.chem_comp_id.trim();
   if (!compoundId) return null;
@@ -178,8 +219,30 @@ export function SelectedResultPanel({ selected, onClose }: SelectedResultPanelPr
                   }
                 />
                 <Row label="pChEMBL" value={selected.item.pchembl != null ? selected.item.pchembl.toFixed(2) : '—'} />
-                <Row label="Binding sites" value={selected.item.binding_sites.join(', ') || '—'} />
-                <Row label="PDB IDs" value={selected.item.pdb_ids.join(', ') || '—'} />
+                <Row
+                  label="Binding sites"
+                  value={
+                    <ExternalIdentifierLinks
+                      identifiers={selected.item.binding_sites}
+                      database="InterPro (Pfam)"
+                      getHref={(identifier) =>
+                        `https://www.ebi.ac.uk/interpro/entry/pfam/${encodeURIComponent(identifier)}/`
+                      }
+                    />
+                  }
+                />
+                <Row
+                  label="PDB IDs"
+                  value={
+                    <ExternalIdentifierLinks
+                      identifiers={selected.item.pdb_ids}
+                      database="RCSB PDB"
+                      getHref={(identifier) =>
+                        `https://www.rcsb.org/structure/${encodeURIComponent(identifier)}`
+                      }
+                    />
+                  }
+                />
                 <Row label="Mechanism" value={selected.item.mechanism ?? '—'} />
               </>
             )}

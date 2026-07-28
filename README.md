@@ -438,7 +438,9 @@ The tables support filtering, sorting, column selection, and pagination. Select
 a known ligand or prioritized candidate compound to inspect its metadata,
 SMILES, and 2D structure.
 When available, the detail panel links to the compound's official ZINC20, RCSB
-PDB, or ChEMBL page. It can also export SDF and open an interactive 3D molecular viewer.
+PDB, or ChEMBL page. Pfam binding-site IDs and PDB structure IDs link directly
+to their InterPro and RCSB PDB entries. The panel can also export SDF and open
+an interactive 3D molecular viewer.
 Complete search results can be downloaded from the results interface.
 
 ### Search history
