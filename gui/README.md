@@ -13,7 +13,8 @@ changing the default local behavior. Its isolated Docker stack is defined by
 `compose.web.yml`; `./docker/ligq-web.sh start-local-data` runs it against the
 repository's `./databases` directory read-only for local testing. In this mode,
 protein recovery supports only Sequence and Nearest K, with K capped at 10;
-Domain search is unavailable.
+Domain search is unavailable. The search page footer links visitors to the
+local GitHub version for the complete feature set.
 
 ---
 

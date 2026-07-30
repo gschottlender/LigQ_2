@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Clock, FileDigit, FolderOpen, Loader2, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Clock, ExternalLink, FileDigit, FolderOpen, Loader2, Trash2, X } from 'lucide-react';
 import { Sidebar } from './Sidebar';
 import { MetricCards } from './MetricCards';
 import { QueryList } from './QueryList';
@@ -512,7 +512,7 @@ export function VisualizeResults() {
         onJobCreated={handleJobCreated}
       />
 
-      <main className="flex-1 min-w-0 min-h-96 overflow-visible sm:overflow-y-auto bg-[#f8f9fa] dark:bg-[#161c23] relative">
+      <main className="relative flex min-h-96 min-w-0 flex-1 flex-col overflow-visible bg-[#f8f9fa] dark:bg-[#161c23] sm:overflow-y-auto">
         {/* History button */}
         <div className="absolute top-4 right-3 z-20">
           <button
@@ -569,7 +569,7 @@ export function VisualizeResults() {
         )}
 
         {searchState === 'idle' && (
-          <div className="flex flex-col items-center justify-center h-full min-h-96 gap-4 text-center px-6">
+          <div className="flex min-h-96 flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
             <div className="text-5xl select-none">⬡</div>
             <h2 className="text-xl font-semibold text-gray-700 dark:text-gray-200">
               No search results yet
@@ -582,14 +582,14 @@ export function VisualizeResults() {
         )}
 
         {searchState === 'running' && results.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full min-h-96 gap-4 px-6">
+          <div className="flex min-h-96 flex-1 flex-col items-center justify-center gap-4 px-6">
             <div className="w-10 h-10 border-3 border-[#0d5c6b] border-t-transparent rounded-full animate-spin" />
             <p className="text-sm text-gray-500 dark:text-gray-400">Search in progress…</p>
           </div>
         )}
 
         {(searchState === 'running' || searchState === 'done') && results.length > 0 && (
-          <div className="p-4 sm:p-6 flex flex-col gap-0">
+          <div className="flex flex-1 flex-col gap-0 p-4 sm:p-6">
             <MetricCards
               summaries={results.map((r) => r.summary)}
               results={results}
@@ -615,6 +615,24 @@ export function VisualizeResults() {
               </div>
             )}
           </div>
+        )}
+
+        {isWeb && (
+          <footer className="mt-auto border-t border-gray-200/80 px-4 py-4 text-center dark:border-gray-700/60 sm:px-6">
+            <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+              For the complete LigQ 2 feature set without public-service limits, use the{' '}
+              <a
+                href="https://github.com/gschottlender/LigQ_2"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-semibold text-[#0d5c6b] transition-colors
+                  hover:text-teal-600 hover:underline dark:text-teal-300 dark:hover:text-teal-200"
+              >
+                local version on GitHub.
+                <ExternalLink className="h-3 w-3" aria-hidden="true" />
+              </a>
+            </p>
+          </footer>
         )}
       </main>
 
