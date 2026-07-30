@@ -45,6 +45,7 @@ WEB_ALLOWED_METHODS = ("sequence", "nearest_k")
 WEB_NEAREST_K_MIN = 1
 WEB_NEAREST_K_MAX = 10
 WEB_NEAREST_K_DEFAULT = 5
+WEB_N_WORKERS = 1
 
 
 def is_web_mode() -> bool:

@@ -27,6 +27,7 @@ from core import state
 from core.policy import (
     WEB_NEAREST_K_MAX,
     WEB_NEAREST_K_MIN,
+    WEB_N_WORKERS,
     is_web_mode,
     web_representation_policy,
 )
@@ -153,7 +154,12 @@ def _build_search_args(
     if known_only:
         args.append("--known-only")
     if immutable_web_data:
-        args += ["--data-read-only", "--predicted-cache-read-only"]
+        args += [
+            "--n-workers",
+            str(WEB_N_WORKERS),
+            "--data-read-only",
+            "--predicted-cache-read-only",
+        ]
     return args
 
 

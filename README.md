@@ -485,7 +485,8 @@ is unavailable.
 The web backend validates the mandatory databases and both ECFP/FCFP caches
 during startup and warms its readiness cache before accepting traffic. Local
 testing can reuse `./databases` read-only with
-`./docker/ligq-web.sh start-local-data`.
+`./docker/ligq-web.sh start-local-data`. Public search jobs run BLAST and HMMER
+with a single worker so the pipeline matches a one-CPU deployment limit.
 
 ### Build images locally
 

@@ -180,6 +180,37 @@ class WebPolicyTests(unittest.TestCase):
         self.assertFalse(args.data_read_only)
         self.assertFalse(args.predicted_cache_read_only)
 
+    def test_web_search_command_uses_one_worker_without_changing_local_default(self):
+        common = {
+            "fasta_path": Path("/tmp/queries.faa"),
+            "output_dir": Path("/tmp/results"),
+            "ligand_provider": "zinc",
+            "search_representation": "morgan_1024_r2",
+            "search_metric": "tanimoto",
+            "search_threshold": 0.4,
+            "search_threshold_max": 1.0,
+            "use_sequence": True,
+            "use_nearest_k": True,
+            "nearest_k": 5,
+            "use_domains": False,
+            "known_only": False,
+            "use_bsi": False,
+            "bsi_threshold": 0.98,
+        }
+
+        web_args = jobs_router._build_search_args(
+            **common,
+            immutable_web_data=True,
+        )
+        local_args = jobs_router._build_search_args(
+            **common,
+            immutable_web_data=False,
+        )
+
+        worker_flag = web_args.index("--n-workers")
+        self.assertEqual(web_args[worker_flag + 1], "1")
+        self.assertNotIn("--n-workers", local_args)
+
     def test_job_access_is_scoped_to_anonymous_session(self):
         from datetime import datetime, timezone
 
