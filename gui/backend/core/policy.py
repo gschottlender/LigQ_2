@@ -41,6 +41,11 @@ WEB_REPRESENTATIONS = (
     ),
 )
 
+WEB_ALLOWED_METHODS = ("sequence", "nearest_k")
+WEB_NEAREST_K_MIN = 1
+WEB_NEAREST_K_MAX = 10
+WEB_NEAREST_K_DEFAULT = 5
+
 
 def is_web_mode() -> bool:
     return DEPLOYMENT_MODE == "web"
@@ -91,10 +96,10 @@ def policy_payload() -> dict:
             "allowed_modes": ["zinc", "known_only"],
             "provider": "zinc",
             "representations": [asdict(item) for item in WEB_REPRESENTATIONS],
-            "allowed_methods": ["sequence", "nearest_k", "domain"],
-            "nearest_k_min": 1,
-            "nearest_k_max": 15,
-            "nearest_k_default": 5,
+            "allowed_methods": list(WEB_ALLOWED_METHODS),
+            "nearest_k_min": WEB_NEAREST_K_MIN,
+            "nearest_k_max": WEB_NEAREST_K_MAX,
+            "nearest_k_default": WEB_NEAREST_K_DEFAULT,
             "max_fasta_sequences": WEB_MAX_FASTA_SEQUENCES,
             "max_fasta_bytes": WEB_MAX_FASTA_BYTES,
             "max_fasta_residues": WEB_MAX_FASTA_RESIDUES,

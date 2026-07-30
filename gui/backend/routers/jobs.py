@@ -24,7 +24,12 @@ from core.config import (
     WEB_SEARCH_TIMEOUT_SECONDS,
 )
 from core import state
-from core.policy import is_web_mode, web_representation_policy
+from core.policy import (
+    WEB_NEAREST_K_MAX,
+    WEB_NEAREST_K_MIN,
+    is_web_mode,
+    web_representation_policy,
+)
 from models.job import AddRepresentationRequest, Job, JobFailure, JobStatus
 from services.fs_inspector import (
     database_exists,
@@ -207,17 +212,27 @@ async def start_search(
                 status_code=422,
                 details={"field": "ligand_provider"},
             )
-        if not (use_sequence or use_nearest_k or use_domains):
+        if use_domains:
+            return _err(
+                "search_policy_violation",
+                "Domain search is not available on the public web service.",
+                status_code=422,
+                details={"field": "use_domains"},
+            )
+        if not (use_sequence or use_nearest_k):
             return _err(
                 "search_policy_violation",
                 "Select at least one protein recovery method.",
                 status_code=422,
                 details={"field": "methods"},
             )
-        if use_nearest_k and not 1 <= nearest_k <= 15:
+        if use_nearest_k and not WEB_NEAREST_K_MIN <= nearest_k <= WEB_NEAREST_K_MAX:
             return _err(
                 "search_policy_violation",
-                "nearest_k must be between 1 and 15.",
+                (
+                    f"nearest_k must be between {WEB_NEAREST_K_MIN} "
+                    f"and {WEB_NEAREST_K_MAX}."
+                ),
                 status_code=422,
                 details={"field": "nearest_k"},
             )

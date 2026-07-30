@@ -210,6 +210,8 @@ export function HelpPage() {
                     {(policy.search.max_fasta_bytes / 1_048_576).toFixed(0)} MB per file. One search runs at a
                     time on the server, accepted searches are limited to{' '}
                     {policy.search.rate_limit_count} per IP per hour, and a search is stopped after 60 minutes.
+                    {' '}Protein recovery is limited to Sequence and Nearest K, with K capped at{' '}
+                    {policy.search.nearest_k_max}.
                   </p>
                 </Card>
               ) : (
@@ -325,10 +327,21 @@ export function HelpPage() {
                       : 'The frontend counts sequences immediately and displays the count without imposing a maximum. Large inputs can substantially increase runtime and resource usage.'}
                   </Param>
                   <Param name="Method">
-                    Check one or more search strategies:{' '}
-                    <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
-                    <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
-                    <InfoBadge label="Domain" color="amber" /> (HMMER).
+                    {isWeb ? (
+                      <>
+                        Choose <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
+                        <InfoBadge label="Nearest K" color="blue" /> (set K from{' '}
+                        {policy.search.nearest_k_min} to {policy.search.nearest_k_max}), or both.
+                        {' '}Domain search is unavailable on the public service.
+                      </>
+                    ) : (
+                      <>
+                        Check one or more search strategies:{' '}
+                        <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
+                        <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
+                        <InfoBadge label="Domain" color="amber" /> (HMMER).
+                      </>
+                    )}
                   </Param>
                 </div>
               </Card>
@@ -340,7 +353,11 @@ export function HelpPage() {
                     : 'Choose Predicted + known or Known ligands only. For predicted ligands, select your database, representation, and similarity cutoffs, or enable BSI.'}
                 </Step>
                 <Step n={2}>Upload a FASTA file using the folder icon in the sidebar.</Step>
-                <Step n={3}>Choose at least one search method (Sequence, Nearest K, or Domain).</Step>
+                <Step n={3}>
+                  {isWeb
+                    ? `Choose Sequence, Nearest K (maximum ${policy.search.nearest_k_max}), or both.`
+                    : 'Choose at least one search method (Sequence, Nearest K, or Domain).'}
+                </Step>
                 <Step n={4}>
                   Click <strong>Run Search</strong>. The status panel shows the current step. Structural-similarity
                   searches also show processed items, ETA, and elapsed time. BSI searches show only the active step
@@ -372,8 +389,8 @@ export function HelpPage() {
                   The cards at the top summarise the current search run: total Queries, proteins in the
                   Protein Ranking, Known Bindings
                   {isWeb ? ' and, for ZINC searches, Predicted Ligands.' : ' and Predicted Ligands.'}
-                  {' '}Hover over any number to see a breakdown by search
-                  method (sequence / nearest K / domain).
+                  {' '}Hover over any number to see a breakdown by search method
+                  {isWeb ? ' (sequence / nearest K).' : ' (sequence / nearest K / domain).'}
                 </p>
               </div>
 

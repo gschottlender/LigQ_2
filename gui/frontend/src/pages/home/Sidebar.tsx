@@ -175,8 +175,6 @@ const TANIMOTO_MIN_THRESHOLD = 0.2;
 const COSINE_MIN_THRESHOLD = 0.75;
 const BSI_MIN_THRESHOLD = 0.97;
 const BSI_DEFAULT_THRESHOLD = 0.98;
-const MIN_NEAREST_K = 1;
-const MAX_NEAREST_K = 15;
 
 function roundThresholdUp(value: number): number {
   return Math.min(1, Math.ceil(value * 100 - 1e-9) / 100);
@@ -235,7 +233,6 @@ function inspectFasta(text: string): { error: string | null; stats: FastaStats }
 
 const VALIDATION_MESSAGES = {
   fasta: 'FASTA file is required.',
-  kValue: `K must be between ${MIN_NEAREST_K} and ${MAX_NEAREST_K}.`,
   noRepresentation: 'No representation available for the selected database.',
   bsiUnavailable: 'BSI requires the morgan_1024_r2 representation for the selected database.',
   bsiGpuRequired: 'BSI requires a CUDA-capable GPU in the graphical interface.',
@@ -254,6 +251,11 @@ export function Sidebar({
 }: SidebarProps) {
   const { databases, getRepresentationsForDatabase } = useDatabase();
   const { policy, isWeb } = useSystemPolicy();
+  const sequenceAllowed = policy.search.allowed_methods.includes('sequence');
+  const nearestKAllowed = policy.search.allowed_methods.includes('nearest_k');
+  const domainAllowed = policy.search.allowed_methods.includes('domain');
+  const nearestKMin = policy.search.nearest_k_min;
+  const nearestKMax = policy.search.nearest_k_max;
   const [isOpen, setIsOpen] = useState(true);
   const [showButton, setShowButton] = useState(false);
 
@@ -271,7 +273,7 @@ export function Sidebar({
   const [bsiThreshold, setBsiThreshold] = useState(BSI_DEFAULT_THRESHOLD);
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
-  const [kValue, setKValue] = useState(5);
+  const [kValue, setKValue] = useState(policy.search.nearest_k_default);
   const [methodDomain, setMethodDomain] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -299,6 +301,9 @@ export function Sidebar({
 
   const knownOnly = searchMode === 'known_only';
   const effectiveUseBsi = !knownOnly && !isWeb && useBsi;
+  const effectiveMethodSequence = sequenceAllowed && methodSequence;
+  const effectiveMethodNearestK = nearestKAllowed && methodNearestK;
+  const effectiveMethodDomain = domainAllowed && !effectiveUseBsi && methodDomain;
   const resolvedDatabaseId = isWeb ? 'zinc' : databaseId || databases[0]?.id || '';
   const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
   const normalRepresentationId = availableReps.some((r) => r.id === representationId)
@@ -428,8 +433,8 @@ export function Sidebar({
 
   const handleNearestKChange = (value: string) => {
     const parsed = Number.parseInt(value, 10);
-    const nextValue = Number.isNaN(parsed) ? MIN_NEAREST_K : parsed;
-    setKValue(Math.min(MAX_NEAREST_K, Math.max(MIN_NEAREST_K, nextValue)));
+    const nextValue = Number.isNaN(parsed) ? nearestKMin : parsed;
+    setKValue(Math.min(nearestKMax, Math.max(nearestKMin, nextValue)));
   };
 
   const validate = () => {
@@ -437,11 +442,11 @@ export function Sidebar({
       if (!fastaError) setValidationError(VALIDATION_MESSAGES.fasta);
       return false;
     }
-    if (methodNearestK && (kValue < MIN_NEAREST_K || kValue > MAX_NEAREST_K)) {
-      setValidationError(VALIDATION_MESSAGES.kValue);
+    if (effectiveMethodNearestK && (kValue < nearestKMin || kValue > nearestKMax)) {
+      setValidationError(`K must be between ${nearestKMin} and ${nearestKMax}.`);
       return false;
     }
-    if (isWeb && !methodSequence && !methodNearestK && !methodDomain) {
+    if (isWeb && !effectiveMethodSequence && !effectiveMethodNearestK) {
       setValidationError('Select at least one search method.');
       return false;
     }
@@ -499,10 +504,10 @@ export function Sidebar({
         formData.append('search_threshold', String(minCutoff));
         formData.append('search_threshold_max', String(maxCutoff));
       }
-      formData.append('use_sequence', String(methodSequence));
-      formData.append('use_nearest_k', String(methodNearestK));
+      formData.append('use_sequence', String(effectiveMethodSequence));
+      formData.append('use_nearest_k', String(effectiveMethodNearestK));
       formData.append('nearest_k', String(kValue));
-      formData.append('use_domains', String(effectiveUseBsi ? false : methodDomain));
+      formData.append('use_domains', String(effectiveMethodDomain));
 
       const response = await api.post<{ job_id: string; status: string; output_dir: string }>(
         '/jobs/search',
@@ -731,16 +736,20 @@ export function Sidebar({
           <div className="flex flex-col gap-2 mt-5">
             <label className="text-sm font-dm-sans font-semibold text-gray-500 dark:text-gray-200">Method</label>
             <div className="flex flex-col gap-2.5">
-              <CheckboxField label="Sequence" checked={methodSequence} onChange={setMethodSequence} />
-              <CheckboxField label="Nearest K" checked={methodNearestK} onChange={setMethodNearestK} />
-              {methodNearestK && (
+              {sequenceAllowed && (
+                <CheckboxField label="Sequence" checked={methodSequence} onChange={setMethodSequence} />
+              )}
+              {nearestKAllowed && (
+                <CheckboxField label="Nearest K" checked={methodNearestK} onChange={setMethodNearestK} />
+              )}
+              {nearestKAllowed && methodNearestK && (
                 <div className="flex items-center gap-2 pl-6">
                   <span className="text-sm text-gray-500 dark:text-gray-300">K =</span>
                   <input
                     type="number"
                     value={kValue}
-                    min={MIN_NEAREST_K}
-                    max={MAX_NEAREST_K}
+                    min={nearestKMin}
+                    max={nearestKMax}
                     step={1}
                     onChange={(event) => handleNearestKChange(event.target.value)}
                     className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm
@@ -748,15 +757,17 @@ export function Sidebar({
                   />
                 </div>
               )}
-              <CheckboxField
-                label="Domain"
-                checked={methodDomain}
-                onChange={setMethodDomain}
-                disabled={useBsi}
-                info={useBsi
-                  ? 'Domain search is unavailable in BSI mode because domain-wide expansion can be prohibitively slow.'
-                  : undefined}
-              />
+              {domainAllowed && (
+                <CheckboxField
+                  label="Domain"
+                  checked={methodDomain}
+                  onChange={setMethodDomain}
+                  disabled={useBsi}
+                  info={useBsi
+                    ? 'Domain search is unavailable in BSI mode because domain-wide expansion can be prohibitively slow.'
+                    : undefined}
+                />
+              )}
             </div>
           </div>
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 import os
 import sys
 import tempfile
@@ -7,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from starlette.requests import Request
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -32,6 +34,7 @@ from services.web_access import require_job_access  # noqa: E402
 from services import search_artifacts  # noqa: E402
 from services.setup_service import setup_job_args  # noqa: E402
 from ligq_support import validate_web_data  # noqa: E402
+from routers import jobs as jobs_router  # noqa: E402
 import main as backend_main  # noqa: E402
 import run_ligq_2  # noqa: E402
 
@@ -96,6 +99,8 @@ class WebPolicyTests(unittest.TestCase):
         self.assertFalse(payload["allow_resource_management"])
         self.assertFalse(payload["allow_bsi"])
         self.assertEqual(payload["search"]["provider"], "zinc")
+        self.assertEqual(payload["search"]["allowed_methods"], ["sequence", "nearest_k"])
+        self.assertEqual(payload["search"]["nearest_k_max"], 10)
         self.assertEqual(payload["search"]["max_fasta_sequences"], 100)
         self.assertEqual(payload["search"]["rate_limit_count"], 20)
         self.assertEqual(
@@ -229,6 +234,65 @@ class WebPolicyTests(unittest.TestCase):
             self.assertFalse(input_path.exists())
             self.assertFalse(temp_path.exists())
             self.assertFalse(output_dir.exists())
+
+
+class WebSearchMethodPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def _start_search(self, **overrides):
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/jobs/search",
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+            }
+        )
+        params = {
+            "request": request,
+            "fasta_file": UploadFile(
+                filename="queries.fasta",
+                file=io.BytesIO(b">query\\nACDE\\n"),
+            ),
+            "ligand_provider": "zinc",
+            "search_representation": "morgan_1024_r2",
+            "search_metric": "tanimoto",
+            "search_threshold": 0.4,
+            "search_threshold_max": 1.0,
+            "use_sequence": True,
+            "use_nearest_k": True,
+            "nearest_k": 5,
+            "use_domains": False,
+            "known_only": False,
+            "use_bsi": False,
+            "bsi_threshold": 0.98,
+        }
+        params.update(overrides)
+        with patch.object(
+            jobs_router,
+            "inspect_web_readiness",
+            AsyncMock(return_value={"ready": True}),
+        ), patch.object(
+            jobs_router,
+            "rate_limit_status",
+            AsyncMock(return_value=(True, 0)),
+        ):
+            return await jobs_router.start_search(**params)
+
+    async def test_domain_search_is_rejected_in_web_mode(self):
+        response = await self._start_search(use_domains=True)
+        payload = json.loads(response.body)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(payload["error"], "search_policy_violation")
+        self.assertEqual(payload["details"]["field"], "use_domains")
+
+    async def test_nearest_k_above_ten_is_rejected_in_web_mode(self):
+        response = await self._start_search(nearest_k=11)
+        payload = json.loads(response.body)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(payload["error"], "search_policy_violation")
+        self.assertEqual(payload["details"]["field"], "nearest_k")
 
 
 class ExclusiveAdmissionTests(unittest.IsolatedAsyncioTestCase):

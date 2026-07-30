@@ -407,8 +407,11 @@ shared pipeline and backend validation remain unchanged.
 The browser counts FASTA headers after upload and displays the count, but the
 local frontend does not impose a maximum sequence count. Large inputs can
 significantly extend job runtime and resource usage.
-The Nearest K numeric control is likewise constrained only in the frontend to
-integer values from `1` through `15`; the API and CLI remain unchanged.
+In local mode, the Nearest K numeric control is constrained only in the
+frontend to integer values from `1` through `15`; the local API and CLI remain
+unchanged. In public web mode, the server policy exposes only Sequence and
+Nearest K, caps K at `10`, and the search endpoint rejects Domain or larger K
+values even when submitted outside the frontend.
 When BSI is enabled, the sidebar fixes the representation to `morgan_1024_r2`,
 shows `BSI Score`, uses a separate minimum cutoff initialized to `0.98` and
 bounded below at `0.97`, and disables the maximum cutoff at `1.0`. It also clears

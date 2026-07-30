@@ -99,10 +99,11 @@ Override with the `ALLOWED_ORIGINS` environment variable (comma-separated).
 - `LIGQ_DEPLOYMENT_MODE` defaults to `local`. In `web` mode, policy checks are
   enforced in the API rather than relying on hidden frontend controls: ZINC
   ECFP/FCFP cached searches and Known-only are allowed, resource mutations and
-  BSI are rejected, databases are consumed read-only, anonymous sessions own
-  their jobs, and FASTA/rate/concurrency/timeout/retention limits apply. During
-  startup, the web backend validates the mandatory data and both caches before
-  accepting requests; the successful readiness result is reused for one hour.
+  BSI and Domain search are rejected, Nearest K is capped at 10, databases are
+  consumed read-only, anonymous sessions own their jobs, and
+  FASTA/rate/concurrency/timeout/retention limits apply. During startup, the web
+  backend validates the mandatory data and both caches before accepting
+  requests; the successful readiness result is reused for one hour.
 
 - Heavy jobs run through a single FIFO queue. Job metadata is persisted in
   `gui/backend/state/jobs.sqlite3`; completed history survives restarts and

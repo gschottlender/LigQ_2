@@ -478,7 +478,9 @@ The repository also includes an isolated, fail-closed public deployment mode.
 It keeps the normal local application unchanged while exposing only ZINC
 ECFP/FCFP cached searches and an optional Known ligands only search, with
 anonymous session isolation, server-side FASTA limits, rate limiting, timeout,
-short result retention and read-only database mounts.
+short result retention and read-only database mounts. Protein recovery is
+limited to Sequence and Nearest K, Nearest K is capped at 10, and Domain search
+is unavailable.
 
 The web backend validates the mandatory databases and both ECFP/FCFP caches
 during startup and warms its readiness cache before accepting traffic. Local
