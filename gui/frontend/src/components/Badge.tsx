@@ -1,4 +1,4 @@
-import type { SearchType, LigandSource } from '../types';
+import type { SearchType, LigandDisplaySource } from '../types';
 
 interface SearchTypeBadgeProps {
   type: SearchType;
@@ -29,24 +29,34 @@ export function SearchTypeBadge({ type }: SearchTypeBadgeProps) {
 }
 
 interface SourceBadgeProps {
-  source: LigandSource;
+  source: LigandDisplaySource;
 }
 
 export function SourceBadge({ source }: SourceBadgeProps) {
-  const config: Record<LigandSource, { label: string; className: string }> = {
+  const config: Record<LigandDisplaySource, { label: string; className: string; title: string }> = {
     chembl: {
       label: 'ChEMBL',
       className: 'bg-gray-100 text-gray-500 dark:bg-gray-400 dark:text-gray-700 px-2.5 py-1',
+      title: 'Binding evidence from ChEMBL.',
     },
     pdb: {
       label: 'PDB',
       className: 'bg-slate-100 text-slate-500 dark:bg-slate-400 dark:text-slate-700 px-5.5 py-1',
+      title: 'Binding evidence from a PDB structure.',
+    },
+    pdb_chembl: {
+      label: 'PDB / ChEMBL',
+      className: 'bg-slate-100 text-slate-500 dark:bg-slate-400 dark:text-slate-700 px-2.5 py-1',
+      title: 'Compound represented by a PDB ligand ID; binding evidence from ChEMBL.',
     },
   };
 
-  const { label, className } = config[source];
+  const { label, className, title } = config[source];
   return (
-    <span className={`inline-block text-xs font-medium rounded-full whitespace-nowrap ${className}`}>
+    <span
+      title={title}
+      className={`inline-block text-xs font-medium rounded-full whitespace-nowrap ${className}`}
+    >
       {label}
     </span>
   );

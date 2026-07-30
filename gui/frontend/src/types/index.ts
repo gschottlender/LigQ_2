@@ -3,6 +3,7 @@ export type SearchMode = 'zinc' | 'known_only';
 export type DeploymentMode = 'local' | 'web';
 export type RankingSource = 'blast' | 'hmmer';
 export type LigandSource = 'pdb' | 'chembl';
+export type LigandDisplaySource = LigandSource | 'pdb_chembl';
 export type SearchState = 'idle' | 'running' | 'done';
 export type JobStatus =
   | 'queued'

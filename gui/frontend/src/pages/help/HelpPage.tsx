@@ -426,6 +426,9 @@ export function HelpPage() {
                     <Param name="Known Bindings">
                       Ligands from PDB crystal structures or ChEMBL bioactivity records associated with the
                       candidate proteins. Includes pChEMBL potency and binding-site Pfam domains where available.
+                      The <strong>PDB / ChEMBL</strong> source badge marks a compound represented by a canonical
+                      PDB ligand ID whose binding evidence for that row comes from ChEMBL; PDB structure IDs are
+                      shown only when an exact supporting structure is associated with the binding.
                     </Param>
                     {(!isWeb || policy.search.allowed_modes.includes('zinc')) && (
                       <Param name="Predicted Ligands">

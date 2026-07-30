@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { ChevronDown, Copy, RefreshCw, Search } from 'lucide-react';
-import type { KnownLigand, SearchType } from '../../types';
+import type { KnownLigand, LigandDisplaySource, SearchType } from '../../types';
 import { SearchTypeBadge, SourceBadge } from '../../components/Badge';
 import { getKnownLigandDisplaySource } from '../../lib/knownLigandSource';
 import type { SelectedItem } from './SelectedResultPanel';
@@ -70,7 +70,7 @@ function SmallCopyButton({ text }: { text: string }) {
 export function KnownBindingsTable({ data, selectedItem, onSelectItem }: KnownBindingsTableProps) {
   const [filterText, setFilterText] = useState('');
   const [searchTypeFilter, setSearchTypeFilter] = useState<SearchType | 'all'>('all');
-  const [sourceFilter, setSourceFilter] = useState<'all' | 'pdb' | 'chembl'>('all');
+  const [sourceFilter, setSourceFilter] = useState<LigandDisplaySource | 'all'>('all');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [visibleCols, setVisibleCols] = useState<Set<ColId>>(new Set(DEFAULT_VISIBLE));
@@ -144,13 +144,14 @@ export function KnownBindingsTable({ data, selectedItem, onSelectItem }: KnownBi
           <div className="relative">
             <select
               value={sourceFilter}
-              onChange={(e) => { setSourceFilter(e.target.value as 'all' | 'pdb' | 'chembl'); setPage(1); }}
+              onChange={(e) => { setSourceFilter(e.target.value as LigandDisplaySource | 'all'); setPage(1); }}
               className="appearance-none border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 pr-7 text-sm
                 text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 cursor-pointer focus:outline-none focus:ring-1 focus:ring-teal-500"
             >
-              <option value="all">Database: All</option>
+              <option value="all">Source: All</option>
               <option value="pdb">PDB</option>
               <option value="chembl">ChEMBL</option>
+              <option value="pdb_chembl">PDB / ChEMBL</option>
             </select>
             <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
           </div>

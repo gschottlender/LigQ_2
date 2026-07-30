@@ -174,6 +174,10 @@ application.
 - Switch between **Protein Ranking**, **Known Bindings**, and **Predicted Ligands** tabs.
 - Protein Ranking includes only proteins that contribute at least one retained
   known or predicted ligand after per-query deduplication.
+- Known ligands shared between the compound catalogs use a **PDB / ChEMBL**
+  badge when their canonical compound ID is from PDB but the binding evidence
+  comes from ChEMBL. Exact supporting structures remain listed separately under
+  PDB IDs.
 - Click any compound to open the detail panel with its official ZINC20, RCSB PDB,
   or ChEMBL page when available, linked Pfam binding-site and PDB structure IDs,
   plus 2D structure, Download SDF, and 3D Viewer.

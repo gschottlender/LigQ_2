@@ -1,5 +1,5 @@
 import { Dna, FileText, TrendingUpDown, WaypointsIcon } from 'lucide-react';
-import type { QueryResult, SearchResultsSummary } from '../../types';
+import type { LigandDisplaySource, QueryResult, SearchResultsSummary } from '../../types';
 import { Tooltip } from '../../components/Tooltip';
 import { getKnownLigandDisplaySource } from '../../lib/knownLigandSource';
 
@@ -9,7 +9,11 @@ interface MetricCardsProps {
   showPredicted?: boolean;
 }
 
-const SOURCE_LABELS: Record<string, string> = { pdb: 'PDB', chembl: 'ChEMBL' };
+const SOURCE_LABELS: Record<LigandDisplaySource, string> = {
+  pdb: 'PDB',
+  chembl: 'ChEMBL',
+  pdb_chembl: 'PDB / ChEMBL',
+};
 
 interface CardProps {
   title: string;

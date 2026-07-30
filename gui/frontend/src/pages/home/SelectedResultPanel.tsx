@@ -70,9 +70,8 @@ function getCompoundPageLink(selected: SelectedItem): CompoundPageLink | null {
     const normalizedId = compoundId.toUpperCase();
     const encodedId = encodeURIComponent(normalizedId);
 
-    // PDB/ChEMBL unification keeps the evidence source but chooses either a
-    // CHEMBL ID or a PDB CCD ID as the canonical compound ID. Classify the
-    // explicit ChEMBL namespace first; every other known canonical ID is PDB.
+    // ChEMBL-only rows use a CHEMBL ID. PDB and combined PDB/ChEMBL rows use
+    // the canonical PDB CCD ID, so their compound link points to RCSB.
     if (getKnownLigandDisplaySource(selected.item) === 'chembl') {
       return {
         href: `https://www.ebi.ac.uk/chembl/explore/compound/${encodedId}`,
