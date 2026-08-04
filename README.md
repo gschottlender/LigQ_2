@@ -15,9 +15,7 @@ expand those results with compounds from ZINC or a user-provided database.
 A restricted public instance is available at
 **[LigQ2 Web](https://ligq.infra.cluster.qb.fcen.uba.ar)**. It supports Sequence
 and Nearest K protein searches (K <= 10), known-ligands-only searches, and ZINC
-compound prioritization using the precomputed Morgan ECFP and FCFP caches. Use
-the local Docker or native installation for the full configurable workflow,
-including Domain search, custom resources, and BSI where supported.
+compound prioritization using the precomputed Morgan ECFP and FCFP caches.
 
 ## Key features
 
@@ -100,6 +98,10 @@ precomputed cache during setup, replace the `init-data` command above with:
 ```bash
 ./docker/ligq.sh init-data --include-fcfp-cache
 ```
+
+Local searches reuse these downloaded caches when the similarity threshold is
+at least 0.4 for ECFP or 0.5 for FCFP. Lower thresholds require LigQ2 to compute
+new similarity results and therefore use substantially more time and resources.
 
 Then run the containerized command-line workflow:
 
