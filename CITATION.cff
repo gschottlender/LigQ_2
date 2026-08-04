@@ -1,0 +1,73 @@
+cff-version: 1.2.0
+message: "If you use LigQ2, please cite this software."
+title: "LigQ2"
+type: software
+
+authors:
+  - family-names: "Schottlender"
+    given-names: "Gustavo"
+    affiliation: "Instituto de Cálculo, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "Costa"
+    given-names: "Marcos"
+    affiliation: "Instituto de Ciências Exatas e Naturais, Universidade Federal do Pará, Belém, PA, Brasil"
+
+  - family-names: "de Kemmeter"
+    given-names: "María"
+    affiliation: "Instituto de Cálculo, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "Varela Gammarnik"
+    given-names: "Sol"
+    affiliation: "Instituto de Cálculo, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "García"
+    given-names: "L. Gabriel"
+    affiliation: "Departamento de Química Biológica, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA), e Instituto de Química Biológica de la Facultad de Ciencias Exactas y Naturales (IQUIBICEN)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "Carvalho de Abreu"
+    given-names: "Augusto"
+    affiliation: "Instituto de Ciências Exatas e Naturais, Universidade Federal do Pará, Belém, PA, Brasil"
+
+  - family-names: "Álvarez"
+    given-names: "Mateo"
+    affiliation: "Departamento de Química Biológica, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA), e Instituto de Química Biológica de la Facultad de Ciencias Exactas y Naturales (IQUIBICEN)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "Marti"
+    given-names: "Marcelo A."
+    affiliation: "Departamento de Química Biológica, Facultad de Ciencias Exactas y Naturales, Universidad de Buenos Aires (FCEyN-UBA), e Instituto de Química Biológica de la Facultad de Ciencias Exactas y Naturales (IQUIBICEN)-CONICET, Ciudad de Buenos Aires, Argentina"
+
+  - family-names: "Fernández Do Porto"
+    given-names: "Dario"
+    affiliation: "Instituto de Cálculo, FCEyN-UBA-CONICET; Departamento de Química Biológica, FCEyN-UBA, e IQUIBICEN-CONICET; Instituto de Ciências Exatas e Naturais, Universidade Federal do Pará"
+    email: "dariofd@gmail.com"
+
+contact-persons:
+  - family-names: "Fernández Do Porto"
+    given-names: "Dario"
+    email: "dariofd@gmail.com"
+    affiliation: "Instituto de Cálculo, FCEyN-UBA-CONICET; Departamento de Química Biológica, FCEyN-UBA, e IQUIBICEN-CONICET; Instituto de Ciências Exatas e Naturais, Universidade Federal do Pará"
+
+abstract: >-
+  LigQ2 is a modular framework for protein sequence-guided ligand
+  prioritization and chemical retrieval. It integrates curated PDB- and
+  ChEMBL-derived ligand evidence with sequence-based, nearest-neighbor,
+  and domain-based candidate-protein strategies and supports compound
+  prioritization from ZINC or user-provided chemical databases.
+
+keywords:
+  - cheminformatics
+  - ligand prioritization
+  - protein sequence
+  - molecular similarity
+  - virtual screening
+  - drug discovery
+
+license: MIT
+repository-code: "https://github.com/gschottlender/LigQ_2"
+url: "https://ligq.infra.cluster.qb.fcen.uba.ar/"
+
+# Add immediately before creating the GitHub release:
+# version: 1.0.0
+# date-released: 2026-MM-DD
+#
+# After the article is published, add it as a preferred-citation block.
