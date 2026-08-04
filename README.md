@@ -69,6 +69,13 @@ docker compose up -d
 The data setup is resumable and downloads only missing files. When it finishes,
 open the graphical interface at <http://localhost:8080>.
 
+To also install the optional Morgan Feature FCFP representations and
+precomputed cache during setup, replace the `init-data` command above with:
+
+```bash
+./docker/ligq.sh init-data --include-fcfp-cache
+```
+
 Then run the containerized command-line workflow:
 
 ```bash
@@ -275,36 +282,57 @@ On Windows PowerShell:
 .\docker\ligq.ps1 init-data
 ```
 
-### Docker lifecycle
+### Start, check, and stop the application
 
-```bash
-docker compose ps
-docker compose logs -f
-docker compose stop
-docker compose up -d
-docker compose down
-```
+Run these helper commands from the repository root. They cover the usual Docker
+workflow and do not delete persistent application data.
 
-- `stop` stops the containers while keeping them available for a fast restart.
-- `down` removes the application containers and network, but preserves named
-  volumes.
-- `up -d` recreates or starts the application in the background.
+1. Start the web application in the background:
+
+   ```bash
+   ./docker/ligq.sh start
+   ```
+
+   When it starts, open <http://localhost:8080>. Running `start` again is safe:
+   Docker starts the existing containers or recreates them when necessary.
+
+2. Check whether the containers are running and healthy:
+
+   ```bash
+   ./docker/ligq.sh status
+   ```
+
+3. Follow the application logs when checking startup or diagnosing an error:
+
+   ```bash
+   ./docker/ligq.sh logs
+   ```
+
+   Press `Ctrl+C` to stop following the logs. This does not stop the
+   application.
+
+4. Stop the application when it is no longer needed:
+
+   ```bash
+   ./docker/ligq.sh stop
+   ```
+
+   This stops and removes the application containers and their Docker network,
+   but preserves the named volumes. A later `start` recreates the containers
+   using the same databases, caches, results, uploads, and application state.
+
+The helper commands correspond to `docker compose up -d`, `docker compose ps`,
+`docker compose logs -f`, and `docker compose down`, respectively. If Docker
+Compose is used directly, `docker compose stop` only pauses the existing
+containers; `docker compose up -d` starts them again.
 
 > [!CAUTION]
 > Do not run `docker compose down -v` unless you intentionally want to delete
 > the Docker volumes containing databases, search history, uploads, caches, and
 > application state.
 
-The repository also provides helper commands:
-
-```bash
-./docker/ligq.sh start
-./docker/ligq.sh status
-./docker/ligq.sh logs
-./docker/ligq.sh stop
-```
-
-PowerShell equivalents use `.\docker\ligq.ps1`.
+On Windows PowerShell, use the same command names with `.\docker\ligq.ps1`, for
+example `.\docker\ligq.ps1 start`.
 
 ### Persistent Docker data
 
