@@ -1,0 +1,4 @@
+# Keep this host/container exchange directory in fresh clones while ignoring
+# user inputs and generated results.
+*
+!.gitignore

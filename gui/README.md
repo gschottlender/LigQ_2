@@ -11,11 +11,11 @@ that wraps the LigQ 2 pipeline.
 The same frontend/backend also supports a restricted public deployment without
 changing the default local behavior. Its isolated Docker stack is defined by
 `compose.web.yml`; `./docker/ligq-web.sh start-local-data` runs it against the
-repository's `./databases` directory read-only for local testing. In this mode,
-protein recovery supports only Sequence and Nearest K, with K capped at 10;
-Domain search is unavailable, and BLAST/HMMER run with one worker. The search
-page footer links visitors to the local GitHub version for the complete feature
-set.
+repository's existing `./databases` directory read-only for local testing and
+fails without creating the directory when it is absent. In this mode, protein
+recovery supports only Sequence and Nearest K, with K capped at 10; Domain
+search is unavailable, and BLAST/HMMER run with one worker. The search page
+footer links visitors to the local GitHub version for the complete feature set.
 
 ---
 

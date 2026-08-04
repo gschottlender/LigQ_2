@@ -27,8 +27,7 @@ ENV PATH=/opt/conda/bin:$PATH \
     LIGQ_UPLOADS_DIR=/app/gui/backend/uploads \
     LIGQ_TEMP_RESULTS_DIR=/app/temp_results \
     LIGQ_STATE_DIR=/app/state \
-    HF_HOME=/cache/huggingface \
-    TRANSFORMERS_CACHE=/cache/huggingface/transformers
+    HF_HOME=/cache/huggingface
 
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=150s --retries=5 \

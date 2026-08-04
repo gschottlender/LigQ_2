@@ -3,8 +3,18 @@
 services:
   api:
     volumes:
-      - ./databases:/app/databases:ro
+      - type: bind
+        source: ./databases
+        target: /app/databases
+        read_only: true
+        bind:
+          create_host_path: false
 
   validate-data:
     volumes:
-      - ./databases:/app/databases:ro
+      - type: bind
+        source: ./databases
+        target: /app/databases
+        read_only: true
+        bind:
+          create_host_path: false

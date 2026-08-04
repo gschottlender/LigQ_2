@@ -57,7 +57,13 @@ services:
   cli:
     <<: *api-common
     profiles: ["tools"]
-    entrypoint: ["python", "/app/run_ligq_2.py"]
+    # The pipeline removes its temporary directory at startup. Use a child of
+    # the mounted volume rather than the volume mount point itself.
+    entrypoint:
+      - python
+      - /app/run_ligq_2.py
+      - --temp-results-dir
+      - /app/temp_results/cli
     command: ["--help"]
 
 volumes:

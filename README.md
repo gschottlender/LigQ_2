@@ -72,6 +72,10 @@ Run the containerized command-line workflow:
   --output-dir /work/quickstart_results
 ```
 
+The Docker CLI stores intermediate files in a disposable subdirectory of its
+temporary volume. A custom `--temp-results-dir` can still be supplied and takes
+precedence over that Docker default.
+
 The default workflow uses:
 
 - sequence-based and nearest-neighbor candidate recovery;
@@ -487,7 +491,10 @@ is unavailable.
 The web backend validates the mandatory databases and both ECFP/FCFP caches
 during startup and warms its readiness cache before accepting traffic. Local
 testing can reuse `./databases` read-only with
-`./docker/ligq-web.sh start-local-data`. Public search jobs run BLAST and HMMER
+`./docker/ligq-web.sh start-local-data`. That command requires an existing
+native `./databases` directory and never creates or downloads it. To use data
+managed in an isolated Docker volume instead, run `./docker/ligq-web.sh prepare`
+followed by `./docker/ligq-web.sh start`. Public search jobs run BLAST and HMMER
 with a single worker so the pipeline matches a one-CPU deployment limit.
 
 ### Build images locally
