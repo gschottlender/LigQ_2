@@ -57,14 +57,19 @@ mkdir -p work
 cp examples/quickstart.fasta work/quickstart.fasta
 ```
 
-Then download the published Docker images and start the application:
+Then download the published Docker images, initialize the complete default data
+set, and start the application:
 
 ```bash
 docker compose pull
+./docker/ligq.sh init-data
 docker compose up -d
 ```
 
-Run the containerized command-line workflow:
+The data setup is resumable and downloads only missing files. When it finishes,
+open the graphical interface at <http://localhost:8080>.
+
+Then run the containerized command-line workflow:
 
 ```bash
 ./docker/ligq.sh cli \
