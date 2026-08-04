@@ -66,8 +66,5 @@ license: MIT
 repository-code: "https://github.com/gschottlender/LigQ_2"
 url: "https://ligq.infra.cluster.qb.fcen.uba.ar/"
 
-# Add immediately before creating the GitHub release:
-# version: 1.0.0
-# date-released: 2026-MM-DD
-#
-# After the article is published, add it as a preferred-citation block.
+version: 1.0.0
+date-released: 2026-08-04
