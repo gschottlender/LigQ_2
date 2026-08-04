@@ -48,18 +48,20 @@ The small functional example in `examples/quickstart.fasta` is intended to
 verify that the complete LigQ2 workflow operates correctly. It is not a
 performance benchmark.
 
-From the repository root, download the published Docker images and start the
-application:
+From the repository root, create the host directory shared with the containers
+before starting Docker. This ensures that it remains writable by the local
+user:
+
+```bash
+mkdir -p work
+cp examples/quickstart.fasta work/quickstart.fasta
+```
+
+Then download the published Docker images and start the application:
 
 ```bash
 docker compose pull
 docker compose up -d
-```
-
-Copy the example into the host directory shared with the containers:
-
-```bash
-cp examples/quickstart.fasta work/quickstart.fasta
 ```
 
 Run the containerized command-line workflow:
