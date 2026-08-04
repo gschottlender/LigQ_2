@@ -10,6 +10,15 @@ expand those results with compounds from ZINC or a user-provided database.
 > intended for research use and should be validated experimentally before
 > biological or therapeutic conclusions are drawn.
 
+## Try LigQ2 online
+
+A restricted public instance is available at
+**[LigQ2 Web](https://ligq.infra.cluster.qb.fcen.uba.ar)**. It supports Sequence
+and Nearest K protein searches (K <= 10), known-ligands-only searches, and ZINC
+compound prioritization using the precomputed Morgan ECFP and FCFP caches. Use
+the local Docker or native installation for the full configurable workflow,
+including Domain search, custom resources, and BSI where supported.
+
 ## Key features
 
 - BLAST sequence similarity and Pfam domain detection with HMMER;
@@ -24,6 +33,7 @@ expand those results with compounds from ZINC or a user-provided database.
 
 ## Contents
 
+- [Try LigQ2 online](#try-ligq2-online)
 - [Quick start](#quick-start)
 - [How LigQ2 works](#how-ligq2-works)
 - [Choose how to run LigQ2](#choose-how-to-run-ligq2)
@@ -169,7 +179,7 @@ deduplication.
 | --- | --- | --- | --- |
 | Local Docker application | Most users on Windows, Linux, or macOS | Local web interface and containerized CLI | No; published images are CPU-only |
 | Native Conda | Technical users, automation, large searches, and GPU work | Command line | Yes; NVIDIA CUDA |
-| Restricted public deployment | Operators hosting an anonymous, limited service | Public web interface | No; cached searches only |
+| Restricted public web application | Quick evaluation without a local installation; operators can host the same restricted mode | [Hosted web interface](https://ligq.infra.cluster.qb.fcen.uba.ar) | No; cached searches only |
 | Native frontend/backend | Application developers | Local web development servers | Uses the native pipeline environment |
 
 Docker is the easiest way to run the complete application. The native Conda
@@ -1560,10 +1570,13 @@ The canonical published data is available at:
 
 ## Restricted public web deployment
 
-This is an operator workflow for hosting a limited anonymous service; normal
-local users do not need it. The repository provides an isolated, fail-closed
-deployment mode that leaves the local application unchanged while exposing only
-ZINC ECFP/FCFP cached searches and an optional Known ligands only search.
+A hosted instance of this restricted mode is available at
+**[ligq.infra.cluster.qb.fcen.uba.ar](https://ligq.infra.cluster.qb.fcen.uba.ar)**.
+The deployment instructions below are intended for operators hosting an
+equivalent limited anonymous service; users of the hosted instance do not need
+to run them. The repository provides an isolated, fail-closed deployment mode
+that leaves the local application unchanged while exposing only ZINC ECFP/FCFP
+cached searches and an optional Known ligands only search.
 
 The public mode provides anonymous-session isolation, server-side FASTA limits,
 rate limiting, a search timeout, short result retention, and read-only database
