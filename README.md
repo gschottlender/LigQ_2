@@ -1797,8 +1797,7 @@ container tags, and database versions when strict reproducibility is required.
 
 ## Citation
 
-> Citation information for the LigQ2 publication will be added after
-> publication.
+> LigQ2 v1.0.0 — https://doi.org/10.5281/zenodo.21796114
 
 ## License
 
