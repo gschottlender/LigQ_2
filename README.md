@@ -71,6 +71,13 @@ The small functional example in `examples/quickstart.fasta` is intended to
 verify that the complete LigQ2 workflow operates correctly. It is not a
 performance benchmark.
 
+At first, clone the repository and enter it:
+
+```bash
+git clone https://github.com/gschottlender/LigQ_2.git
+cd LigQ_2
+```
+
 From the repository root, create the host directory shared with the containers
 before starting Docker. This ensures that it remains writable by the local
 user:
