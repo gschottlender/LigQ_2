@@ -149,6 +149,20 @@ For this functional test, success means:
 - at least one query produces known ligands and/or prioritized candidate
   compounds.
 
+When finished, stop LigQ2 and release the web-interface port with:
+
+```bash
+./docker/ligq.sh stop
+```
+
+This removes the application containers and network but preserves the
+downloaded databases, caches, results, and other Docker volumes. Start the
+application again without repeating data initialization with:
+
+```bash
+./docker/ligq.sh start
+```
+
 ## How LigQ2 works
 
 ```mermaid
