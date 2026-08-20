@@ -31,9 +31,9 @@ from query_processing.predicted_cache import (  # noqa: E402
 )
 from services.uploads import inspect_fasta_details  # noqa: E402
 from services.web_access import require_job_access  # noqa: E402
-from services import search_artifacts  # noqa: E402
+from services import search_artifacts, web_readiness  # noqa: E402
 from services.setup_service import setup_job_args  # noqa: E402
-from ligq_support import validate_web_data  # noqa: E402
+from ligq_support import validate_web_data, web_validation_receipt  # noqa: E402
 from routers import jobs as jobs_router  # noqa: E402
 import main as backend_main  # noqa: E402
 import run_ligq_2  # noqa: E402
@@ -163,6 +163,150 @@ class WebPolicyTests(unittest.TestCase):
 
         self.assertFalse(status["ready"])
         self.assertTrue(any("fcfp.dat" in error for error in status["errors"]))
+
+    def test_successful_deep_validation_receipt_survives_runtime_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            required_paths = ("core.dat", "cache/manifest.json")
+            for relative in required_paths:
+                path = data_dir / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(f"contents for {relative}", encoding="utf-8")
+
+            with patch.object(
+                web_validation_receipt,
+                "required_web_data_paths",
+                return_value=required_paths,
+            ):
+                receipt_path = web_validation_receipt.write_web_validation_receipt(
+                    data_dir,
+                    {
+                        "ready": True,
+                        "checks": {
+                            "ecfp": {"ready": True, "message": "validated"},
+                            "fcfp": {"ready": True, "message": "validated"},
+                        },
+                    },
+                )
+                first_status = web_validation_receipt.inspect_web_validation_receipt(
+                    data_dir
+                )
+                # A new inspection has no in-memory state and models a backend restart.
+                restarted_status = (
+                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                )
+
+        self.assertTrue(receipt_path.name.endswith("validation.json"))
+        self.assertTrue(first_status["ready"])
+        self.assertTrue(restarted_status["ready"])
+        self.assertTrue(restarted_status["checks"]["receipt"]["ready"])
+
+    def test_runtime_receipt_rejects_data_modified_after_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            required_path = data_dir / "core.dat"
+            required_path.write_text("validated", encoding="utf-8")
+
+            with patch.object(
+                web_validation_receipt,
+                "required_web_data_paths",
+                return_value=("core.dat",),
+            ):
+                web_validation_receipt.write_web_validation_receipt(
+                    data_dir,
+                    {"ready": True, "checks": {}},
+                )
+                required_path.write_text("changed after validation", encoding="utf-8")
+                status = web_validation_receipt.inspect_web_validation_receipt(data_dir)
+
+        self.assertFalse(status["ready"])
+        self.assertIn("changed", status["errors"][0])
+
+    def test_runtime_receipt_reports_missing_and_corrupt_receipts_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory)
+            required_path = data_dir / "core.dat"
+            required_path.write_text("present", encoding="utf-8")
+
+            with patch.object(
+                web_validation_receipt,
+                "required_web_data_paths",
+                return_value=("core.dat",),
+            ):
+                missing_status = (
+                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                )
+                web_validation_receipt.validation_receipt_path(data_dir).write_text(
+                    "not json",
+                    encoding="utf-8",
+                )
+                corrupt_status = (
+                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                )
+
+        self.assertFalse(missing_status["ready"])
+        self.assertIn(
+            "Administrative web-data validation is required",
+            missing_status["errors"][0],
+        )
+        self.assertFalse(corrupt_status["ready"])
+        self.assertIn("unreadable", corrupt_status["errors"][0])
+
+    def test_validator_cli_writes_receipt_only_after_deep_success(self):
+        status = {
+            "ready": True,
+            "mode": "web",
+            "checks": {"core": {"ready": True, "message": "validated"}},
+            "errors": [],
+        }
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "validate_web_data.py",
+                "--data-dir",
+                "/validated/data",
+                "--write-receipt",
+            ],
+        ), patch.object(
+            validate_web_data, "inspect_web_data", return_value=status
+        ), patch.object(
+            validate_web_data,
+            "write_web_validation_receipt",
+            return_value=Path("/validated/data/.ligq-web-validation.json"),
+        ) as write_receipt:
+            with self.assertRaises(SystemExit) as raised:
+                validate_web_data.main()
+
+        self.assertEqual(raised.exception.code, 0)
+        write_receipt.assert_called_once()
+
+    def test_failed_deep_validation_does_not_replace_an_existing_receipt(self):
+        status = {
+            "ready": False,
+            "mode": "web",
+            "checks": {"core": {"ready": False, "message": "failed"}},
+            "errors": ["deep validation failed"],
+        }
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "validate_web_data.py",
+                "--data-dir",
+                "/validated/data",
+                "--write-receipt",
+            ],
+        ), patch.object(
+            validate_web_data, "inspect_web_data", return_value=status
+        ), patch.object(
+            validate_web_data, "write_web_validation_receipt"
+        ) as write_receipt:
+            with self.assertRaises(SystemExit) as raised:
+                validate_web_data.main()
+
+        self.assertEqual(raised.exception.code, 1)
+        write_receipt.assert_not_called()
 
     def test_setup_job_runs_the_packaged_support_module(self):
         self.assertEqual(
@@ -412,6 +556,44 @@ class BackendStartupTests(unittest.IsolatedAsyncioTestCase):
             await backend_main._warm_web_readiness_cache()
 
         readiness.assert_not_awaited()
+
+
+class RuntimeWebReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        web_readiness.clear_web_readiness_cache()
+
+    async def asyncTearDown(self):
+        web_readiness.clear_web_readiness_cache()
+
+    async def test_runtime_uses_the_fast_persistent_receipt_inspection(self):
+        expected = {"ready": True, "mode": "web", "checks": {}, "errors": []}
+        with patch.object(
+            web_readiness, "is_web_mode", return_value=True
+        ), patch.object(
+            web_readiness,
+            "inspect_web_validation_receipt",
+            return_value=expected,
+        ) as inspect_receipt:
+            status = await web_readiness.inspect_web_readiness(force=True)
+
+        self.assertEqual(status, expected)
+        inspect_receipt.assert_called_once_with(web_readiness.DATABASES_DIR)
+
+    async def test_runtime_never_emits_a_blank_error_for_receipt_failures(self):
+        with patch.object(
+            web_readiness, "is_web_mode", return_value=True
+        ), patch.object(
+            web_readiness,
+            "inspect_web_validation_receipt",
+            side_effect=TimeoutError(),
+        ):
+            status = await web_readiness.inspect_web_readiness(force=True)
+
+        self.assertFalse(status["ready"])
+        self.assertEqual(
+            status["errors"],
+            ["Web data receipt inspection failed: TimeoutError"],
+        )
 
 
 if __name__ == "__main__":

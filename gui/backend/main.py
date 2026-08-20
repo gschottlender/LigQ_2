@@ -40,15 +40,15 @@ async def _warm_web_readiness_cache() -> None:
     if not is_web_mode():
         return
 
-    logger.info("Validating public web databases and predicted-ligand caches")
+    logger.info("Checking the persistent public web-data validation receipt")
     readiness = await inspect_web_readiness(force=True)
     if readiness.get("ready"):
-        logger.info("Public web data validation completed successfully")
+        logger.info("Public web-data validation receipt is ready")
         return
 
     errors = readiness.get("errors") or ["required web data is unavailable"]
     logger.warning(
-        "Public web data validation completed in maintenance mode: %s",
+        "Public web-data readiness entered maintenance mode: %s",
         "; ".join(str(error) for error in errors),
     )
 

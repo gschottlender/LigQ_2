@@ -30,7 +30,8 @@ case "$command_name" in
         "${compose[@]}" --profile admin run --rm validate-data
         ;;
     validate)
-        "${compose[@]}" --profile admin run --rm validate-data "$@"
+        "${compose[@]}" --profile admin run --rm validate-data \
+            --data-dir /app/databases --write-receipt "$@"
         ;;
     start)
         "${compose[@]}" up -d api web "$@"

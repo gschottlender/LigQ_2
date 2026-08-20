@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sys
 import time
 from typing import Any
 
-from core.config import DATABASES_DIR, PIPELINE_ROOT
+from core.config import DATABASES_DIR
 from core.policy import is_web_mode
+from ligq_support.web_validation_receipt import inspect_web_validation_receipt
 
 
 _cache_lock = asyncio.Lock()
 _cached_at = 0.0
 _cached_status: dict[str, Any] | None = None
-_READY_CACHE_SECONDS = 3600.0
+_READY_CACHE_SECONDS = 30.0
 _NOT_READY_CACHE_SECONDS = 30.0
 
 
@@ -41,39 +40,15 @@ async def inspect_web_readiness(*, force: bool = False) -> dict[str, Any]:
         ):
             return dict(_cached_status)
 
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "ligq_support.validate_web_data",
-            "--data-dir",
-            str(DATABASES_DIR),
-            "--json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(PIPELINE_ROOT),
-        )
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-            lines = [
-                line
-                for line in stdout.decode("utf-8", errors="replace").splitlines()
-                if line.strip()
-            ]
-            status = json.loads(lines[-1])
-            if process.returncode not in {0, 1}:
-                raise RuntimeError(
-                    stderr.decode("utf-8", errors="replace").strip()
-                    or f"Validator exited with code {process.returncode}."
-                )
+            status = inspect_web_validation_receipt(DATABASES_DIR)
         except Exception as exc:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
+            detail = str(exc).strip() or type(exc).__name__
             status = {
                 "ready": False,
                 "mode": "web",
                 "checks": {},
-                "errors": [f"Web data validation failed: {exc}"],
+                "errors": [f"Web data receipt inspection failed: {detail}"],
             }
 
         _cached_status = status

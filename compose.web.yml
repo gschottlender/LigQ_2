@@ -74,9 +74,9 @@ services:
     <<: *api-image
     profiles: ["admin"]
     entrypoint: ["python", "-m", "ligq_support.validate_web_data"]
-    command: ["--data-dir", "/app/databases"]
+    command: ["--data-dir", "/app/databases", "--write-receipt"]
     volumes:
-      - web_databases:/app/databases:ro
+      - web_databases:/app/databases
 
 volumes:
   web_databases:

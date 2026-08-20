@@ -428,6 +428,32 @@ Checks the sidecar JSON in priority order:
 2. `manifest.json` in the same directory (alternative layout).
 3. Name-based keyword heuristic as a last resort (e.g. `chemberta` → `cosine`).
 
+### Public web-data readiness
+
+Restricted web mode separates expensive administrative validation from runtime
+readiness:
+
+1. `python -m ligq_support.validate_web_data --write-receipt` constructs each
+   supported provider and verifies the ECFP/FCFP cache metadata, thresholds,
+   fingerprints, and protein coverage.
+2. After every deep check succeeds, it atomically writes
+   `databases/.ligq-web-validation.json`. The receipt records the validator
+   version, validation time, successful checks, and an inventory of every
+   required file. Small metadata files are SHA-256 hashed; all files record size
+   and modification time.
+3. API startup calls `services/web_readiness.py`, which only inspects this
+   receipt and recomputes the lightweight inventory. It does not construct a
+   provider, load a representation, open Parquet caches, or launch a validator
+   subprocess.
+4. The API mounts databases read-only. The administrative Compose validator has
+   temporary write access solely so it can replace the receipt after a
+   successful validation.
+
+A restart therefore reuses the persistent result. Missing, corrupt,
+incompatible, or stale receipts fail closed with an explicit recovery command.
+Changing any required data requires the administrator to rerun the deep
+validator before searches become available again.
+
 ---
 
 ## 5. Job state management

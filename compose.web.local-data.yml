@@ -15,6 +15,6 @@ services:
       - type: bind
         source: ./databases
         target: /app/databases
-        read_only: true
+        read_only: false
         bind:
           create_host_path: false

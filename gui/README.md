@@ -16,6 +16,11 @@ fails without creating the directory when it is absent. In this mode, protein
 recovery supports only Sequence and Nearest K, with K capped at 10; Domain
 search is unavailable, and BLAST/HMMER run with one worker. The search page
 footer links visitors to the local GitHub version for the complete feature set.
+Before public startup, the administrative validator deeply checks both required
+predicted-ligand caches and atomically writes `.ligq-web-validation.json` in the
+database root. Runtime readiness only verifies that receipt and a lightweight
+inventory, so routine backend restarts do not reload representations or repeat
+the expensive cache scan.
 
 ---
 
@@ -122,6 +127,20 @@ On Windows PowerShell, use `docker\ligq.ps1` with the same commands. Set
 `LIGQ_WEB_PORT` in `.env` if port 8080 is already occupied, and set `HF_TOKEN`
 only when Hugging Face authentication is required. The CPU image is intentionally
 separate from `environment.yml`; no CUDA or NVIDIA runtime is needed.
+
+For the restricted public stack, preparation and validation are explicit
+administrative operations:
+
+```bash
+./docker/ligq-web.sh prepare   # download, deeply validate, and write the receipt
+./docker/ligq-web.sh validate  # repeat after any public-data update
+./docker/ligq-web.sh start
+```
+
+The API mounts databases read-only. Only `prepare-data` and `validate-data` can
+write the database volume; the latter writes the persistent validation receipt.
+If the receipt or required files change, readiness fails with an actionable
+message until the administrator runs validation again.
 
 ---
 

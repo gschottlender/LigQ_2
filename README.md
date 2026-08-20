@@ -1607,10 +1607,14 @@ mounts. BSI and resource management are unavailable. Protein recovery is
 limited to Sequence and Nearest K, Nearest K is capped at 10, and Domain search
 is unavailable.
 
-The backend validates the mandatory databases and both ECFP/FCFP caches during
-startup and warms its readiness cache before accepting traffic. Public search
-jobs run BLAST and HMMER with a single worker so the pipeline matches a one-CPU
-deployment limit.
+The administrative `validate-data` service performs the expensive validation of
+the mandatory databases and both ECFP/FCFP caches once, then writes a persistent
+receipt inside the database volume. Backend startup only checks that receipt and
+a lightweight file inventory; it never loads molecular representations or scans
+the predicted-ligand caches. This keeps normal restarts fast while still refusing
+searches when required data is missing, changed, or has not been validated for
+the installed application version. Public search jobs run BLAST and HMMER with a
+single worker so the pipeline matches a one-CPU deployment limit.
 
 Local testing can reuse an existing native `./databases` directory as a
 read-only mount:
@@ -1627,6 +1631,12 @@ service:
 ./docker/ligq-web.sh prepare
 ./docker/ligq-web.sh start
 ```
+
+Run `./docker/ligq-web.sh validate` after replacing or updating the public data.
+Validation can take a long time, but it is an explicit administrative operation
+and does not run again during routine API restarts. If readiness reports that the
+receipt is missing, incompatible, or stale, rerun that command before starting
+the service.
 
 ## Native frontend/backend development
 

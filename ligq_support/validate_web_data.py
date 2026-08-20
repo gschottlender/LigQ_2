@@ -11,6 +11,7 @@ from ligq_support.prepare_ligq_2_data import (
     ECFP_CACHE_PATHS,
     FCFP_CACHE_PATHS,
 )
+from ligq_support.web_validation_receipt import write_web_validation_receipt
 from query_processing.ligand_providers import build_provider
 from query_processing.predicted_cache import load_provider_cache_read_only
 
@@ -119,12 +120,38 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--data-dir", default="databases")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--write-receipt",
+        action="store_true",
+        help=(
+            "After a successful deep validation, atomically write the persistent "
+            "receipt used by the public web runtime."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    status = inspect_web_data(Path(args.data_dir))
+    data_dir = Path(args.data_dir)
+    status = inspect_web_data(data_dir)
+    if args.write_receipt and status["ready"]:
+        try:
+            receipt_path = write_web_validation_receipt(data_dir, status)
+            status["checks"]["receipt"] = {
+                "ready": True,
+                "message": f"Persistent validation receipt written to {receipt_path}.",
+            }
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            status["ready"] = False
+            status["checks"]["receipt"] = {
+                "ready": False,
+                "message": detail,
+            }
+            status["errors"].append(
+                f"Could not write the persistent validation receipt: {detail}"
+            )
     if args.json:
         print(json.dumps(status))
     else:
