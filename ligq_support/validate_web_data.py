@@ -119,6 +119,14 @@ def parse_args() -> argparse.Namespace:
         description="Validate the immutable data package required by LigQ 2 web mode."
     )
     parser.add_argument("--data-dir", default="databases")
+    parser.add_argument(
+        "--receipt-dir",
+        default=None,
+        help=(
+            "Directory for the persistent validation receipt. Defaults to the "
+            "database directory for backward compatibility."
+        ),
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--write-receipt",
@@ -137,7 +145,11 @@ def main() -> None:
     status = inspect_web_data(data_dir)
     if args.write_receipt and status["ready"]:
         try:
-            receipt_path = write_web_validation_receipt(data_dir, status)
+            receipt_path = write_web_validation_receipt(
+                data_dir,
+                status,
+                receipt_dir=(Path(args.receipt_dir) if args.receipt_dir else None),
+            )
             status["checks"]["receipt"] = {
                 "ready": True,
                 "message": f"Persistent validation receipt written to {receipt_path}.",

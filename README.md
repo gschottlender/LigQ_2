@@ -1609,12 +1609,14 @@ is unavailable.
 
 The administrative `validate-data` service performs the expensive validation of
 the mandatory databases and both ECFP/FCFP caches once, then writes a persistent
-receipt inside the database volume. Backend startup only checks that receipt and
-a lightweight file inventory; it never loads molecular representations or scans
-the predicted-ligand caches. This keeps normal restarts fast while still refusing
-searches when required data is missing, changed, or has not been validated for
-the installed application version. Public search jobs run BLAST and HMMER with a
-single worker so the pipeline matches a one-CPU deployment limit.
+receipt inside a separate validation volume. Backend startup only checks that
+receipt and a lightweight file inventory; it never loads molecular
+representations or scans the predicted-ligand caches. Both the API and validator
+mount the databases read-only, while only the validator can write the receipt.
+This keeps normal restarts fast while still refusing searches when required data
+is missing, changed, or was validated with an incompatible validation contract.
+Public search jobs run BLAST and HMMER with a single worker so the pipeline
+matches a one-CPU deployment limit.
 
 Local testing can reuse an existing native `./databases` directory as a
 read-only mount:

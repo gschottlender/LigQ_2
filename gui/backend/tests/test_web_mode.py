@@ -166,7 +166,8 @@ class WebPolicyTests(unittest.TestCase):
 
     def test_successful_deep_validation_receipt_survives_runtime_restart(self):
         with tempfile.TemporaryDirectory() as directory:
-            data_dir = Path(directory)
+            data_dir = Path(directory) / "data"
+            receipt_dir = Path(directory) / "validation"
             required_paths = ("core.dat", "cache/manifest.json")
             for relative in required_paths:
                 path = data_dir / relative
@@ -187,23 +188,57 @@ class WebPolicyTests(unittest.TestCase):
                             "fcfp": {"ready": True, "message": "validated"},
                         },
                     },
+                    receipt_dir=receipt_dir,
                 )
                 first_status = web_validation_receipt.inspect_web_validation_receipt(
-                    data_dir
+                    data_dir,
+                    receipt_dir=receipt_dir,
                 )
                 # A new inspection has no in-memory state and models a backend restart.
                 restarted_status = (
-                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                    web_validation_receipt.inspect_web_validation_receipt(
+                        data_dir,
+                        receipt_dir=receipt_dir,
+                    )
                 )
 
+        self.assertEqual(receipt_path.parent, receipt_dir)
         self.assertTrue(receipt_path.name.endswith("validation.json"))
         self.assertTrue(first_status["ready"])
         self.assertTrue(restarted_status["ready"])
         self.assertTrue(restarted_status["checks"]["receipt"]["ready"])
 
+    def test_receipt_can_be_written_while_database_directory_is_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "data"
+            receipt_dir = Path(directory) / "validation"
+            data_dir.mkdir()
+            (data_dir / "core.dat").write_text("validated", encoding="utf-8")
+
+            with patch.object(
+                web_validation_receipt,
+                "required_web_data_paths",
+                return_value=("core.dat",),
+            ):
+                data_dir.chmod(0o555)
+                try:
+                    receipt_path = (
+                        web_validation_receipt.write_web_validation_receipt(
+                            data_dir,
+                            {"ready": True, "checks": {}},
+                            receipt_dir=receipt_dir,
+                        )
+                    )
+                finally:
+                    data_dir.chmod(0o755)
+
+        self.assertEqual(receipt_path.parent, receipt_dir)
+
     def test_runtime_receipt_rejects_data_modified_after_validation(self):
         with tempfile.TemporaryDirectory() as directory:
-            data_dir = Path(directory)
+            data_dir = Path(directory) / "data"
+            receipt_dir = Path(directory) / "validation"
+            data_dir.mkdir()
             required_path = data_dir / "core.dat"
             required_path.write_text("validated", encoding="utf-8")
 
@@ -215,16 +250,23 @@ class WebPolicyTests(unittest.TestCase):
                 web_validation_receipt.write_web_validation_receipt(
                     data_dir,
                     {"ready": True, "checks": {}},
+                    receipt_dir=receipt_dir,
                 )
                 required_path.write_text("changed after validation", encoding="utf-8")
-                status = web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                status = web_validation_receipt.inspect_web_validation_receipt(
+                    data_dir,
+                    receipt_dir=receipt_dir,
+                )
 
         self.assertFalse(status["ready"])
         self.assertIn("changed", status["errors"][0])
 
     def test_runtime_receipt_reports_missing_and_corrupt_receipts_explicitly(self):
         with tempfile.TemporaryDirectory() as directory:
-            data_dir = Path(directory)
+            data_dir = Path(directory) / "data"
+            receipt_dir = Path(directory) / "validation"
+            data_dir.mkdir()
+            receipt_dir.mkdir()
             required_path = data_dir / "core.dat"
             required_path.write_text("present", encoding="utf-8")
 
@@ -234,14 +276,20 @@ class WebPolicyTests(unittest.TestCase):
                 return_value=("core.dat",),
             ):
                 missing_status = (
-                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                    web_validation_receipt.inspect_web_validation_receipt(
+                        data_dir,
+                        receipt_dir=receipt_dir,
+                    )
                 )
-                web_validation_receipt.validation_receipt_path(data_dir).write_text(
-                    "not json",
-                    encoding="utf-8",
-                )
+                web_validation_receipt.validation_receipt_path(
+                    data_dir,
+                    receipt_dir=receipt_dir,
+                ).write_text("not json", encoding="utf-8")
                 corrupt_status = (
-                    web_validation_receipt.inspect_web_validation_receipt(data_dir)
+                    web_validation_receipt.inspect_web_validation_receipt(
+                        data_dir,
+                        receipt_dir=receipt_dir,
+                    )
                 )
 
         self.assertFalse(missing_status["ready"])
@@ -251,6 +299,34 @@ class WebPolicyTests(unittest.TestCase):
         )
         self.assertFalse(corrupt_status["ready"])
         self.assertIn("unreadable", corrupt_status["errors"][0])
+
+    def test_runtime_receipt_rejects_a_different_validator_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data_dir = Path(directory) / "data"
+            receipt_dir = Path(directory) / "validation"
+            data_dir.mkdir()
+            (data_dir / "core.dat").write_text("validated", encoding="utf-8")
+
+            with patch.object(
+                web_validation_receipt,
+                "required_web_data_paths",
+                return_value=("core.dat",),
+            ):
+                receipt_path = web_validation_receipt.write_web_validation_receipt(
+                    data_dir,
+                    {"ready": True, "checks": {}},
+                    receipt_dir=receipt_dir,
+                )
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                receipt["validator_version"] = 0
+                receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+                status = web_validation_receipt.inspect_web_validation_receipt(
+                    data_dir,
+                    receipt_dir=receipt_dir,
+                )
+
+        self.assertFalse(status["ready"])
+        self.assertIn("different validator version", status["errors"][0])
 
     def test_validator_cli_writes_receipt_only_after_deep_success(self):
         status = {
@@ -266,6 +342,8 @@ class WebPolicyTests(unittest.TestCase):
                 "validate_web_data.py",
                 "--data-dir",
                 "/validated/data",
+                "--receipt-dir",
+                "/validated/receipt",
                 "--write-receipt",
             ],
         ), patch.object(
@@ -273,13 +351,17 @@ class WebPolicyTests(unittest.TestCase):
         ), patch.object(
             validate_web_data,
             "write_web_validation_receipt",
-            return_value=Path("/validated/data/.ligq-web-validation.json"),
+            return_value=Path("/validated/receipt/.ligq-web-validation.json"),
         ) as write_receipt:
             with self.assertRaises(SystemExit) as raised:
                 validate_web_data.main()
 
         self.assertEqual(raised.exception.code, 0)
         write_receipt.assert_called_once()
+        self.assertEqual(
+            write_receipt.call_args.kwargs["receipt_dir"],
+            Path("/validated/receipt"),
+        )
 
     def test_failed_deep_validation_does_not_replace_an_existing_receipt(self):
         status = {
@@ -295,6 +377,8 @@ class WebPolicyTests(unittest.TestCase):
                 "validate_web_data.py",
                 "--data-dir",
                 "/validated/data",
+                "--receipt-dir",
+                "/validated/receipt",
                 "--write-receipt",
             ],
         ), patch.object(
@@ -577,7 +661,10 @@ class RuntimeWebReadinessTests(unittest.IsolatedAsyncioTestCase):
             status = await web_readiness.inspect_web_readiness(force=True)
 
         self.assertEqual(status, expected)
-        inspect_receipt.assert_called_once_with(web_readiness.DATABASES_DIR)
+        inspect_receipt.assert_called_once_with(
+            web_readiness.DATABASES_DIR,
+            receipt_dir=web_readiness.WEB_VALIDATION_DIR,
+        )
 
     async def test_runtime_never_emits_a_blank_error_for_receipt_failures(self):
         with patch.object(

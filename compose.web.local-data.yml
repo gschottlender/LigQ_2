@@ -1,5 +1,6 @@
 # Development-only overlay: reuse the native repository data read-only while
-# keeping web jobs, state, uploads and results in isolated Docker volumes.
+# keeping the validation receipt, web jobs, state, uploads and results in
+# isolated Docker volumes.
 services:
   api:
     volumes:
@@ -15,6 +16,6 @@ services:
       - type: bind
         source: ./databases
         target: /app/databases
-        read_only: false
+        read_only: true
         bind:
           create_host_path: false

@@ -17,10 +17,10 @@ recovery supports only Sequence and Nearest K, with K capped at 10; Domain
 search is unavailable, and BLAST/HMMER run with one worker. The search page
 footer links visitors to the local GitHub version for the complete feature set.
 Before public startup, the administrative validator deeply checks both required
-predicted-ligand caches and atomically writes `.ligq-web-validation.json` in the
-database root. Runtime readiness only verifies that receipt and a lightweight
-inventory, so routine backend restarts do not reload representations or repeat
-the expensive cache scan.
+predicted-ligand caches and atomically writes `.ligq-web-validation.json` in a
+dedicated persistent validation volume. Runtime readiness only verifies that
+receipt and a lightweight inventory, so routine backend restarts do not reload
+representations or repeat the expensive cache scan.
 
 ---
 
@@ -137,10 +137,10 @@ administrative operations:
 ./docker/ligq-web.sh start
 ```
 
-The API mounts databases read-only. Only `prepare-data` and `validate-data` can
-write the database volume; the latter writes the persistent validation receipt.
-If the receipt or required files change, readiness fails with an actionable
-message until the administrator runs validation again.
+The API and `validate-data` both mount databases read-only. `prepare-data` alone
+can update the database volume, while `validate-data` alone can write the
+separate validation volume. If the receipt or required files change, readiness
+fails with an actionable message until the administrator runs validation again.
 
 ---
 

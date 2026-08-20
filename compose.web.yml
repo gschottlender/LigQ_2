@@ -14,6 +14,7 @@ x-api-environment: &api-environment
   LIGQ_UPLOADS_DIR: /app/gui/backend/uploads
   LIGQ_TEMP_RESULTS_DIR: /app/temp_results
   LIGQ_STATE_DIR: /app/state
+  LIGQ_WEB_VALIDATION_DIR: /app/validation
   LIGQ_DEPLOYMENT_MODE: web
   LIGQ_SESSION_SECRET: ${LIGQ_SESSION_SECRET:-ligq2-local-web-test-secret-change-before-public-deployment}
   LIGQ_SESSION_COOKIE_SECURE: ${LIGQ_SESSION_COOKIE_SECURE:-false}
@@ -32,6 +33,7 @@ services:
       - web_uploads:/app/gui/backend/uploads
       - web_state:/app/state
       - web_temp:/app/temp_results
+      - web_validation:/app/validation:ro
     tmpfs:
       - /tmp
     read_only: true
@@ -74,9 +76,15 @@ services:
     <<: *api-image
     profiles: ["admin"]
     entrypoint: ["python", "-m", "ligq_support.validate_web_data"]
-    command: ["--data-dir", "/app/databases", "--write-receipt"]
+    command:
+      - --data-dir
+      - /app/databases
+      - --receipt-dir
+      - /app/validation
+      - --write-receipt
     volumes:
-      - web_databases:/app/databases
+      - web_databases:/app/databases:ro
+      - web_validation:/app/validation
 
 volumes:
   web_databases:
@@ -91,3 +99,5 @@ volumes:
     name: ${LIGQ_WEB_TEMP_VOLUME:-ligq2_web_temp}
   web_huggingface:
     name: ${LIGQ_WEB_HF_VOLUME:-ligq2_web_huggingface}
+  web_validation:
+    name: ${LIGQ_WEB_VALIDATION_VOLUME:-ligq2_web_validation}

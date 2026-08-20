@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any
 
-from core.config import DATABASES_DIR
+from core.config import DATABASES_DIR, WEB_VALIDATION_DIR
 from core.policy import is_web_mode
 from ligq_support.web_validation_receipt import inspect_web_validation_receipt
 
@@ -41,7 +41,10 @@ async def inspect_web_readiness(*, force: bool = False) -> dict[str, Any]:
             return dict(_cached_status)
 
         try:
-            status = inspect_web_validation_receipt(DATABASES_DIR)
+            status = inspect_web_validation_receipt(
+                DATABASES_DIR,
+                receipt_dir=WEB_VALIDATION_DIR,
+            )
         except Exception as exc:
             detail = str(exc).strip() or type(exc).__name__
             status = {

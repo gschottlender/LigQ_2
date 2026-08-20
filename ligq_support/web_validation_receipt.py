@@ -10,6 +10,8 @@ from typing import Any, Iterable
 
 RECEIPT_FILENAME = ".ligq-web-validation.json"
 RECEIPT_SCHEMA_VERSION = 1
+# Increment this contract version whenever deep validation semantics change in a
+# way that cannot be detected from the required-file inventory alone.
 WEB_DATA_VALIDATOR_VERSION = 1
 SMALL_FILE_HASH_LIMIT = 1024 * 1024
 
@@ -74,11 +76,21 @@ def build_web_data_inventory(
     return inventory, missing
 
 
-def validation_receipt_path(data_dir: Path) -> Path:
-    return Path(data_dir) / RECEIPT_FILENAME
+def validation_receipt_path(
+    data_dir: Path,
+    *,
+    receipt_dir: Path | None = None,
+) -> Path:
+    directory = Path(receipt_dir) if receipt_dir is not None else Path(data_dir)
+    return directory / RECEIPT_FILENAME
 
 
-def write_web_validation_receipt(data_dir: Path, status: dict[str, Any]) -> Path:
+def write_web_validation_receipt(
+    data_dir: Path,
+    status: dict[str, Any],
+    *,
+    receipt_dir: Path | None = None,
+) -> Path:
     if not status.get("ready"):
         raise ValueError("A validation receipt can only be written for ready web data.")
 
@@ -97,7 +109,8 @@ def write_web_validation_receipt(data_dir: Path, status: dict[str, Any]) -> Path
         "required_files": inventory,
         "checks": status.get("checks", {}),
     }
-    path = validation_receipt_path(data_dir)
+    path = validation_receipt_path(data_dir, receipt_dir=receipt_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with temporary_path.open("w", encoding="utf-8") as handle:
@@ -125,14 +138,17 @@ def _not_ready(message: str) -> dict[str, Any]:
     }
 
 
-def inspect_web_validation_receipt(data_dir: Path) -> dict[str, Any]:
+def inspect_web_validation_receipt(
+    data_dir: Path,
+    *,
+    receipt_dir: Path | None = None,
+) -> dict[str, Any]:
     data_dir = Path(data_dir)
-    path = validation_receipt_path(data_dir)
+    path = validation_receipt_path(data_dir, receipt_dir=receipt_dir)
     if not path.is_file():
         return _not_ready(
-            "Administrative web-data validation is required. Run "
-            "'python -m ligq_support.validate_web_data --data-dir "
-            f"{data_dir} --write-receipt' before starting the public service."
+            "Administrative web-data validation is required. Run the "
+            "validate-data service before starting the public service."
         )
 
     try:

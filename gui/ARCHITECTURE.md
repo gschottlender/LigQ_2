@@ -433,21 +433,22 @@ Checks the sidecar JSON in priority order:
 Restricted web mode separates expensive administrative validation from runtime
 readiness:
 
-1. `python -m ligq_support.validate_web_data --write-receipt` constructs each
-   supported provider and verifies the ECFP/FCFP cache metadata, thresholds,
-   fingerprints, and protein coverage.
+1. `python -m ligq_support.validate_web_data --write-receipt --receipt-dir
+   /app/validation` constructs each supported provider and verifies the
+   ECFP/FCFP cache metadata, thresholds, fingerprints, and protein coverage.
 2. After every deep check succeeds, it atomically writes
-   `databases/.ligq-web-validation.json`. The receipt records the validator
-   version, validation time, successful checks, and an inventory of every
-   required file. Small metadata files are SHA-256 hashed; all files record size
-   and modification time.
+   `/app/validation/.ligq-web-validation.json` in a dedicated persistent volume.
+   The receipt records the validation-contract version, validation time,
+   successful checks, and an inventory of every required file. Small metadata
+   files are SHA-256 hashed; all files record size and modification time.
 3. API startup calls `services/web_readiness.py`, which only inspects this
    receipt and recomputes the lightweight inventory. It does not construct a
    provider, load a representation, open Parquet caches, or launch a validator
    subprocess.
-4. The API mounts databases read-only. The administrative Compose validator has
-   temporary write access solely so it can replace the receipt after a
-   successful validation.
+4. The API mounts both databases and the receipt volume read-only. The
+   administrative validator also mounts databases read-only and has write access
+   solely to the receipt volume. This keeps native or externally managed data
+   directories immutable even during validation.
 
 A restart therefore reuses the persistent result. Missing, corrupt,
 incompatible, or stale receipts fail closed with an explicit recovery command.

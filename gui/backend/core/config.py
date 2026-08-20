@@ -70,6 +70,9 @@ TEMP_RESULTS_DIR: Path = _path_from_env(
 STATE_DIR: Path = _path_from_env(
     "LIGQ_STATE_DIR", PIPELINE_ROOT / "gui" / "backend" / "state"
 )
+WEB_VALIDATION_DIR: Path = _path_from_env(
+    "LIGQ_WEB_VALIDATION_DIR", DATABASES_DIR
+)
 JOB_DB_PATH: Path = STATE_DIR / "jobs.sqlite3"
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("LIGQ_MAX_UPLOAD_BYTES", str(20 * 1024**3)))
