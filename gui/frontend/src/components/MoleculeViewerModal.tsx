@@ -82,12 +82,9 @@ export function MoleculeViewerModal({ smiles, compoundId, onClose }: MoleculeVie
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div>
-            <p className="font-semibold text-gray-800 dark:text-gray-100">3D Structure</p>
-            <p className="text-xs font-jetbrains-mono text-gray-500 dark:text-gray-500 mt-0.5">
-              {compoundId}
-            </p>
-          </div>
+          <p className="font-semibold font-jetbrains-mono text-gray-800 dark:text-gray-100">
+            {compoundId}
+          </p>
           <button
             onClick={onClose}
             className="ml-8 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors cursor-pointer"

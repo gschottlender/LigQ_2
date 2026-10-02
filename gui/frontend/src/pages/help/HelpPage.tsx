@@ -452,7 +452,7 @@ export function HelpPage() {
                 </p>
                 <ul className="mt-2 list-disc list-inside text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed space-y-1 pl-1">
                   <li><strong className="text-gray-700 dark:text-gray-200">Download SDF</strong> — saves the compound as a structure file.</li>
-                  <li><strong className="text-gray-700 dark:text-gray-200">Open in Viewer</strong> — opens an interactive 3D structure viewer.</li>
+                  <li><strong className="text-gray-700 dark:text-gray-200">Open in Viewer</strong> — opens an interactive viewer of the compound structure.</li>
                 </ul>
               </div>
             </div>
