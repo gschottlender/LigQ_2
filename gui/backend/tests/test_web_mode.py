@@ -524,6 +524,10 @@ class WebSearchMethodPolicyTests(unittest.IsolatedAsyncioTestCase):
             "known_only": False,
             "use_bsi": False,
             "bsi_threshold": 0.98,
+            "nearest_k_adaptive": False,
+            "nearest_k_min_identity": 0.55,
+            "nearest_k_min_ligands": 50,
+            "nearest_k_max": 15,
         }
         params.update(overrides)
         with patch.object(
@@ -552,6 +556,14 @@ class WebSearchMethodPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 422)
         self.assertEqual(payload["error"], "search_policy_violation")
         self.assertEqual(payload["details"]["field"], "nearest_k")
+
+    async def test_adaptive_nearest_k_is_rejected_in_web_mode(self):
+        response = await self._start_search(nearest_k_adaptive=True)
+        payload = json.loads(response.body)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(payload["error"], "search_policy_violation")
+        self.assertEqual(payload["details"]["field"], "nearest_k_adaptive")
 
 
 class ExclusiveAdmissionTests(unittest.IsolatedAsyncioTestCase):

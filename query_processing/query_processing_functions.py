@@ -838,6 +838,110 @@ def filter_nearest_k_candidates_by_query_domains(
     return filtered
 
 
+def select_adaptive_nearest_k_candidates(
+    df_candidates_nearest_k: pd.DataFrame,
+    known_db: pd.DataFrame,
+    df_candidates_seq: pd.DataFrame | None = None,
+    min_identity: float = 0.55,
+    min_ligands: int = 50,
+    max_k: int = 15,
+    temp_results_dir: str | Path = "temp_results",
+    save_candidates: bool = True,
+    candidates_filename: str = "candidate_proteins_nearest_k_domain_filtered.tsv",
+) -> pd.DataFrame:
+    """
+    Choose a per-query number of nearest-k neighbors from ranked,
+    domain-filtered candidates.
+
+    Rules
+    -----
+    - Neighbors with BLAST identity >= `min_identity` (0–1) are retained
+      first, in ranking order.
+    - Further neighbors are then added in ranking order until the query
+      reaches `min_ligands` distinct known ligands. Ligands contributed by
+      proteins in `df_candidates_seq` count towards that total.
+    - No query keeps more than `max_k` neighbors.
+
+    `df_candidates_nearest_k` must be ordered by ranking within each query
+    and contain a `pident` column expressed as a percentage.
+    """
+    output_cols = ["qseqid", "sseqid", "search_type"]
+    if (
+        df_candidates_nearest_k is None
+        or df_candidates_nearest_k.empty
+        or max_k <= 0
+    ):
+        selected = pd.DataFrame(columns=output_cols)
+    else:
+        missing = {"qseqid", "sseqid", "pident"} - set(df_candidates_nearest_k.columns)
+        if missing:
+            raise ValueError(
+                "df_candidates_nearest_k is missing required columns: "
+                f"{missing}"
+            )
+
+        ranked = df_candidates_nearest_k.copy()
+        ranked["qseqid"] = ranked["qseqid"].astype(str)
+        ranked["sseqid"] = ranked["sseqid"].astype(str)
+
+        seq_proteins_by_query: dict[str, list[str]] = {}
+        if df_candidates_seq is not None and not df_candidates_seq.empty:
+            seq_proteins_by_query = (
+                df_candidates_seq.astype({"qseqid": str, "sseqid": str})
+                .groupby("qseqid")["sseqid"]
+                .agg(list)
+                .to_dict()
+            )
+
+        proteins = set(ranked["sseqid"])
+        for seq_proteins in seq_proteins_by_query.values():
+            proteins.update(seq_proteins)
+
+        ligands_by_protein: dict[str, set] = {}
+        if known_db is not None and not known_db.empty:
+            known = known_db[["uniprot_id", "chem_comp_id"]].dropna()
+            known = known[known["uniprot_id"].astype(str).isin(proteins)]
+            ligands_by_protein = (
+                known.groupby(known["uniprot_id"].astype(str))["chem_comp_id"]
+                .agg(set)
+                .to_dict()
+            )
+
+        identity_cutoff = min_identity * 100.0
+        kept_idx: list = []
+        for qseqid, group in ranked.groupby("qseqid", sort=False):
+            ligands: set = set()
+            for protein in seq_proteins_by_query.get(qseqid, []):
+                ligands |= ligands_by_protein.get(protein, set())
+
+            is_close = group["pident"] >= identity_cutoff
+            close = group[is_close].head(max_k)
+            kept_idx.extend(close.index)
+            for protein in close["sseqid"]:
+                ligands |= ligands_by_protein.get(protein, set())
+
+            n_kept = len(close)
+            for idx, protein in group.loc[~is_close, "sseqid"].items():
+                if n_kept >= max_k or len(ligands) >= min_ligands:
+                    break
+                kept_idx.append(idx)
+                ligands |= ligands_by_protein.get(protein, set())
+                n_kept += 1
+
+        # Restore ranking order: close neighbors are not always ranked first.
+        selected = ranked.loc[sorted(kept_idx)].reset_index(drop=True)
+        selected["search_type"] = "nearest_k"
+
+    if save_candidates:
+        temp_results_dir = Path(temp_results_dir)
+        temp_results_dir.mkdir(parents=True, exist_ok=True)
+        selected_path = temp_results_dir / candidates_filename
+        selected[output_cols].to_csv(selected_path, sep="\t", index=False)
+        print(f"[INFO] Saved adaptive nearest-k mapping to: {selected_path}")
+
+    return selected
+
+
 # ----------------------------------------------------------------------
 # Block 2 – Domain-based search (HMMER + Pfam)
 # ----------------------------------------------------------------------

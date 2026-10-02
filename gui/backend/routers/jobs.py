@@ -123,6 +123,10 @@ def _build_search_args(
     known_only: bool,
     use_bsi: bool,
     bsi_threshold: float,
+    nearest_k_adaptive: bool = False,
+    nearest_k_min_identity: float = 0.55,
+    nearest_k_min_ligands: int = 50,
+    nearest_k_max: int = 15,
     immutable_web_data: bool = False,
 ) -> list[str]:
     effective_representation = BSI_REPRESENTATION if use_bsi else search_representation
@@ -149,6 +153,13 @@ def _build_search_args(
         args.append("--sequence")
     if use_nearest_k:
         args += ["--nearest_k", "--nearest-k", str(nearest_k)]
+        if nearest_k_adaptive:
+            args += [
+                "--nearest-k-adaptive",
+                "--nearest-k-min-identity", str(nearest_k_min_identity),
+                "--nearest-k-min-ligands", str(nearest_k_min_ligands),
+                "--nearest-k-max", str(nearest_k_max),
+            ]
     if use_domains:
         args.append("--domains")
     if known_only:
@@ -182,6 +193,10 @@ async def start_search(
     known_only: bool = Form(False),
     use_bsi: bool = Form(False),
     bsi_threshold: float = Form(BSI_DEFAULT_THRESHOLD),
+    nearest_k_adaptive: bool = Form(False),
+    nearest_k_min_identity: float = Form(0.55),
+    nearest_k_min_ligands: int = Form(50),
+    nearest_k_max: int = Form(15),
 ):
     web_mode = is_web_mode()
     ip_hash = client_ip_hash(request) if web_mode else ""
@@ -241,6 +256,13 @@ async def start_search(
                 ),
                 status_code=422,
                 details={"field": "nearest_k"},
+            )
+        if nearest_k_adaptive:
+            return _err(
+                "search_policy_violation",
+                "Adaptive Nearest K is not available on the public web service.",
+                status_code=422,
+                details={"field": "nearest_k_adaptive"},
             )
         if not known_only:
             representation_policy = web_representation_policy(search_representation)
@@ -340,6 +362,16 @@ async def start_search(
 
     if use_nearest_k and nearest_k < 1:
         return _err("invalid_nearest_k", "nearest_k must be >= 1 when use_nearest_k is true.")
+    if use_nearest_k and nearest_k_adaptive:
+        if not (0.0 <= nearest_k_min_identity <= 1.0):
+            return _err(
+                "invalid_nearest_k_adaptive",
+                "nearest_k_min_identity must be between 0.0 and 1.0.",
+            )
+        if nearest_k_min_ligands < 1:
+            return _err("invalid_nearest_k_adaptive", "nearest_k_min_ligands must be >= 1.")
+        if nearest_k_max < 1:
+            return _err("invalid_nearest_k_adaptive", "nearest_k_max must be >= 1.")
 
     job_id = str(uuid.uuid4())
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -429,6 +461,10 @@ async def start_search(
         known_only=known_only,
         use_bsi=use_bsi,
         bsi_threshold=bsi_threshold,
+        nearest_k_adaptive=nearest_k_adaptive,
+        nearest_k_min_identity=nearest_k_min_identity,
+        nearest_k_min_ligands=nearest_k_min_ligands,
+        nearest_k_max=nearest_k_max,
         immutable_web_data=web_mode,
     )
 

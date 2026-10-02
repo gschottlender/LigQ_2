@@ -175,6 +175,8 @@ const TANIMOTO_MIN_THRESHOLD = 0.2;
 const COSINE_MIN_THRESHOLD = 0.75;
 const BSI_MIN_THRESHOLD = 0.97;
 const BSI_DEFAULT_THRESHOLD = 0.98;
+const ADAPTIVE_K_DEFAULT_IDENTITY = 55;
+const ADAPTIVE_K_DEFAULT_MIN_LIGANDS = 50;
 
 function roundThresholdUp(value: number): number {
   return Math.min(1, Math.ceil(value * 100 - 1e-9) / 100);
@@ -274,6 +276,10 @@ export function Sidebar({
   const [methodSequence, setMethodSequence] = useState(true);
   const [methodNearestK, setMethodNearestK] = useState(true);
   const [kValue, setKValue] = useState(policy.search.nearest_k_default);
+  const [adaptiveK, setAdaptiveK] = useState(false);
+  const [adaptiveIdentity, setAdaptiveIdentity] = useState(ADAPTIVE_K_DEFAULT_IDENTITY);
+  const [adaptiveMinLigands, setAdaptiveMinLigands] = useState(ADAPTIVE_K_DEFAULT_MIN_LIGANDS);
+  const [adaptiveMaxK, setAdaptiveMaxK] = useState(policy.search.nearest_k_max);
   const [methodDomain, setMethodDomain] = useState(false);
   const [validationError, setValidationError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -303,6 +309,7 @@ export function Sidebar({
   const effectiveUseBsi = !knownOnly && !isWeb && useBsi;
   const effectiveMethodSequence = sequenceAllowed && methodSequence;
   const effectiveMethodNearestK = nearestKAllowed && methodNearestK;
+  const effectiveAdaptiveK = !isWeb && effectiveMethodNearestK && adaptiveK;
   const effectiveMethodDomain = domainAllowed && !effectiveUseBsi && methodDomain;
   const resolvedDatabaseId = isWeb ? 'zinc' : databaseId || databases[0]?.id || '';
   const availableReps = getRepresentationsForDatabase(resolvedDatabaseId);
@@ -437,6 +444,11 @@ export function Sidebar({
     setKValue(Math.min(nearestKMax, Math.max(nearestKMin, nextValue)));
   };
 
+  const clampInteger = (value: string, min: number, max: number) => {
+    const parsed = Number.parseInt(value, 10);
+    return Math.min(max, Math.max(min, Number.isNaN(parsed) ? min : parsed));
+  };
+
   const validate = () => {
     if (!fastaFile) {
       if (!fastaError) setValidationError(VALIDATION_MESSAGES.fasta);
@@ -507,6 +519,12 @@ export function Sidebar({
       formData.append('use_sequence', String(effectiveMethodSequence));
       formData.append('use_nearest_k', String(effectiveMethodNearestK));
       formData.append('nearest_k', String(kValue));
+      if (effectiveAdaptiveK) {
+        formData.append('nearest_k_adaptive', 'true');
+        formData.append('nearest_k_min_identity', String(adaptiveIdentity / 100));
+        formData.append('nearest_k_min_ligands', String(adaptiveMinLigands));
+        formData.append('nearest_k_max', String(adaptiveMaxK));
+      }
       formData.append('use_domains', String(effectiveMethodDomain));
 
       const response = await api.post<{ job_id: string; status: string; output_dir: string }>(
@@ -742,7 +760,59 @@ export function Sidebar({
               {nearestKAllowed && (
                 <CheckboxField label="Nearest K" checked={methodNearestK} onChange={setMethodNearestK} />
               )}
-              {nearestKAllowed && methodNearestK && (
+              {nearestKAllowed && methodNearestK && !isWeb && (
+                <div className="pl-6">
+                  <CheckboxField
+                    label="Adaptive K"
+                    checked={adaptiveK}
+                    onChange={setAdaptiveK}
+                    info="Chooses the number of neighbors for each query: neighbors above the identity threshold are kept, then more are added until the query reaches the minimum number of known ligands, up to the maximum K."
+                  />
+                </div>
+              )}
+              {effectiveAdaptiveK && (
+                <div className="flex flex-col gap-2 pl-6 text-sm text-gray-500 dark:text-gray-300">
+                  <label className="flex items-center gap-2">
+                    <span className="w-24">Identity ≥ (%)</span>
+                    <input
+                      type="number"
+                      value={adaptiveIdentity}
+                      min={0}
+                      max={100}
+                      step={1}
+                      onChange={(event) => setAdaptiveIdentity(clampInteger(event.target.value, 0, 100))}
+                      className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm
+                      text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="w-24">Min. ligands</span>
+                    <input
+                      type="number"
+                      value={adaptiveMinLigands}
+                      min={1}
+                      step={1}
+                      onChange={(event) => setAdaptiveMinLigands(clampInteger(event.target.value, 1, 100000))}
+                      className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm
+                      text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span className="w-24">Max. K</span>
+                    <input
+                      type="number"
+                      value={adaptiveMaxK}
+                      min={nearestKMin}
+                      max={nearestKMax}
+                      step={1}
+                      onChange={(event) => setAdaptiveMaxK(clampInteger(event.target.value, nearestKMin, nearestKMax))}
+                      className="w-16 border border-gray-300 dark:border-gray-600 rounded-lg px-2 py-1 text-sm
+                      text-gray-600 dark:text-gray-200 bg-white dark:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-teal-500"
+                    />
+                  </label>
+                </div>
+              )}
+              {nearestKAllowed && methodNearestK && !effectiveAdaptiveK && (
                 <div className="flex items-center gap-2 pl-6">
                   <span className="text-sm text-gray-500 dark:text-gray-300">K =</span>
                   <input

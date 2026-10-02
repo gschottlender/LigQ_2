@@ -24,6 +24,7 @@ from query_processing.query_processing_functions import (
     build_nearest_k_candidates_from_blast,
     _load_ranked_blast_hits,
     filter_nearest_k_candidates_by_query_domains,
+    select_adaptive_nearest_k_candidates,
     run_hmmer_domain_search,
     map_pfam_hits_to_candidate_proteins,
     combine_sequence_and_domain_candidates,
@@ -361,6 +362,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-hits", type=int, default=150)
     parser.add_argument("--hmmer-evalue-max", type=float, default=1e-5)
     parser.add_argument("--nearest-k", dest="nearest_k_count", type=int, default=5)
+    parser.add_argument(
+        "--nearest-k-adaptive",
+        action="store_true",
+        help=(
+            "Choose the number of nearest-k neighbors per query instead of using "
+            "a fixed --nearest-k: keep neighbors above --nearest-k-min-identity, "
+            "then add neighbors until --nearest-k-min-ligands known ligands are "
+            "reached, up to --nearest-k-max neighbors."
+        ),
+    )
+    parser.add_argument(
+        "--nearest-k-min-identity",
+        type=float,
+        default=0.55,
+        help="Identity (0-1) above which adaptive nearest-k always keeps a neighbor (default: 0.55).",
+    )
+    parser.add_argument(
+        "--nearest-k-min-ligands",
+        type=int,
+        default=50,
+        help="Known ligands per query that adaptive nearest-k tries to reach (default: 50).",
+    )
+    parser.add_argument(
+        "--nearest-k-max",
+        type=int,
+        default=15,
+        help="Maximum neighbors per query in adaptive nearest-k (default: 15).",
+    )
     parser.add_argument("--max-domain-candidates-per-domain", type=int, default=20)
 
     parser.add_argument("--sequence", dest="use_sequence_flag", action="store_true")
@@ -540,6 +569,13 @@ def main() -> None:
         raise ValueError("--bsi-max-known-ligands must be > 0.")
     if args.max_domain_candidates_per_domain <= 0:
         raise ValueError("--max-domain-candidates-per-domain must be > 0.")
+    if args.nearest_k_adaptive:
+        if args.nearest_k_min_identity < 0.0 or args.nearest_k_min_identity > 1.0:
+            raise ValueError("--nearest-k-min-identity must be between 0 and 1.")
+        if args.nearest_k_min_ligands <= 0:
+            raise ValueError("--nearest-k-min-ligands must be > 0.")
+        if args.nearest_k_max <= 0:
+            raise ValueError("--nearest-k-max must be > 0.")
     if (
         not args.known_only
         and not args.bsi
@@ -679,6 +715,8 @@ def main() -> None:
     df_blast_ranked = pd.DataFrame()
     df_candidates_dom = pd.DataFrame(columns=["qseqid", "sseqid", "search_type"])
     df_hmmer = pd.DataFrame()
+    known_db = None
+    nearest_k_limit = args.nearest_k_max if args.nearest_k_adaptive else args.nearest_k_count
 
     if use_sequence or use_nearest_k or use_domains:
         report_search_progress("blast_search")
@@ -686,7 +724,7 @@ def main() -> None:
         if use_nearest_k or use_domains:
             blast_max_target_seqs = max(
                 args.max_hits,
-                args.nearest_k_count * 200 if use_nearest_k else 0,
+                nearest_k_limit * 200 if use_nearest_k else 0,
                 args.max_domain_candidates_per_domain * 200 if use_domains else 0,
                 5000,
             )
@@ -729,7 +767,32 @@ def main() -> None:
         )
 
     report_search_progress("candidate_selection")
-    if use_nearest_k:
+    if use_nearest_k and args.nearest_k_adaptive:
+        # Adaptive selection counts known ligands, so the table is needed early.
+        known_db = ensure_known_binding_table(
+            data_dir=data_dir,
+            force_rebuild=args.force_rebuild_known_binding,
+            read_only=args.data_read_only,
+        )
+        df_candidates_nearest_k = filter_nearest_k_candidates_by_query_domains(
+            df_candidates_nearest_k=df_candidates_nearest_k_ranked,
+            df_hmmer=df_hmmer,
+            data_dir=data_dir,
+            nearest_k=None,
+            temp_results_dir=temp_results_dir,
+            save_candidates=False,
+        )
+        df_candidates_nearest_k = select_adaptive_nearest_k_candidates(
+            df_candidates_nearest_k=df_candidates_nearest_k,
+            known_db=known_db,
+            df_candidates_seq=df_candidates_seq,
+            min_identity=args.nearest_k_min_identity,
+            min_ligands=args.nearest_k_min_ligands,
+            max_k=args.nearest_k_max,
+            temp_results_dir=temp_results_dir,
+            save_candidates=True,
+        )
+    elif use_nearest_k:
         df_candidates_nearest_k = filter_nearest_k_candidates_by_query_domains(
             df_candidates_nearest_k=df_candidates_nearest_k_ranked,
             df_hmmer=df_hmmer,
@@ -760,11 +823,12 @@ def main() -> None:
     )
 
     report_search_progress("known_bindings")
-    known_db = ensure_known_binding_table(
-        data_dir=data_dir,
-        force_rebuild=args.force_rebuild_known_binding,
-        read_only=args.data_read_only,
-    )
+    if known_db is None:
+        known_db = ensure_known_binding_table(
+            data_dir=data_dir,
+            force_rebuild=args.force_rebuild_known_binding,
+            read_only=args.data_read_only,
+        )
 
     proteins_needed = set(df_candidates_all["sseqid"].astype(str).unique()) if not df_candidates_all.empty else set()
 

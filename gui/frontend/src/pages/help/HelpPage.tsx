@@ -340,6 +340,9 @@ export function HelpPage() {
                         <InfoBadge label="Sequence" color="teal" /> (BLAST),{' '}
                         <InfoBadge label="Nearest K" color="blue" /> (set K from 1 to 15),{' '}
                         <InfoBadge label="Domain" color="amber" /> (HMMER).
+                        {' '}With Adaptive K enabled, Nearest K chooses the number of neighbors for each
+                        query: neighbors above the identity threshold are kept, then more are added until
+                        the query reaches the minimum number of known ligands, up to the maximum K.
                       </>
                     )}
                   </Param>

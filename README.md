@@ -530,6 +530,7 @@ Frontend defaults and constraints:
 | --- | --- |
 | Sequence | Enabled by default |
 | Nearest K | Enabled by default; K is restricted to 1–15 and defaults to 5 |
+| Adaptive K | Disabled by default; when enabled it replaces the fixed K with an identity threshold (55%), a minimum number of known ligands (50), and a maximum K (15) |
 | Domain | Disabled by default |
 | Tanimoto minimum cutoff | Cannot be lower than 0.20 |
 | Cosine minimum cutoff | Cannot be lower than 0.75 |
@@ -792,6 +793,7 @@ python run_ligq_2.py -i queries.fasta -o results_domains --domains
 | Strict sequence | `--min-identity 0.9`, `--min-query-coverage 0.9`, `--min-subject-coverage 0.7` |
 | Search sensitivity | `--blast-evalue-max 1e-5`, `--hmmer-evalue-max 1e-5`, `--max-hits 150` |
 | Candidate methods | `--sequence`, `--nearest_k`, `--nearest-k 5`, `--domains` |
+| Adaptive Nearest K | `--nearest-k-adaptive`, `--nearest-k-min-identity 0.55`, `--nearest-k-min-ligands 50`, `--nearest-k-max 15` |
 | Domain expansion | `--max-domain-candidates-per-domain 20` |
 | Provider | `--ligand-provider zinc` |
 | Similarity | `--search-representation morgan_1024_r2`, `--search-metric tanimoto` |
@@ -918,6 +920,14 @@ coverage, and an e-value no greater than `1e-5`.
 accepted as strict sequence-based hits, and retains only proteins sharing at
 least one Pfam domain with the query. The final K limit is applied after domain
 filtering.
+
+`--nearest-k-adaptive` replaces the fixed K with a per-query selection. Neighbors
+with BLAST identity of at least `--nearest-k-min-identity` are retained first;
+further neighbors are then added in ranking order until the query reaches
+`--nearest-k-min-ligands` distinct known ligands, counting those contributed by
+strict sequence-based hits. No query keeps more than `--nearest-k-max`
+neighbors. In this mode `--nearest-k` is ignored. The option is off by default
+and is not available on the restricted public web service.
 
 ### Domain-based strategy
 
