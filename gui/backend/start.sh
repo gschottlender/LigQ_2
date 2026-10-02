@@ -9,6 +9,9 @@ if [[ -n "${CONDA_PREFIX:-}" && -d "$CONDA_PREFIX/lib" ]]; then
     export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
+# The backend imports pipeline packages that live at the repository root.
+export PYTHONPATH="$SCRIPT_DIR/../..${PYTHONPATH:+:$PYTHONPATH}"
+
 nohup python -m uvicorn main:app \
     --host 127.0.0.1 \
     --port 8000 \
