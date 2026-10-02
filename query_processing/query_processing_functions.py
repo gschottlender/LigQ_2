@@ -841,7 +841,6 @@ def filter_nearest_k_candidates_by_query_domains(
 def select_adaptive_nearest_k_candidates(
     df_candidates_nearest_k: pd.DataFrame,
     known_db: pd.DataFrame,
-    df_candidates_seq: pd.DataFrame | None = None,
     min_identity: float = 0.55,
     min_ligands: int = 50,
     max_k: int = 15,
@@ -858,8 +857,8 @@ def select_adaptive_nearest_k_candidates(
     - Neighbors with BLAST identity >= `min_identity` (0–1) are retained
       first, in ranking order.
     - Further neighbors are then added in ranking order until the query
-      reaches `min_ligands` distinct known ligands. Ligands contributed by
-      proteins in `df_candidates_seq` count towards that total.
+      reaches `min_ligands` distinct known ligands. Only ligands of the
+      retained neighbors count; strict sequence-based hits are not included.
     - No query keeps more than `max_k` neighbors.
 
     `df_candidates_nearest_k` must be ordered by ranking within each query
@@ -884,18 +883,7 @@ def select_adaptive_nearest_k_candidates(
         ranked["qseqid"] = ranked["qseqid"].astype(str)
         ranked["sseqid"] = ranked["sseqid"].astype(str)
 
-        seq_proteins_by_query: dict[str, list[str]] = {}
-        if df_candidates_seq is not None and not df_candidates_seq.empty:
-            seq_proteins_by_query = (
-                df_candidates_seq.astype({"qseqid": str, "sseqid": str})
-                .groupby("qseqid")["sseqid"]
-                .agg(list)
-                .to_dict()
-            )
-
         proteins = set(ranked["sseqid"])
-        for seq_proteins in seq_proteins_by_query.values():
-            proteins.update(seq_proteins)
 
         ligands_by_protein: dict[str, set] = {}
         if known_db is not None and not known_db.empty:
@@ -909,11 +897,8 @@ def select_adaptive_nearest_k_candidates(
 
         identity_cutoff = min_identity * 100.0
         kept_idx: list = []
-        for qseqid, group in ranked.groupby("qseqid", sort=False):
+        for _, group in ranked.groupby("qseqid", sort=False):
             ligands: set = set()
-            for protein in seq_proteins_by_query.get(qseqid, []):
-                ligands |= ligands_by_protein.get(protein, set())
-
             is_close = group["pident"] >= identity_cutoff
             close = group[is_close].head(max_k)
             kept_idx.extend(close.index)

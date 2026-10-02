@@ -785,7 +785,6 @@ def main() -> None:
         df_candidates_nearest_k = select_adaptive_nearest_k_candidates(
             df_candidates_nearest_k=df_candidates_nearest_k,
             known_db=known_db,
-            df_candidates_seq=df_candidates_seq,
             min_identity=args.nearest_k_min_identity,
             min_ligands=args.nearest_k_min_ligands,
             max_k=args.nearest_k_max,

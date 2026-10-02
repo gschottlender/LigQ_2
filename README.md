@@ -924,9 +924,9 @@ filtering.
 `--nearest-k-adaptive` replaces the fixed K with a per-query selection. Neighbors
 with BLAST identity of at least `--nearest-k-min-identity` are retained first;
 further neighbors are then added in ranking order until the query reaches
-`--nearest-k-min-ligands` distinct known ligands, counting those contributed by
-strict sequence-based hits. No query keeps more than `--nearest-k-max`
-neighbors. In this mode `--nearest-k` is ignored. The option is off by default
+`--nearest-k-min-ligands` distinct known ligands. Only ligands of the retained
+neighbors count towards that minimum; those of strict sequence-based hits do
+not. No query keeps more than `--nearest-k-max` neighbors. In this mode `--nearest-k` is ignored. The option is off by default
 and is not available on the restricted public web service.
 
 ### Domain-based strategy
