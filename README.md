@@ -1801,6 +1801,8 @@ ligand IDs were assigned to a higher-ranked protein during deduplication.
   <https://huggingface.co/datasets/gschottlender/LigQ_2>
 - Target-specific benchmark datasets:
   <https://huggingface.co/datasets/gschottlender/LigQ_2_benchmark>
+- Frozen inputs for the publication evaluations:
+  <https://huggingface.co/datasets/gschottlender/LigQ_2_evaluations>
 
 The `main` source branch, `main` container tags, and Hugging Face `main` dataset
 revision are convenient moving targets, not immutable releases. For a
@@ -1818,6 +1820,36 @@ reproducible analysis, record:
 A stable software release identifier and formal publication citation will be
 added when they become available. Until then, cite the repository together with
 the exact Git commit used for the analysis.
+
+### Publication evaluation scripts
+
+The [`reproduce_evaluations/` package](reproduce_evaluations/README.md) contains
+the scripts, scientific dependencies, tests, pinned environment definitions,
+and commands for reproducing the publication's result figures, excluding
+computational-performance experiments. It covers molecular representations,
+nearest-neighbor and full-domain evidence transfer, adaptive neighbor selection,
+method combinations, active-set preprocessing sensitivity, and retrieved-compound
+distributions, preserving the original random states: **42, 10, 27, 3, and 8**.
+
+After setting up the environments described in the package README, run from
+the repository root:
+
+```bash
+python reproduce_evaluations/reproduce.py list
+python reproduce_evaluations/reproduce.py download
+```
+
+The downloader uses immutable Hugging Face revisions and verifies input files
+with SHA-256 hashes. Calculation, plotting, resume, and validation commands are
+documented in the [package guide](reproduce_evaluations/README.md); methodological
+details are in [METHODS.md](reproduce_evaluations/METHODS.md).
+
+Git contains code and configuration only, not downloaded datasets, calculation
+outputs, or figures. Historical reference tables/images in `reference_data/`
+must be supplied separately and match `reference_lock.json`; they are not
+downloaded from the published input bundle. The historical neighbor-cohort table
+is also required for calculation orchestration. These requirements and the
+limits of the completed validation are documented in the package guide.
 
 ## Data sources
 
