@@ -1,0 +1,199 @@
+{
+  "files": [
+    {
+      "path": "cohorts/benchmark_manifest.csv",
+      "sha256": "b9c4f436805a2240b2ab7d8b596b0caca39109821138392f12b1ac61e060a66d",
+      "size_bytes": 74401
+    },
+    {
+      "path": "cohorts/neighbor_targets.csv",
+      "sha256": "9c2a5f9e5d4d2cbaa47ddad3edb61fd0c33cf46e1c8a2ffa9a6c6cecefedd622",
+      "size_bytes": 58236
+    },
+    {
+      "path": "cohorts/retrieved_set_digests.csv",
+      "sha256": "4757a1debe49c96dc3be8007d41fb42d460c9745c974361bbe9789b9f622b4d4",
+      "size_bytes": 1120063
+    },
+    {
+      "path": "distributions/figures/histograms_by_family.csv",
+      "sha256": "0a1830b779edbaa4a55525194c00e4b93afecb38f09785948c8fd00cc2e18cbd",
+      "size_bytes": 2002697
+    },
+    {
+      "path": "distributions/figures/histograms_category_balanced.csv",
+      "sha256": "c01f18d001573ffec69e7ee24cdc4b6bf86f63db1764901f755e4e4232911cfb",
+      "size_bytes": 230640
+    },
+    {
+      "path": "ecfp4_transfer_strategy_comparison/ecfp4_transfer_strategy_category_balanced_spread.csv",
+      "sha256": "52e2fae38fb991296eb1807ae04b9656b676459b21fb7c8b834668d08efe4caf",
+      "size_bytes": 2871
+    },
+    {
+      "path": "ecfp4_transfer_strategy_comparison/ecfp4_transfer_strategy_family_medians.csv",
+      "sha256": "1e3056771062c7756b955d953f47c318bcc9d4cd3a43330084f772b5b3ae1e24",
+      "size_bytes": 9262
+    },
+    {
+      "path": "expanded_union/union_recovery_vs_purity_plot_data.csv",
+      "sha256": "068dd9eaa31f3056d6de0cb9a199d953eb4ee15846fede331fe0d4ee2094a41d",
+      "size_bytes": 1133
+    },
+    {
+      "path": "full_domain_benchmark/neighbor_vs_full_domain_category_balanced_spread.csv",
+      "sha256": "e6677eecc21cac9f963ebd1ce6e254277e7475ceaa16f2d2a0554c052ec78c61",
+      "size_bytes": 5089
+    },
+    {
+      "path": "full_domain_benchmark/neighbor_vs_full_domain_category_medians.csv",
+      "sha256": "29341ac3d850476579db87198501a7db5a2522eab6a0a5f7a8efbdb26b130120",
+      "size_bytes": 14755
+    },
+    {
+      "path": "identity_ligand_rescue_comparison/run_metadata.json",
+      "sha256": "afe4f3ee29c8c9b99f5645e455e252de9134ee7496433f8f3dd64ca6fdafb983",
+      "size_bytes": 1988
+    },
+    {
+      "path": "identity_ligand_rescue_comparison/strategy_category_balanced_summary.csv",
+      "sha256": "940d0bfb55fd537bfcf59c15817112412a5e90540627d20befeccee66c991510",
+      "size_bytes": 1763
+    },
+    {
+      "path": "identity_ligand_rescue_comparison/strategy_family_medians.csv",
+      "sha256": "3e32bb54cea211d884e159176f006336040c188fee38a2ff556861e6ac12e934",
+      "size_bytes": 7333
+    },
+    {
+      "path": "images/A1.png",
+      "sha256": "7391d8b57216a3b94f2790335885af0cc5a6cf3b8943cad6f8035ef4e2bd05d7",
+      "size_bytes": 1059993
+    },
+    {
+      "path": "images/A2.png",
+      "sha256": "40d974cdac9ba7050eaa3b006b4e5b15268ba8c58762fac6dd88e095c8eab1a0",
+      "size_bytes": 999636
+    },
+    {
+      "path": "images/A3.png",
+      "sha256": "777a07d597542f8e8e15383128201af69137a5f9461e6a698759e9fe072a3f56",
+      "size_bytes": 558167
+    },
+    {
+      "path": "images/Figure_2.png",
+      "sha256": "4ccb35fe2a28f24c42627bae197d1470d2acc79de9dff9ce64f7d8845afa27bd",
+      "size_bytes": 791192
+    },
+    {
+      "path": "images/Figure_3.png",
+      "sha256": "0eb75f952dc4049bc487616e058ed1986d2210de77e62e2cfc3b556567de3109",
+      "size_bytes": 818638
+    },
+    {
+      "path": "images/S1.png",
+      "sha256": "8700ba3eade3026637746a1ba491f28c0622dd1a41fb47500af10416bfe2fabd",
+      "size_bytes": 165020
+    },
+    {
+      "path": "images/S2.png",
+      "sha256": "3d2f56a47cc2e167b5d0f90411304841db90478a4e7259490eb4ff1d4523bd61",
+      "size_bytes": 954086
+    },
+    {
+      "path": "images/S3.png",
+      "sha256": "98d7fc6f896bf5ea2fb439f6f2bbb1851925304f374d80c89577121df9c49466",
+      "size_bytes": 245327
+    },
+    {
+      "path": "images/S4.png",
+      "sha256": "24ba1d9c980618b88f606e77ea028bb11102ef6524f3efce5ad177a9bf96726f",
+      "size_bytes": 264371
+    },
+    {
+      "path": "images/S5.png",
+      "sha256": "35a7e87080dfcff82410443e8466dbf33ac010c7c11bec000d5b5b3fec2f568f",
+      "size_bytes": 298194
+    },
+    {
+      "path": "images/S6.png",
+      "sha256": "f5c2b8524db4b000d0622b500289d96d779bd88072a9efb5055a2173e06d0568",
+      "size_bytes": 825425
+    },
+    {
+      "path": "images/S7.png",
+      "sha256": "a028f7474e73f026abdddfc90efbfd3e1eb921f59c2e1945169544bdc18b5463",
+      "size_bytes": 899784
+    },
+    {
+      "path": "images/S8.png",
+      "sha256": "33c54a73cc43529c8906008eed33a141e6fd58109abeacaed762d2a0174c61e5",
+      "size_bytes": 987891
+    },
+    {
+      "path": "preprocessing/selected_target_panel.csv",
+      "sha256": "94add8b7e6248dfb366477df02919b85728b23c91a22e060a2836813d4535627",
+      "size_bytes": 712
+    },
+    {
+      "path": "preprocessing/sensitivity_summary.csv",
+      "sha256": "0c29a29fcc0cd6e3edd6b76603734b6f41024abcf336cf39751688a2ed63959e",
+      "size_bytes": 12560
+    },
+    {
+      "path": "preprocessing/target_partition_metrics.csv",
+      "sha256": "1e19f4442453dc845b928e29c99a6b8ce5c03a27582a8b996a08ef6f7eeacd0d",
+      "size_bytes": 1392104
+    },
+    {
+      "path": "representation_summary/category_balanced_cumulative_spread.csv",
+      "sha256": "71b02e4cda53762add969f580ac1936d448361446fa23f84e489ebc1007a5c16",
+      "size_bytes": 10597
+    },
+    {
+      "path": "representation_summary/category_medians_across_partitions.csv",
+      "sha256": "82370b13fe1af6abbd065f9ff0a77e2630f4549e6d7cbf0bd0d0dab749b07d31",
+      "size_bytes": 27221
+    },
+    {
+      "path": "representations/fixed_budget_complementarity/method_combination_summary.csv",
+      "sha256": "83009954f4869f2e00194f029c881d08d88053c56035a867f7bf4f0e3a3082bc",
+      "size_bytes": 28602
+    },
+    {
+      "path": "representations/seed_10/df_long_target_all_methods.csv",
+      "sha256": "272d9799f7a718366af45902c753a216b10989640bddd4cc534e9ae201e61012",
+      "size_bytes": 669766
+    },
+    {
+      "path": "representations/seed_27/df_long_target_all_methods.csv",
+      "sha256": "8d1d965e1d1aaace66304d782c54778b256cb1a2546be05b3a7776a94b3a4a08",
+      "size_bytes": 669975
+    },
+    {
+      "path": "representations/seed_3/df_long_target_all_methods.csv",
+      "sha256": "fbcaff5c89ad0cd29fb07d6e125707e4c447374cad7967e8c610a3e6740e2376",
+      "size_bytes": 669042
+    },
+    {
+      "path": "representations/seed_42/df_long_target_all_methods.csv",
+      "sha256": "0b4c0dabcfd4057027ec37edb4c5235e8b8362bb7430308582a7e969edc94679",
+      "size_bytes": 669473
+    },
+    {
+      "path": "representations/seed_8/df_long_target_all_methods.csv",
+      "sha256": "b9c378add60e5ed23fd3d141a0a885d98db59830930c188efc502217eb53dca7",
+      "size_bytes": 669144
+    },
+    {
+      "path": "three_adaptive_vs_k5/run_metadata.json",
+      "sha256": "69c33d8b0b0bc300ddbd8f0f2f7521c36c066a45b470a0e76f9e7f2de3125515",
+      "size_bytes": 1933
+    },
+    {
+      "path": "three_adaptive_vs_k5/strategy_category_balanced_summary.csv",
+      "sha256": "ae8b0953dd57b17119a82307508de0d06d3261c0e185615dbbfa8a246b0c21fc",
+      "size_bytes": 3037
+    }
+  ]
+}

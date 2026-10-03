@@ -1,0 +1,43 @@
+{
+  "ligq_repository_commit": "a4c08c38cc9a5f2ce011426fb7d1b99d00e0912a",
+  "bsi_repository_commit": "27104ad23116e055ad19741773408dd521c783a2e",
+  "notes": [
+    "The BSI target-exclusion scripts were untracked working-tree files at capture time and are therefore pinned by SHA-256 below.",
+    "compound_helpers.py only changes its device_utils import to use the adjacent vendored module.",
+    "unknown_active_sets.py only changes its import to use the adjacent vendored evaluation module.",
+    "notebook_analysis.py contains the final reusable function cells extracted from analizar_EF.ipynb.",
+    "armado_datasets_modified.py now exposes an optional target_score_sink observation hook for fixed-budget reviewer analyses; the default evaluation calculations and six-table return contract are unchanged.",
+    "Spanish prose in vendored comments, docstrings, exceptions, and progress messages was translated to English for public release. This localization does not change executable logic, APIs, legacy output schemas, or scientific parameters.",
+    "original_source_files_sha256 records the captured pre-localization files; files records the current vendored files after import adjustments and English prose localization."
+  ],
+  "original_source_files_sha256": {
+    "evaluation_core/armado_datasets_modified.py": "54af6b5c4bade923f590223eab48ca60a77d0ffd0111e11bb9d417833aeb428a",
+    "evaluation_core/clustering_proteinas.py": "25a035140e91d8d917d792bd162ae0fe932ef1d4a8ebc6e6320d4127b2cdb3a2",
+    "evaluation_core/notebook_analysis.py": "b3978758e6dd0658e4364f69e17a4dec65afe7ad452c9017de82e82f0190f3b9",
+    "evaluation_core/unknown_active_sets.py": "2cdb462fe52653c3e0034bc23429a1ebfcca3b40a1a150db3cb5aca9ae0ae0aa",
+    "ligq_core/compound_helpers.py": "6915c9a7d707861933447a23f58d92bc31545f0a1a4eb8dff81a43c6b108f8ec",
+    "ligq_core/metrics.py": "2b678863f0009c75fcdc4d2dfb7edccf013087dcbdcccb3afc9cb36d2c63026d",
+    "ligq_core/device_utils.py": "b3aa96dd3d8401360753bdf97306c462a379d0eaaa9d9501b5558d8610dea17e",
+    "bsi/train_pf00069_target_exclusion_models_1024.py": "acc94e1e0f43f5e5222a56ca6059aa9eb3d105ebf1737277c7af61b3696168cd",
+    "bsi/train_mpg_group_models_1024.py": "ec2fcdee9bfb0f9367afc983a5f49c9328833537906c25b784874330fe8297d4",
+    "bsi/train_BSI_model.py": "97ae6b819bd9c7b9e3962c71d6a181d07f896d3c629fbb51bdfa35155fdea6d4",
+    "bsi/src/bsi_group_models.py": "99261675e68d5bcf4cdfc1c2cc1c5a69661f158b8bc6f279775ba741eb212f0c",
+    "bsi/src/ligand_clustering_functions.py": "5f66a86e86680ab906693bca89f6acefff07605ed203fb5c91ee923587964f4e",
+    "bsi/src/model_training_functions.py": "ae6348c26fe33a62c605230bce9f1f522cf077845d874faafd72479db64d1c0b"
+  },
+  "files": {
+    "evaluation_core/armado_datasets_modified.py": "8ac4acf11623a197e8771f7115c77c057b94f9d17e7ea910dbe778fe701ba02b",
+    "evaluation_core/clustering_proteinas.py": "5f7fd349fc15f0b4d26dbf738338770cbcbd73edbcd86870fdba0250f06a8605",
+    "evaluation_core/notebook_analysis.py": "12c44ef3c4db525870571d0ddb8384ce22b89dbae00bfdc64e99ae5b2c4204d1",
+    "evaluation_core/unknown_active_sets.py": "9e7598d186fe96c601e3e65e1ed2ec120f373d8cda35430e3ef2e077c26430fd",
+    "ligq_core/compound_helpers.py": "6915c9a7d707861933447a23f58d92bc31545f0a1a4eb8dff81a43c6b108f8ec",
+    "ligq_core/metrics.py": "2b678863f0009c75fcdc4d2dfb7edccf013087dcbdcccb3afc9cb36d2c63026d",
+    "ligq_core/device_utils.py": "b3aa96dd3d8401360753bdf97306c462a379d0eaaa9d9501b5558d8610dea17e",
+    "bsi/train_pf00069_target_exclusion_models_1024.py": "acc94e1e0f43f5e5222a56ca6059aa9eb3d105ebf1737277c7af61b3696168cd",
+    "bsi/train_mpg_group_models_1024.py": "ec2fcdee9bfb0f9367afc983a5f49c9328833537906c25b784874330fe8297d4",
+    "bsi/train_BSI_model.py": "97ae6b819bd9c7b9e3962c71d6a181d07f896d3c629fbb51bdfa35155fdea6d4",
+    "bsi/src/bsi_group_models.py": "99261675e68d5bcf4cdfc1c2cc1c5a69661f158b8bc6f279775ba741eb212f0c",
+    "bsi/src/ligand_clustering_functions.py": "d3bf5d99bb2ddeaa83339dcec83eb9b9f046b756232fd1aadddb5d8a960d55d7",
+    "bsi/src/model_training_functions.py": "ae6348c26fe33a62c605230bce9f1f522cf077845d874faafd72479db64d1c0b"
+  }
+}

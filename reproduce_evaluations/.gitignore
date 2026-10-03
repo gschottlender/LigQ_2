@@ -1,0 +1,16 @@
+data/
+outputs/
+publication_export/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mplconfig/
+local_sources.json
+publication_download_cache/
+reference_data/
+HUGGINGFACE_AUDIT.json
+VALIDATION_STATUS.md
+
+# Keep reproducibility tests despite the application-level tests/ ignore rule.
+!tests/
+!tests/*.py

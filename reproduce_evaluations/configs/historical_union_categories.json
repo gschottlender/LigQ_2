@@ -1,0 +1,170 @@
+{
+  "historical_families": {
+    "Quinasas": {
+      "Tirosina (receptor)": [
+        "csf1r",
+        "egfr",
+        "fgfr1",
+        "igf1r",
+        "kit",
+        "met",
+        "vgfr2"
+      ],
+      "Tirosina (no receptor)": [
+        "abl1",
+        "fak1",
+        "jak2",
+        "lck",
+        "src"
+      ],
+      "Ser/Thr (incl. MAPK)": [
+        "akt1",
+        "akt2",
+        "braf",
+        "cdk2",
+        "plk1",
+        "rock1",
+        "wee1",
+        "tgfr1",
+        "kpcb",
+        "mk01",
+        "mk10",
+        "mk14",
+        "mp2k1",
+        "mapk2"
+      ]
+    },
+    "Proteasas": {
+      "Serina": [
+        "fa10",
+        "fa7",
+        "thrb",
+        "try1",
+        "tryb1",
+        "urok",
+        "dpp4"
+      ],
+      "Aspártico": [
+        "bace1",
+        "hivpr",
+        "reni"
+      ],
+      "Cisteína": [
+        "casp3"
+      ],
+      "Metalo": [
+        "ace",
+        "ada17",
+        "mmp13",
+        "lkha4"
+      ]
+    },
+    "Receptores nucleares": {
+      "Esteroideos": [
+        "andr",
+        "gcr",
+        "mcr",
+        "prgr",
+        "esr1",
+        "esr2"
+      ],
+      "PPAR": [
+        "ppara",
+        "ppard",
+        "pparg"
+      ],
+      "Otros": [
+        "rxra",
+        "thb"
+      ]
+    },
+    "GPCR": {
+      "Adenosina": [
+        "aa2ar"
+      ],
+      "Adrenérgicos": [
+        "adrb1",
+        "adrb2"
+      ],
+      "Dopaminérgico": [
+        "drd3"
+      ],
+      "Quimiocina": [
+        "cxcr4"
+      ]
+    },
+    "Canales iónicos": {
+      "Glutamato (ionotrópicos)": [
+        "gria2",
+        "grik1"
+      ]
+    },
+    "Citocromo P450": {
+      "Familia CYP": [
+        "cp2c9",
+        "cp3a4"
+      ]
+    },
+    "Otras enzimas": {
+      "Oxidoreductasas": [
+        "aofb",
+        "aldr",
+        "dhi1",
+        "dyr",
+        "hmdh",
+        "inha",
+        "nos1",
+        "pgh1",
+        "pgh2",
+        "pyrd"
+      ],
+      "Hidrolasas": [
+        "aces",
+        "ampc",
+        "def",
+        "glcm",
+        "hdac2",
+        "hdac8",
+        "nram",
+        "pa2ga",
+        "pde5a",
+        "ptn1",
+        "sahh"
+      ],
+      "Transferasas": [
+        "comt",
+        "fnta",
+        "fpps",
+        "hxk4",
+        "kith",
+        "parp1",
+        "pnph",
+        "pur2",
+        "tysy",
+        "hivrt",
+        "hivint"
+      ],
+      "Otros (isomerasa/etc)": [
+        "fkb1a"
+      ]
+    },
+    "Misceláneos": {
+      "Chaperona (Hsp90)": [
+        "hs90a"
+      ],
+      "Prot. unión ác. graso": [
+        "fabp4"
+      ],
+      "Integrina": [
+        "ital"
+      ],
+      "Motor proteico": [
+        "kif11"
+      ],
+      "Regulador apoptosis": [
+        "xiap"
+      ]
+    }
+  },
+  "note": "CAH2 is intentionally absent from the original expanded-union category mapping. Other figures use the corrected classification."
+}

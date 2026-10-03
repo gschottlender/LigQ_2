@@ -1,0 +1,1319 @@
+"""
+Helpers for compound unification and numerical representations.
+
+This module provides:
+
+- Unification of PDB and ChEMBL ligand tables using InChIKey
+  while preserving all rows (no drops for missing InChIKey).
+- Construction of a ligand index (ligands.parquet) with a dense
+  integer index (lig_idx) for efficient array storage.
+- Efficient computation and storage of Morgan fingerprints
+  (packed bits in a memmap on disk).
+- A small API to retrieve representations (e.g. Morgan) by comp_id
+  without loading the full matrix into RAM.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Callable, Optional, Dict, List, Tuple
+
+import os
+import multiprocessing as mp
+import json
+import re
+import shutil
+import time
+from datetime import datetime
+from contextlib import nullcontext
+import numpy as np
+import pandas as pd
+
+from rdkit import Chem
+from rdkit.Chem import inchi, AllChem, DataStructs, MACCSkeys
+from rdkit import RDLogger
+import torch
+from transformers import AutoModel, AutoTokenizer
+from tqdm.auto import tqdm
+
+from device_utils import resolve_torch_device
+
+# Silence RDKit warnings (invalid SMILES, sanitization issues, etc.)
+RDLogger.DisableLog("rdApp.*")
+# Morgan globals
+_MORGAN_WORKER_CFG: Dict[str, int] = {"n_bits": 1024, "radius": 2, "n_bytes": 128}
+_RDKIT_FP_WORKER_CFG: Dict[str, int | str] = {
+    "fp_kind": "ap",
+    "n_bits": 1024,
+    "radius": 2,
+    "n_bytes": 128,
+}
+
+_TQDM_BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+_STAGING_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _representation_output_paths(
+    reps_dir: Path,
+    name: str,
+    staging_token: Optional[str],
+) -> tuple[Path, Path, Path, Path, Optional[Path]]:
+    """Resolve final and job-scoped representation paths.
+
+    GUI resource jobs write to partial files and publish a complete data/meta
+    pair only after computation succeeds. The publishing marker makes the
+    two-file promotion recoverable if the process is cancelled between the
+    atomic renames.
+    """
+    final_data = reps_dir / f"{name}.dat"
+    final_meta = reps_dir / f"{name}.meta.json"
+    if staging_token is None:
+        return final_data, final_meta, final_data, final_meta, None
+    if not _STAGING_TOKEN_RE.fullmatch(staging_token):
+        raise ValueError("staging_token must contain only letters, digits, underscores, and hyphens.")
+
+    partial_data = reps_dir / f".{name}.dat.partial.{staging_token}"
+    partial_meta = reps_dir / f".{name}.meta.json.partial.{staging_token}"
+    publishing_marker = reps_dir / f".{name}.publishing.{staging_token}"
+    partial_data.unlink(missing_ok=True)
+    partial_meta.unlink(missing_ok=True)
+    publishing_marker.unlink(missing_ok=True)
+    return final_data, final_meta, partial_data, partial_meta, publishing_marker
+
+
+def _publish_representation_pair(
+    *,
+    final_data: Path,
+    final_meta: Path,
+    staged_data: Path,
+    staged_meta: Path,
+    publishing_marker: Optional[Path],
+) -> None:
+    if publishing_marker is None:
+        return
+
+    publishing_marker.write_text(
+        json.dumps({"data": final_data.name, "meta": final_meta.name}),
+        encoding="utf-8",
+    )
+    os.replace(staged_data, final_data)
+    os.replace(staged_meta, final_meta)
+    publishing_marker.unlink()
+
+# ---------------------------------------------------------------------------
+# 1. Basic utilities: InChIKey, Morgan fingerprints, bit packing
+# ---------------------------------------------------------------------------
+
+def smiles_to_inchikey(smiles: str) -> Optional[str]:
+    """
+    Convert a SMILES string to an InChIKey. Returns None if it fails.
+
+    This is helpful to structurally unify compounds coming from different
+    sources (PDB, ChEMBL, etc.) even when SMILES differ in notation.
+    """
+    if pd.isna(smiles):
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    try:
+        return inchi.MolToInchiKey(mol)
+    except Exception:
+        return None
+
+
+def morgan_fp_bits(
+    smiles: str,
+    n_bits: int = 1024,
+    radius: int = 2,
+) -> Optional[np.ndarray]:
+    """
+    Compute a Morgan fingerprint as a 0/1 numpy array of shape (n_bits,).
+
+    Returns None if the SMILES cannot be parsed or the fingerprint
+    cannot be generated.
+
+    Parameters
+    ----------
+    smiles : str
+        Input SMILES string.
+    n_bits : int
+        Fingerprint length in bits (default: 1024).
+    radius : int
+        Morgan fingerprint radius (default: 2).
+    """
+    if pd.isna(smiles):
+        return None
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    try:
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits)
+        arr = np.zeros((n_bits,), dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(fp, arr)
+        return arr
+    except Exception:
+        return None
+
+
+def pack_bits(arr: np.ndarray) -> np.ndarray:
+    """
+    Pack a 0/1 array of bits along the last axis using numpy.packbits.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        Array of shape (N, n_bits) with values 0/1.
+
+    Returns
+    -------
+    np.ndarray
+        Packed array of shape (N, n_bits / 8), dtype=uint8.
+    """
+    return np.packbits(arr, axis=-1)
+
+
+def unpack_bits(packed: np.ndarray, n_bits: int) -> np.ndarray:
+    """
+    Unpack bits from the last axis back to an array of length n_bits.
+
+    Parameters
+    ----------
+    packed : np.ndarray
+        Packed array of shape (N, n_bytes).
+    n_bits : int
+        Desired number of bits in the output.
+
+    Returns
+    -------
+    np.ndarray
+        Unpacked array of shape (N, n_bits), dtype=uint8 with values 0/1.
+    """
+    unpacked = np.unpackbits(packed, axis=-1)
+    # In case there are extra bits, truncate to the desired length
+    if unpacked.shape[-1] > n_bits:
+        unpacked = unpacked[..., :n_bits]
+    return unpacked
+
+def _init_morgan_worker(n_bits: int, radius: int) -> None:
+    _MORGAN_WORKER_CFG["n_bits"] = int(n_bits)
+    _MORGAN_WORKER_CFG["radius"] = int(radius)
+    _MORGAN_WORKER_CFG["n_bytes"] = (int(n_bits) + 7) // 8
+
+def _morgan_fp_bits_or_zero(smiles: str) -> np.ndarray:
+    """
+    Worker: calculate fp bits (n_bits,) uint8, or vector 0 if it fails.
+    Use global config set to _init_morgan_worker.
+    """
+    n_bits = _MORGAN_WORKER_CFG["n_bits"]
+    radius = _MORGAN_WORKER_CFG["radius"]
+
+    arr = morgan_fp_bits(smiles, n_bits=n_bits, radius=radius)
+    if arr is None:
+        return np.zeros((n_bits,), dtype=np.uint8)
+
+    # ensure correct dtype/shape
+    arr = np.asarray(arr, dtype=np.uint8)
+    if arr.shape != (n_bits,):
+        return np.zeros((n_bits,), dtype=np.uint8)
+    return arr
+
+
+def _morgan_fp_packed_or_zero(smiles: str) -> Tuple[np.ndarray, bool]:
+    """
+    Worker: calculate packed fp bytes (n_bits/8,) uint8 and a success flag.
+
+    Returning packed bytes from workers reduces IPC payload significantly versus
+    sending full bit vectors.
+    """
+    n_bits = _MORGAN_WORKER_CFG["n_bits"]
+    n_bytes = _MORGAN_WORKER_CFG["n_bytes"]
+    radius = _MORGAN_WORKER_CFG["radius"]
+
+    arr = morgan_fp_bits(smiles, n_bits=n_bits, radius=radius)
+    if arr is None:
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    arr = np.asarray(arr, dtype=np.uint8)
+    if arr.shape != (n_bits,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    packed = np.packbits(arr)
+    if packed.shape != (n_bytes,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+    return packed, True
+
+
+def rdkit_fp_bits(
+    smiles: str,
+    fp_kind: str,
+    n_bits: int = 1024,
+    radius: int = 2,
+) -> Optional[np.ndarray]:
+    """
+    Compute RDKit-based fingerprints as a 0/1 numpy array.
+
+    Supported fp_kind values:
+      - "ap": Hashed Atom Pair
+      - "topological_torsion": Hashed Topological Torsion
+      - "rdkit": Daylight-like RDKit fingerprint
+      - "morgan_feature": Morgan/FCFP-like fingerprint with pharmacophore features
+      - "maccs": MACCS keys (fixed length 167)
+    """
+    if pd.isna(smiles):
+        return None
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+
+    try:
+        if fp_kind == "ap":
+            fp = AllChem.GetHashedAtomPairFingerprintAsBitVect(mol, nBits=n_bits)
+            out_dim = n_bits
+        elif fp_kind == "topological_torsion":
+            fp = AllChem.GetHashedTopologicalTorsionFingerprintAsBitVect(mol, nBits=n_bits)
+            out_dim = n_bits
+        elif fp_kind == "rdkit":
+            fp = Chem.RDKFingerprint(mol, fpSize=n_bits)
+            out_dim = n_bits
+        elif fp_kind == "morgan_feature":
+            fp = AllChem.GetMorganFingerprintAsBitVect(
+                mol,
+                radius,
+                nBits=n_bits,
+                useFeatures=True,
+            )
+            out_dim = n_bits
+        elif fp_kind == "maccs":
+            fp = MACCSkeys.GenMACCSKeys(mol)
+            out_dim = int(fp.GetNumBits())
+            if n_bits != out_dim:
+                return None
+        else:
+            raise ValueError(f"Unsupported fp_kind: {fp_kind}")
+
+        arr = np.zeros((out_dim,), dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(fp, arr)
+        return arr
+    except Exception:
+        return None
+
+
+def _init_rdkit_fp_worker(fp_kind: str, n_bits: int, radius: int = 2) -> None:
+    _RDKIT_FP_WORKER_CFG["fp_kind"] = fp_kind
+    _RDKIT_FP_WORKER_CFG["n_bits"] = int(n_bits)
+    _RDKIT_FP_WORKER_CFG["radius"] = int(radius)
+    _RDKIT_FP_WORKER_CFG["n_bytes"] = (int(n_bits) + 7) // 8
+
+
+def _rdkit_fp_packed_or_zero(smiles: str) -> Tuple[np.ndarray, bool]:
+    """Worker for RDKit bit-vector fingerprints using global worker config."""
+    fp_kind = str(_RDKIT_FP_WORKER_CFG["fp_kind"])
+    n_bits = int(_RDKIT_FP_WORKER_CFG["n_bits"])
+    radius = int(_RDKIT_FP_WORKER_CFG["radius"])
+    n_bytes = int(_RDKIT_FP_WORKER_CFG["n_bytes"])
+
+    arr = rdkit_fp_bits(smiles, fp_kind=fp_kind, n_bits=n_bits, radius=radius)
+    if arr is None:
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    arr = np.asarray(arr, dtype=np.uint8)
+    if arr.shape != (n_bits,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+
+    packed = np.packbits(arr)
+    if packed.shape != (n_bytes,):
+        return np.zeros((n_bytes,), dtype=np.uint8), False
+    return packed, True
+
+# ---------------------------------------------------------------------------
+# 2. Unify PDB and ChEMBL ligand tables
+# ---------------------------------------------------------------------------
+
+
+def unify_pdb_chembl(
+    ligs_smiles_pdb: pd.DataFrame,
+    ligs_smiles_chembl: pd.DataFrame,
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """
+    Unify PDB and ChEMBL ligands using InChIKey and build an ID mapping.
+
+    Both input tables are expected to use the same ID column name:
+      - 'chem_comp_id' : ligand identifier (PDB 3-letter codes, CHEMBL IDs, etc.)
+      - 'smiles'       : canonical SMILES string
+
+    The function performs a structure-based unification:
+
+      - For each non-null InChIKey, all ligands (from PDB and/or ChEMBL)
+        sharing that InChIKey are grouped together.
+      - A single canonical ID is chosen for the group:
+          * Prefer a PDB ID (source == 'pdb') if present.
+          * Otherwise, choose one of the ChEMBL IDs (lexicographically smallest).
+      - All original IDs in the group are mapped to this canonical ID.
+
+      - For rows with null InChIKey, no structure-based unification is
+        possible. Each chem_comp_id becomes canonical for itself.
+
+    Returns
+    -------
+    final_ligs : pd.DataFrame
+        DataFrame with one row per canonical ligand, columns:
+          - 'chem_comp_id' : canonical ID
+          - 'smiles'       : canonical SMILES (taken from one representative)
+        This is the table that should be used to build ligands.parquet.
+
+    id_mapping : dict
+        Dictionary mapping ANY original ID (from ligs_smiles_pdb or
+        ligs_smiles_chembl) to its canonical ID in final_ligs:
+          { original_chem_comp_id -> canonical_chem_comp_id }
+
+        - For canonical IDs themselves, the mapping will simply be
+          id_mapping[canonical_id] == canonical_id.
+        - For structurally duplicated IDs (same InChIKey), all will map
+          to the same canonical ID.
+    """
+
+    pdb_df = ligs_smiles_pdb.copy()
+    chembl_df = ligs_smiles_chembl.copy()
+
+    # Basic column checks
+    for name, df in [("ligs_smiles_pdb", pdb_df), ("ligs_smiles_chembl", chembl_df)]:
+        if "chem_comp_id" not in df.columns:
+            raise ValueError(f"{name} must have a 'chem_comp_id' column.")
+        if "smiles" not in df.columns:
+            raise ValueError(f"{name} must have a 'smiles' column.")
+
+    # Compute InChIKey for both tables
+    pdb_df["inchikey"] = pdb_df["smiles"].map(smiles_to_inchikey)
+    chembl_df["inchikey"] = chembl_df["smiles"].map(smiles_to_inchikey)
+
+    # Tag source
+    pdb_df["source"] = "pdb"
+    chembl_df["source"] = "chembl"
+
+    # Keep only the relevant columns
+    pdb_df = pdb_df[["chem_comp_id", "smiles", "inchikey", "source"]]
+    chembl_df = chembl_df[["chem_comp_id", "smiles", "inchikey", "source"]]
+
+    # Concatenate both tables
+    combined = pd.concat([pdb_df, chembl_df], ignore_index=True)
+
+    # Split into non-null InChIKey (can be unified) and null (cannot)
+    non_null = combined[combined["inchikey"].notna()].copy()
+    null_rows = combined[combined["inchikey"].isna()].copy()
+
+    # Mapping from original ID -> canonical ID
+    id_mapping: Dict[str, str] = {}
+    canonical_rows = []
+
+    # ------------------------------------------------------------------
+    # 1. Handle non-null InChIKey groups (structure-based unification)
+    # ------------------------------------------------------------------
+    if not non_null.empty:
+        for inchikey, grp in non_null.groupby("inchikey", sort=False):
+            # Prefer PDB ligands as canonical, if available
+            pdb_grp = grp[grp["source"] == "pdb"]
+            if not pdb_grp.empty:
+                # Choose one PDB ligand as canonical (e.g. lexicographically smallest ID)
+                canon_row = pdb_grp.sort_values("chem_comp_id").iloc[0]
+            else:
+                # No PDB ligand: choose one ChEMBL ligand as canonical
+                canon_row = grp.sort_values("chem_comp_id").iloc[0]
+
+            canon_id = canon_row["chem_comp_id"]
+            canonical_rows.append(canon_row)
+
+            # Map all IDs in this group to the canonical ID
+            for cid in grp["chem_comp_id"].unique():
+                id_mapping[cid] = canon_id
+
+    # ------------------------------------------------------------------
+    # 2. Handle null InChIKey rows (no structural unification possible)
+    # ------------------------------------------------------------------
+    # For these, each chem_comp_id is its own canonical ID, unless
+    # it was already assigned in the previous step.
+    if not null_rows.empty:
+        # Drop exact duplicates to avoid adding the same canonical row twice
+        null_rows = null_rows.drop_duplicates(subset=["chem_comp_id", "smiles", "inchikey", "source"])
+
+        for _, row in null_rows.iterrows():
+            cid = row["chem_comp_id"]
+            if cid not in id_mapping:
+                # This ID was not part of any non-null InChIKey group
+                id_mapping[cid] = cid
+                canonical_rows.append(row)
+
+    # ------------------------------------------------------------------
+    # 3. Build final_ligs from canonical rows
+    # ------------------------------------------------------------------
+    canonical_df = pd.DataFrame(canonical_rows)
+
+    # Ensure uniqueness by canonical ID (in case of any accidental duplicates)
+    canonical_df = canonical_df.sort_values("chem_comp_id").drop_duplicates(
+        subset=["chem_comp_id"],
+        keep="first",
+    )
+
+    final_ligs = canonical_df[["chem_comp_id", "smiles"]].reset_index(drop=True)
+
+    return final_ligs, id_mapping
+
+
+# ---------------------------------------------------------------------------
+# 3. Build ligand index and Morgan representation
+# ---------------------------------------------------------------------------
+
+def build_ligand_index(
+    final_ligs: pd.DataFrame,
+    root: str | Path,
+    compute_inchikey: bool = True,
+    inchikey_n_jobs: Optional[int] = 4,
+    inchikey_chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Path:
+    """
+    Build the ligand index table (ligands.parquet) with a dense integer index.
+
+    The resulting table contains:
+      - chem_comp_id   : final unified ligand ID (PDB or ChEMBL)
+      - smiles    : canonical SMILES used downstream
+      - inchikey  : structure-based key (may be null)
+      - lig_idx   : dense integer index [0..N-1] used to index arrays on disk
+
+    Parameters
+    ----------
+    final_ligs : pd.DataFrame
+        Unified ligand table with at least ['chem_comp_id', 'smiles'].
+    root : str or Path
+        Directory where ligands.parquet will be written.
+
+    Returns
+    -------
+    Path
+        Path to the written ligands.parquet file.
+    """
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    df = final_ligs.copy()
+
+    def _resolve_inchikey_workers(requested_jobs: Optional[int]) -> int:
+        cpu_avail = os.cpu_count() or 1
+        max_minus_one = max(1, cpu_avail - 1)
+
+        # default requested behavior: use 4 workers when possible
+        if requested_jobs is None:
+            requested_jobs = 4
+
+        requested_jobs = int(requested_jobs)
+        if requested_jobs <= 0:
+            return max_minus_one
+
+        if requested_jobs > cpu_avail:
+            return max_minus_one
+
+        return max(1, requested_jobs)
+
+    if not compute_inchikey:
+        df["inchikey"] = None
+    elif "inchikey" not in df.columns:
+        smiles_values = df["smiles"].tolist()
+        n_jobs = _resolve_inchikey_workers(inchikey_n_jobs)
+        progress_desc = f"[{root.name}] InChIKey from SMILES"
+
+        total_smiles = len(smiles_values)
+        callback_interval = max(1, total_smiles // 200)
+        if n_jobs == 1:
+            iterator = (
+                smiles_to_inchikey(smi)
+                for smi in smiles_values
+            )
+        else:
+            ctx = mp.get_context("fork")
+            with ctx.Pool(processes=n_jobs) as pool:
+                iterator = pool.imap(smiles_to_inchikey, smiles_values, chunksize=inchikey_chunksize)
+                inchikeys = []
+                for idx, value in enumerate(
+                    tqdm(
+                        iterator,
+                        total=total_smiles,
+                        desc=progress_desc,
+                        unit="lig",
+                        dynamic_ncols=True,
+                        bar_format=_TQDM_BAR_FORMAT,
+                    ),
+                    start=1,
+                ):
+                    inchikeys.append(value)
+                    if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                        progress_callback(idx, total_smiles)
+                iterator = None
+
+        if n_jobs == 1:
+            inchikeys = []
+            for idx, value in enumerate(
+                tqdm(
+                    iterator,
+                    total=total_smiles,
+                    desc=progress_desc,
+                    unit="lig",
+                    dynamic_ncols=True,
+                    bar_format=_TQDM_BAR_FORMAT,
+                ),
+                start=1,
+            ):
+                inchikeys.append(value)
+                if progress_callback and (idx == total_smiles or idx % callback_interval == 0):
+                    progress_callback(idx, total_smiles)
+
+        df["inchikey"] = inchikeys
+
+    df = df.reset_index(drop=True)
+    df["lig_idx"] = np.arange(len(df), dtype=np.int64)
+
+    out_path = root / "ligands.parquet"
+    df.to_parquet(out_path, index=False)
+    return out_path
+
+
+def backup_and_clear_representations(
+    root: str | Path,
+    backup_dirname: str = "old_reps_backup",
+) -> Optional[Path]:
+    """
+    Move the current representation files out of root/reps.
+
+    Any change to ligands.parquet can invalidate every representation because
+    rows are addressed by dense lig_idx. Backing up old files avoids accidentally
+    mixing a fresh ligand index with stale memmaps.
+    """
+    root = Path(root)
+    reps_dir = root / "reps"
+
+    if not reps_dir.exists():
+        return None
+
+    existing_entries = sorted(reps_dir.iterdir())
+    if not existing_entries:
+        return None
+
+    backup_root = root / backup_dirname
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = backup_root / timestamp
+    suffix = 1
+    while backup_dir.exists():
+        suffix += 1
+        backup_dir = backup_root / "{}_{}".format(timestamp, suffix)
+
+    backup_dir.mkdir(parents=True, exist_ok=False)
+
+    for entry in existing_entries:
+        shutil.move(str(entry), str(backup_dir / entry.name))
+
+    print(
+        f"[INFO] Moved {len(existing_entries)} existing representation files "
+        f"from {reps_dir} to backup {backup_dir}"
+    )
+    return backup_dir
+
+
+
+
+def _build_packed_bit_representation(
+    root: str | Path,
+    *,
+    n_bits: int,
+    batch_size: int,
+    name: str,
+    n_jobs: Optional[int],
+    chunksize: int,
+    pool_initializer,
+    pool_initargs: tuple,
+    pool_worker_fn,
+    meta_extra: Dict[str, object],
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
+) -> None:
+    """Shared parallel builder for packed bit-vector representations."""
+    root = Path(root)
+    reps_dir = root / "reps"
+    reps_dir.mkdir(exist_ok=True, parents=True)
+
+    ligs_path = root / "ligands.parquet"
+    ligs = pd.read_parquet(ligs_path, columns=["smiles"])
+    n = len(ligs)
+
+    if n == 0:
+        raise ValueError("ligands.parquet is empty, nothing to process.")
+    cpu_avail = os.cpu_count() or 1
+    if n_jobs is None:
+        n_jobs = cpu_avail
+    else:
+        n_jobs = max(1, min(int(n_jobs), cpu_avail))
+
+    n_bytes = (n_bits + 7) // 8
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
+
+    mm = np.memmap(
+        data_path,
+        mode="w+",
+        dtype=np.uint8,
+        shape=(n, n_bytes),
+    )
+
+    ctx = mp.get_context("fork")
+    t0 = time.perf_counter()
+    failed_smiles = 0
+
+    total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
+    progress_desc = f"[{root.name}] Building '{name}'"
+
+    with ctx.Pool(
+        processes=n_jobs,
+        initializer=pool_initializer,
+        initargs=pool_initargs,
+    ) as pool:
+        for batch_index, start in enumerate(tqdm(
+            range(0, n, batch_size),
+            total=total_batches,
+            desc=progress_desc,
+            unit="batch",
+            dynamic_ncols=True,
+            bar_format=_TQDM_BAR_FORMAT,
+        ), start=1):
+            end = min(start + batch_size, n)
+            smiles_list = ligs.iloc[start:end]["smiles"].tolist()
+
+            packed_and_status = list(pool.imap(pool_worker_fn, smiles_list, chunksize=chunksize))
+            fps_packed = np.stack([x[0] for x in packed_and_status], axis=0)
+
+            failed_smiles += int(sum(0 if ok else 1 for _, ok in packed_and_status))
+            mm[start:end, :] = fps_packed
+            if progress_callback and (
+                batch_index == total_batches or batch_index % callback_batch_interval == 0
+            ):
+                progress_callback(end, n)
+
+    mm.flush()
+    del mm
+
+    elapsed_s = float(time.perf_counter() - t0)
+    ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
+
+    meta = {
+        "name": name,
+        "file": f"{name}.dat",
+        "search_metric": "tanimoto",
+        "dtype": "uint8",
+        "dim": int(n_bits),
+        "packed_bits": True,
+        "packed_dim": int(n_bytes),
+        "n_ligands": int(n),
+        "n_jobs": int(n_jobs),
+        "elapsed_seconds": elapsed_s,
+        "ligands_per_second": ligands_per_s,
+        "failed_smiles": int(failed_smiles),
+        "failed_smiles_fraction": float(failed_smiles / n),
+    }
+    meta.update(meta_extra)
+
+    with meta_path.open("w") as f:
+        json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
+
+
+def build_morgan_representation(
+    root: str | Path,
+    n_bits: int = 1024,
+    radius: int = 2,
+    batch_size: int = 10000,
+    name: str = "morgan_1024_r2",
+    n_jobs: Optional[int] = None,
+    chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
+) -> None:
+    """Compute parallel Morgan fingerprints and persist as packed bits."""
+    _build_packed_bit_representation(
+        root=root,
+        n_bits=n_bits,
+        batch_size=batch_size,
+        name=name,
+        n_jobs=n_jobs,
+        chunksize=chunksize,
+        pool_initializer=_init_morgan_worker,
+        pool_initargs=(n_bits, radius),
+        pool_worker_fn=_morgan_fp_packed_or_zero,
+        meta_extra={"radius": int(radius), "fingerprint_type": "morgan"},
+        progress_callback=progress_callback,
+        staging_token=staging_token,
+    )
+
+
+def build_rdkit_representation(
+    root: str | Path,
+    fp_kind: str = "ap",
+    n_bits: int = 1024,
+    radius: int = 2,
+    batch_size: int = 10000,
+    name: Optional[str] = None,
+    n_jobs: Optional[int] = None,
+    chunksize: int = 500,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
+) -> None:
+    """
+    Compute RDKit-based fingerprints in parallel and persist as packed bits.
+
+    fp_kind supported: ap, topological_torsion, rdkit, morgan_feature, maccs.
+    """
+    fp_kind = str(fp_kind).strip().lower()
+    if fp_kind not in {"ap", "topological_torsion", "rdkit", "morgan_feature", "maccs"}:
+        raise ValueError(
+            "fp_kind must be one of: 'ap', 'topological_torsion', 'rdkit', "
+            "'morgan_feature', 'maccs'."
+        )
+
+    if fp_kind == "maccs":
+        n_bits = 167
+
+    if name is None:
+        if fp_kind == "ap":
+            name = f"atom_pair_{n_bits}"
+        elif fp_kind == "topological_torsion":
+            name = f"topological_torsion_{n_bits}"
+        elif fp_kind == "rdkit":
+            name = f"rdkit_daylight_{n_bits}"
+        elif fp_kind == "morgan_feature":
+            name = f"morgan_feature_{n_bits}_r{radius}"
+        else:
+            name = "maccs_167"
+
+    _build_packed_bit_representation(
+        root=root,
+        n_bits=n_bits,
+        batch_size=batch_size,
+        name=name,
+        n_jobs=n_jobs,
+        chunksize=chunksize,
+        pool_initializer=_init_rdkit_fp_worker,
+        pool_initargs=(fp_kind, n_bits, radius),
+        pool_worker_fn=_rdkit_fp_packed_or_zero,
+        meta_extra={"fingerprint_type": fp_kind, "radius": int(radius)},
+        progress_callback=progress_callback,
+        staging_token=staging_token,
+    )
+
+
+def build_huggingface_representation(
+    root: str | Path,
+    n_bits: Optional[int] = 768,
+    batch_size: int = 14,
+    name: str = "chemberta_zinc_base_768",
+    tokenizer=None,
+    model=None,
+    device: Optional[torch.device] = None,
+    model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
+    max_length: Optional[int] = None,
+    pooling: str = "mean_attention_mask",
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    staging_token: Optional[str] = None,
+) -> None:
+    root = Path(root)
+    reps_dir = root / "reps"
+    reps_dir.mkdir(exist_ok=True, parents=True)
+
+    ligs_path = root / "ligands.parquet"
+    ligs = pd.read_parquet(ligs_path, columns=["smiles"])
+    n = len(ligs)
+    if n == 0:
+        raise ValueError("ligands.parquet is empty, nothing to process.")
+
+    # -----------------------------
+    # Load / reuse HuggingFace model
+    # -----------------------------
+    if device is None:
+        device = resolve_torch_device("auto")
+
+    pretrained_kwargs = {
+        "trust_remote_code": trust_remote_code,
+    }
+    if revision is not None:
+        pretrained_kwargs["revision"] = revision
+
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(model_id, **pretrained_kwargs)
+    if model is None:
+        model = AutoModel.from_pretrained(model_id, **pretrained_kwargs).to(device)
+        model.eval()
+    else:
+        # ensure eval + device
+        model.eval()
+        model = model.to(device)
+
+    hidden_size = int(getattr(model.config, "hidden_size", 0))
+    if hidden_size <= 0:
+        raise ValueError("Could not infer hidden_size from model.config.")
+    if n_bits is not None and int(n_bits) != hidden_size:
+        raise ValueError(
+            f"n_bits={n_bits} does not match model hidden_size={hidden_size}. "
+            f"Use n_bits={hidden_size} or switch model."
+        )
+
+    dim = hidden_size
+    final_data_path, final_meta_path, data_path, meta_path, publishing_marker = (
+        _representation_output_paths(reps_dir, name, staging_token)
+    )
+
+    mm = np.memmap(
+        data_path,
+        mode="w+",
+        dtype=np.float16,
+        shape=(n, dim),
+    )
+
+    smiles_all = ligs["smiles"].tolist()
+    t0 = time.perf_counter()
+    invalid_smiles = 0
+    embed_failures = 0
+
+    # -----------------------------
+    # Embedding helper (mean pooling)
+    # -----------------------------
+    def _embed_batch(smiles_list: list[str]) -> np.ndarray:
+        enc = tokenizer(
+            smiles_list,
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=max_length,
+        )
+        enc = {k: v.to(device) for k, v in enc.items()}
+
+        amp_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.float16)
+            if device.type == "cuda"
+            else nullcontext()
+        )
+
+        with torch.inference_mode(), amp_ctx:
+            out = model(**enc)
+            last = out.last_hidden_state  # (B, T, H)
+            attn = enc.get("attention_mask", None)
+
+            if pooling == "cls":
+                pooled = last[:, 0, :]
+            elif attn is None:
+                pooled = last.mean(dim=1)
+            elif pooling == "mean_attention_mask":
+                attn_f = attn.unsqueeze(-1).to(last.dtype)
+                summed = (last * attn_f).sum(dim=1)
+                denom = attn_f.sum(dim=1).clamp(min=1.0)
+                pooled = summed / denom
+            else:
+                raise ValueError(
+                    "Unsupported pooling strategy. Use 'mean_attention_mask' or 'cls'."
+                )
+
+        return pooled.detach().to(torch.float16).cpu().numpy()
+
+    # -----------------------------
+    # Process ligands batch by batch
+    # -----------------------------
+    total_batches = (n + batch_size - 1) // batch_size
+    callback_batch_interval = max(1, total_batches // 500)
+    progress_desc = f"[{root.name}] Building '{name}'"
+    for batch_index, start in enumerate(tqdm(
+        range(0, n, batch_size),
+        total=total_batches,
+        desc=progress_desc,
+        unit="batch",
+        dynamic_ncols=True,
+        bar_format=_TQDM_BAR_FORMAT,
+    ), start=1):
+        end = min(start + batch_size, n)
+        batch_smiles = smiles_all[start:end]
+        batch_n = end - start
+
+        emb_out = np.zeros((batch_n, dim), dtype=np.float16)
+        valid_idx = []
+        valid_smiles = []
+
+        for idx, smi in enumerate(batch_smiles):
+            if pd.isna(smi):
+                invalid_smiles += 1
+                continue
+            smi_str = str(smi).strip()
+            if not smi_str:
+                invalid_smiles += 1
+                continue
+            valid_idx.append(idx)
+            valid_smiles.append(smi_str)
+
+        if not valid_smiles:
+            mm[start:end, :] = emb_out
+            continue
+
+        try:
+            emb = _embed_batch(valid_smiles)
+            if emb.shape != (len(valid_smiles), dim):
+                raise RuntimeError(f"Unexpected embedding shape {emb.shape} vs {(len(valid_smiles), dim)}")
+            emb_out[np.asarray(valid_idx)] = emb.astype(np.float16, copy=False)
+        except Exception:
+            # fallback per-smiles (slow but robust)
+            for idx, smi in zip(valid_idx, valid_smiles):
+                try:
+                    emb_out[idx] = _embed_batch([smi])[0].astype(np.float16, copy=False)
+                except Exception:
+                    embed_failures += 1
+
+        mm[start:end, :] = emb_out
+        if progress_callback and (
+            batch_index == total_batches or batch_index % callback_batch_interval == 0
+        ):
+            progress_callback(end, n)
+
+    mm.flush()
+    del mm
+    elapsed_s = float(time.perf_counter() - t0)
+    ligands_per_s = float(n / elapsed_s) if elapsed_s > 0 else 0.0
+
+    meta: Dict = {
+        "name": name,
+        "file": f"{name}.dat",
+        "search_metric": "cosine",
+        "dtype": "float16",
+        "dim": int(dim),
+        "packed_bits": False,
+        "packed_dim": None,
+        "n_ligands": int(n),
+        "model_id": model_id,
+        "pooling": pooling,
+        "max_length": max_length,
+        "trust_remote_code": bool(trust_remote_code),
+        "revision": revision,
+        "elapsed_seconds": elapsed_s,
+        "ligands_per_second": ligands_per_s,
+        "invalid_smiles": int(invalid_smiles),
+        "invalid_smiles_fraction": float(invalid_smiles / n),
+        "embed_failures": int(embed_failures),
+    }
+    with meta_path.open("w") as f:
+        json.dump(meta, f, indent=2)
+    _publish_representation_pair(
+        final_data=final_data_path,
+        final_meta=final_meta_path,
+        staged_data=data_path,
+        staged_meta=meta_path,
+        publishing_marker=publishing_marker,
+    )
+
+
+def build_chemberta_representation(
+    root: str | Path,
+    n_bits: Optional[int] = 768,
+    batch_size: int = 14,
+    name: str = "chemberta_zinc_base_768",
+    tokenizer=None,
+    model=None,
+    device: Optional[torch.device] = None,
+    model_id: str = "seyonec/ChemBERTa-zinc-base-v1",
+    max_length: Optional[int] = None,
+    trust_remote_code: bool = False,
+    revision: Optional[str] = None,
+) -> None:
+    """Backward-compatible wrapper for the old API name."""
+    build_huggingface_representation(
+        root=root,
+        n_bits=n_bits,
+        batch_size=batch_size,
+        name=name,
+        tokenizer=tokenizer,
+        model=model,
+        device=device,
+        model_id=model_id,
+        max_length=max_length,
+        trust_remote_code=trust_remote_code,
+        revision=revision,
+    )
+
+# ---------------------------------------------------------------------------
+# 4. Access representations by chem_comp_id: LigandStore & Representation
+# ---------------------------------------------------------------------------
+
+class Representation:
+    """
+    Numerical representation of ligands stored as a memmap on disk.
+
+    Two access patterns:
+    1) get_by_ids(): user/ML-friendly (may unpack bits to 0/1)
+    2) raw access (new): backend-friendly (returns memmap rows as stored on disk)
+       - packed_bits=True  -> returns uint8 packed bytes, shape (N, packed_dim)
+       - packed_bits=False -> returns float16/float32/etc, shape (N, dim)
+    """
+
+    def __init__(
+        self,
+        name: str,
+        memmap: np.memmap,
+        meta: Dict,
+        id_to_idx: Dict[str, int],
+    ):
+        self.name = name
+        self.memmap = memmap
+        self.meta = meta
+        self.id_to_idx = id_to_idx
+
+    # -----------------------------
+    # Contract / metadata helpers
+    # -----------------------------
+    @property
+    def dim(self) -> int:
+        """Logical dimensionality (e.g. n_bits for Morgan, embedding dim for ChemBERTa)."""
+        return int(self.meta["dim"])
+
+    @property
+    def packed_bits(self) -> bool:
+        """Whether this representation is stored as packed bits on disk."""
+        return bool(self.meta.get("packed_bits", False))
+
+    @property
+    def packed_dim(self) -> Optional[int]:
+        """
+        Physical dimensionality on disk for packed representations (bytes per vector).
+        None for non-packed representations.
+        """
+        pdim = self.meta.get("packed_dim", None)
+        return None if pdim is None else int(pdim)
+
+    @property
+    def dtype(self) -> np.dtype:
+        """Numpy dtype of the underlying memmap."""
+        return np.dtype(self.meta["dtype"])
+
+    @property
+    def n_ligands(self) -> int:
+        """Number of ligands (rows) in the memmap."""
+        return int(self.meta["n_ligands"])
+
+    @property
+    def raw_dim(self) -> int:
+        """
+        Physical last-dimension size in the memmap:
+        - packed: packed_dim
+        - non-packed: dim
+        """
+        return int(self.packed_dim) if self.packed_bits else int(self.dim)
+
+    # -----------------------------
+    # ID <-> index mapping
+    # -----------------------------
+    def indices_from_ids(self, comp_ids: List[str]) -> np.ndarray:
+        """
+        Convert a list of chem_comp_id strings into an array of integer indices (lig_idx).
+        Raises KeyError if any chem_comp_id is not found.
+        """
+        idxs = []
+        for cid in comp_ids:
+            try:
+                idxs.append(self.id_to_idx[cid])
+            except KeyError:
+                raise KeyError(f"chem_comp_id '{cid}' not found in ligand index.")
+        return np.array(idxs, dtype=np.int64)
+
+    def _indices_from_ids(self, comp_ids: List[str]) -> np.ndarray:
+        # Backward compatibility: keep internal name used by existing code
+        return self.indices_from_ids(comp_ids)
+
+    # -----------------------------
+    # RAW access (new)
+    # -----------------------------
+    def get_raw_by_indices(self, idxs: np.ndarray) -> np.ndarray:
+        """
+        Return rows exactly as stored on disk (no unpacking, no dtype conversion).
+        Shape:
+          - packed: (N, packed_dim) uint8
+          - non-packed: (N, dim) float16/float32/...
+        """
+        idxs = np.asarray(idxs, dtype=np.int64)
+        if idxs.size == 0:
+            return np.zeros((0, self.raw_dim), dtype=self.dtype)
+        return self.memmap[idxs]
+
+    def get_raw_by_ids(self, comp_ids: List[str]) -> np.ndarray:
+        """Same as get_raw_by_indices, but maps chem_comp_id -> lig_idx first."""
+        if len(comp_ids) == 0:
+            return np.zeros((0, self.raw_dim), dtype=self.dtype)
+        idxs = self.indices_from_ids(comp_ids)
+        return self.get_raw_by_indices(idxs)
+
+    def iter_raw_chunks(
+        self,
+        chunk_size: int,
+        start: int = 0,
+        end: Optional[int] = None,
+    ):
+        """
+        Iterate over the memmap in contiguous chunks, yielding:
+            (start_idx, end_idx, raw_block)
+
+        raw_block is a memmap slice with shape:
+          - packed: (B, packed_dim)
+          - non-packed: (B, dim)
+        """
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be > 0")
+        n = self.n_ligands
+        s = max(0, int(start))
+        e = n if end is None else min(n, int(end))
+        if s >= e:
+            return
+        for i in range(s, e, chunk_size):
+            j = min(i + chunk_size, e)
+            yield i, j, self.memmap[i:j]
+
+    # -----------------------------
+    # Existing high-level access (unchanged behavior)
+    # -----------------------------
+    def get_by_ids(
+        self,
+        comp_ids: List[str],
+        as_float: bool = False,
+    ) -> np.ndarray:
+        """
+        Retrieve the representation vectors for a list of comp_ids.
+
+        For bit-packed representations (e.g. Morgan), this:
+          - reads the packed rows from the memmap
+          - unpacks them to 0/1 arrays of shape (n_ids, dim)
+
+        Parameters
+        ----------
+        comp_ids : list of str
+            Ligand IDs (final comp_id) to fetch.
+        as_float : bool
+            If True, convert the result to float32 (useful for ML models).
+            If False, keep the native dtype (e.g. uint8 0/1 for bits).
+
+        Returns
+        -------
+        np.ndarray
+            Array of shape (len(comp_ids), dim).
+        """
+        if len(comp_ids) == 0:
+            return np.zeros((0, self.dim), dtype=np.float32 if as_float else np.uint8)
+
+        idxs = self._indices_from_ids(comp_ids)
+        raw = self.memmap[idxs]  # (n_ids, dim_packed) or (n_ids, dim)
+
+        if self.packed_bits:
+            arr = unpack_bits(raw, self.dim)  # (n_ids, dim)
+        else:
+            arr = np.asarray(raw)
+
+        if as_float:
+            return arr.astype(np.float32)
+        return arr
+
+
+class LigandStore:
+    """
+    Simple manager for ligands and their numerical representations.
+
+    Expected directory structure under `root`:
+
+      root/
+        ligands.parquet
+        reps/
+          <name>.dat
+          <name>.meta.json
+
+    The ligands.parquet file must contain:
+      - 'chem_comp_id'
+      - 'lig_idx'
+    """
+
+    def __init__(self, root: str | Path):
+        root = Path(root)
+        self.root = root
+
+        ligs_path = root / "ligands.parquet"
+        if not ligs_path.exists():
+            raise FileNotFoundError(f"ligands.parquet not found at {ligs_path}")
+
+        self.ligands = pd.read_parquet(ligs_path)
+
+        if "chem_comp_id" not in self.ligands.columns or "lig_idx" not in self.ligands.columns:
+            raise ValueError("ligands.parquet must contain 'chem_comp_id' and 'lig_idx' columns.")
+
+        # Map comp_id -> lig_idx for fast lookup
+        self.id_to_idx: Dict[str, int] = dict(
+            zip(self.ligands["chem_comp_id"], self.ligands["lig_idx"])
+        )
+
+    def load_representation(self, name: str) -> Representation:
+        """
+        Load a representation stored under root / 'reps'.
+
+        The corresponding meta file (<name>.meta.json) defines:
+          - dtype
+          - dim
+          - packed_bits
+          - packed_dim (if packed_bits=True)
+          - n_ligands
+
+        Parameters
+        ----------
+        name : str
+            Representation name (e.g. 'morgan_1024_r2').
+
+        Returns
+        -------
+        Representation
+            A Representation object bound to this LigandStore.
+        """
+        reps_dir = self.root / "reps"
+        meta_path = reps_dir / f"{name}.meta.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"Metadata for representation '{name}' not found at {meta_path}"
+            )
+
+        with meta_path.open() as f:
+            meta = json.load(f)
+
+        data_path = reps_dir / meta["file"]
+        dtype = np.dtype(meta["dtype"])
+
+        if meta.get("packed_bits", False):
+            shape = (meta["n_ligands"], meta["packed_dim"])
+        else:
+            shape = (meta["n_ligands"], meta["dim"])
+
+        mm = np.memmap(
+            data_path,
+            mode="r",
+            dtype=dtype,
+            shape=shape,
+        )
+
+        return Representation(
+            name=name,
+            memmap=mm,
+            meta=meta,
+            id_to_idx=self.id_to_idx,
+        )

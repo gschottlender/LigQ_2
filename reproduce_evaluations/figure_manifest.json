@@ -1,0 +1,156 @@
+{
+  "documents_sha256": {
+    "Paper LigQ 2.docx": "46a6a2999059d9db57dd56c7b398a342885d882f1e3d8c8680172d502a47cad9",
+    "Material suplementario nuevo LigQ2.docx": "6d81990cfb4b975e0c7b1e04352df6c6256c8215acb5916916ecfca6c0a80d04"
+  },
+  "figures": [
+    {
+      "id": "Figure_2",
+      "title": "Four molecular representations",
+      "evaluation": "representations",
+      "summary": "representation_summary/category_balanced_cumulative_spread.csv",
+      "filename": "Figure_2_molecular_representations",
+      "original_stem": "category_balanced_ef_iqr_overlay",
+      "document": "Paper LigQ 2.docx",
+      "image_relationship": "rId34",
+      "embedded_image_sha256": "cce2abb63804008e1118845cc088e55ff08b3370a79daa452afed827b5a62166"
+    },
+    {
+      "id": "Figure_3",
+      "title": "Fixed, full-domain and combined adaptive evidence transfer",
+      "evaluation": "neighbors",
+      "summary": "identity_ligand_rescue_comparison/strategy_category_balanced_summary.csv",
+      "filename": "Figure_3_neighbor_domain_adaptive",
+      "original_stem": "fixed_k_domain_and_identity_ligand_rescue_cumulative_EF_publication",
+      "document": "Paper LigQ 2.docx",
+      "image_relationship": "rId35",
+      "embedded_image_sha256": "6d831b05c106f34e3e2a450595bf220abda3ad0d3daa18c1e69dd2ac4da37b2e"
+    },
+    {
+      "id": "S1",
+      "title": "Retrieved and non-retrieved compound distributions",
+      "evaluation": "distributions",
+      "summary": "distributions/figures/histograms_category_balanced.csv",
+      "filename": "S1_retrieved_compound_distributions",
+      "original_stem": "retrieved_hits_distributions",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId14",
+      "embedded_image_sha256": "f4aed9e33fa614cc9ee13c3e158c0c5e28c24fbe5d7bd1f892f694e88a5bd298"
+    },
+    {
+      "id": "S2",
+      "title": "Seven molecular representations",
+      "evaluation": "representations",
+      "summary": "representation_summary/category_balanced_cumulative_spread.csv",
+      "filename": "S2_seven_molecular_representations",
+      "original_stem": "category_balanced_ef_iqr_overlay",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId17",
+      "embedded_image_sha256": "fbe0bd34792eeadc22d4eea9d77641cec88139e1e38750a9d0a6590f01561cbd"
+    },
+    {
+      "id": "S3",
+      "title": "Active-set preprocessing sensitivity",
+      "evaluation": "preprocessing",
+      "summary": "preprocessing/sensitivity_summary.csv",
+      "filename": "S3_active_preprocessing_sensitivity",
+      "original_stem": "active_preprocessing_sensitivity_EF0.5",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId18",
+      "embedded_image_sha256": "3b3d883dad863e4fe303dc3053dea150286885792a5855e6be8e4aaa7cbf11a0"
+    },
+    {
+      "id": "S4",
+      "title": "Expanded percentile union",
+      "evaluation": "expanded_union",
+      "summary": "expanded_union/union_recovery_vs_purity_plot_data.csv",
+      "filename": "S4_expanded_union_precision_recall",
+      "original_stem": "union_recovery_vs_purity",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId19",
+      "embedded_image_sha256": "d8e8c24a4afdf6c55b9702f5b6de7c949a06484fca39bd3923b42bc33934b3b7"
+    },
+    {
+      "id": "S5",
+      "title": "Fixed-budget mean-rank fusion",
+      "evaluation": "fixed_budget",
+      "summary": "representations/fixed_budget_complementarity/method_combination_summary.csv",
+      "filename": "S5_mean_rank_fusion_precision_recall",
+      "original_stem": "fixed_budget_recovery_vs_purity_mean",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId20",
+      "embedded_image_sha256": "f4f1f60bad08d57be793f8cab0aba769e8047329592e18bb8c45998128308ee7"
+    },
+    {
+      "id": "S6",
+      "title": "Sequence, nearest-K and full-domain comparison",
+      "evaluation": "transfer_strategies",
+      "summary": "ecfp4_transfer_strategy_comparison/ecfp4_transfer_strategy_category_balanced_spread.csv",
+      "filename": "S6_sequence_nearest_domain",
+      "original_stem": "ecfp4_transfer_strategy_comparison",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId22",
+      "embedded_image_sha256": "3d8f895d6f35c1987a9937e5b1361d1ef28421ded2f7940eae0478ce1fe06a9a"
+    },
+    {
+      "id": "S7",
+      "title": "Fixed-K sweep and full-domain comparison",
+      "evaluation": "full_domain",
+      "summary": "full_domain_benchmark/neighbor_vs_full_domain_category_balanced_spread.csv",
+      "filename": "S7_neighbor_sweep_full_domain",
+      "original_stem": "nearest_neighbor_vs_full_domain_cumulative_EF_publication",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId23",
+      "embedded_image_sha256": "59f0d0a06cf2de205b15344fb5e7ba5fdab8e320092322fe6bc15fe2684c1112"
+    },
+    {
+      "id": "S8",
+      "title": "Three adaptive strategies versus K=5",
+      "evaluation": "adaptive",
+      "summary": "three_adaptive_vs_k5/strategy_category_balanced_summary.csv",
+      "filename": "S8_adaptive_neighbor_strategies",
+      "original_stem": "three_adaptive_vs_k5_cumulative_EF",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId24",
+      "embedded_image_sha256": "3e05b05d7d5923d64bfd690a196a2bb7d83c079d390462a1ee41e1d0d4ff015c"
+    },
+    {
+      "id": "A1",
+      "title": "Molecular representations by family",
+      "evaluation": "family_appendices",
+      "summary": "representation_summary/category_medians_across_partitions.csv",
+      "filename": "A1_representations_by_family_panel",
+      "original_stem": "A1_representations_by_family_panel",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId26",
+      "embedded_image_sha256": "9b6f7ffbb1df16b6aa06100b29c687a1f5837bdee7728a5448e520898f0211ad"
+    },
+    {
+      "id": "A2",
+      "title": "Neighbors and full domain by family",
+      "evaluation": "family_appendices",
+      "summary": "full_domain_benchmark/neighbor_vs_full_domain_category_medians.csv",
+      "filename": "A2_neighbors_and_full_domain_by_family_panel",
+      "original_stem": "A2_neighbors_and_full_domain_by_family_panel",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId27",
+      "embedded_image_sha256": "642eacf6e89bd1aee7cf02fbea1a15e8d526f6b950cace1ed3c65291a6bd6b01"
+    },
+    {
+      "id": "A3",
+      "title": "Chemical similarity by family",
+      "evaluation": "family_appendices",
+      "summary": "distributions/figures/histograms_by_family.csv",
+      "filename": "A3_similarity_p99_tp_fp_tn_by_family_panel",
+      "original_stem": "A3_similarity_p99_tp_fp_tn_by_family_panel",
+      "document": "Material suplementario nuevo LigQ2.docx",
+      "image_relationship": "rId28",
+      "embedded_image_sha256": "3cc8ffd52cc4368cba1760cdc6651a36db87228e1f0fe89526fa5b036806cfd3"
+    }
+  ],
+  "excluded": [
+    "Figure 1 workflow",
+    "Figure S9 and computational performance",
+    "Text/table-only BSI, ChEMBL37 and domain validation"
+  ]
+}
