@@ -620,7 +620,7 @@ export function VisualizeResults() {
         {isWeb && (
           <footer className="mt-auto border-t border-gray-200/80 px-4 py-4 text-center dark:border-gray-700/60 sm:px-6">
             <p className="text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              For the complete LigQ 2 feature set without public-service limits, use the{' '}
+              For the complete LigQ2 feature set without public-service limits, use the{' '}
               <a
                 href="https://github.com/gschottlender/LigQ_2"
                 target="_blank"

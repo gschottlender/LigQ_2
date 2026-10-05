@@ -192,7 +192,7 @@ export function HelpPage() {
             <SectionHeader id="getting-started" icon={<BookOpen className="w-4 h-4" />} title="Getting Started" />
             <div className="flex flex-col gap-4">
               <p className="text-sm font-dm-sans text-gray-700 dark:text-gray-300 leading-relaxed">
-                LigQ 2 helps you prioritize candidate ligands for a set of proteins of interest. You upload a
+                LigQ2 helps you prioritize candidate ligands for a set of proteins of interest. You upload a
                 FASTA file, and the system finds structurally similar proteins in PDB/ChEMBL, collects their known
                 ligands, and retrieves compounds from external databases with high molecular similarity.
               </p>
@@ -221,7 +221,7 @@ export function HelpPage() {
                   First-time initialization
                 </div>
                 <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
-                  If the default reference data is missing, LigQ 2 displays an initialization screen before the
+                  If the default reference data is missing, LigQ2 displays an initialization screen before the
                   search interface. It calculates separate download sizes for the mandatory databases, the
                   default-selected Morgan ECFP cache (scores from 0.4 upward), and the optional Morgan Feature
                   FCFP representations/cache (scores from 0.5 upward). The selected total is compared with
@@ -468,7 +468,7 @@ export function HelpPage() {
               <p className="text-sm font-dm-sans text-gray-600 dark:text-gray-400 leading-relaxed">
                 {isWeb
                   ? 'The public service keeps completed searches only in this anonymous browser session. Results can be reloaded for up to two hours after completion.'
-                  : 'LigQ 2 stores every search run on disk. You can reload any previous run without re-running the pipeline.'}
+                  : 'LigQ2 stores every search run on disk. You can reload any previous run without re-running the pipeline.'}
               </p>
               <div className="flex flex-col gap-2">
                 <Step n={1}>
@@ -531,7 +531,7 @@ export function HelpPage() {
                   progress; the default Morgan representation is built automatically.
                 </Step>
                 <Step n={5}>
-                  To stop a long job, click <strong>Cancel</strong> and confirm. LigQ 2 terminates the workers,
+                  To stop a long job, click <strong>Cancel</strong> and confirm. LigQ2 terminates the workers,
                   removes the incomplete staging database, and keeps the form ready for another attempt.
                 </Step>
                 <Step n={6}>
@@ -640,7 +640,7 @@ export function HelpPage() {
           <div className="flex items-center gap-3 py-6 border-t border-gray-100 dark:border-gray-700/60">
             <FolderOpen className="w-4 h-4 text-gray-300 dark:text-gray-600" />
             <p className="text-xs font-dm-sans text-gray-400 dark:text-gray-600">
-              LigQ 2 — Ligand Prioritization from Protein Sequences
+              LigQ2 — Ligand Prioritization from Protein Sequences
             </p>
           </div>
 

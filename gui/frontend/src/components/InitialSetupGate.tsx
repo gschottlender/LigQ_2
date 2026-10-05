@@ -273,7 +273,7 @@ function LocalInitialSetupGate({ children }: { children: ReactNode }) {
                 First-time initialization
               </p>
               <h1 className="mt-1 text-xl font-semibold text-gray-800 dark:text-gray-100 sm:text-2xl">
-                {checking ? 'Checking local data' : isRunning ? 'Preparing LigQ 2' : 'Initial setup required'}
+                {checking ? 'Checking local data' : isRunning ? 'Preparing LigQ2' : 'Initial setup required'}
               </h1>
               <p className="mt-2 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
                 Install the required search databases and choose which precomputed caches to download.

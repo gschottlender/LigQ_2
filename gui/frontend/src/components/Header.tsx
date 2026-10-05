@@ -21,7 +21,7 @@ export function Header(){
         <header className="h-20 px-3 sm:px-6 py-4 border-b border-gray-300 flex items-center justify-between gap-2 dark:text-white dark:bg-[#1a2330]">
             <div className="flex items-center gap-2">
                 <img src="/favicon.svg" className="w-9 h-9 sm:w-10 sm:h-10"/>
-                <p className="hidden md:block text-2xl font-semibold font-dm-sans"> LigQ 2 </p>
+                <p className="hidden md:block text-2xl font-semibold font-dm-sans"> LigQ2 </p>
             </div>
 
             <nav className="bg-gray-200 dark:bg-gray-700 p-1 rounded-[10px] flex items-center gap-0 sm:gap-2">

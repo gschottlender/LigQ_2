@@ -31,7 +31,7 @@ export function SystemPolicyProvider({ children }: { children: ReactNode }) {
       const { data } = await api.get<SystemPolicy>('/system/policy');
       setPolicy(data);
     } catch {
-      setError('LigQ 2 could not load the server deployment policy.');
+      setError('LigQ2 could not load the server deployment policy.');
     } finally {
       setLoading(false);
     }
@@ -53,7 +53,7 @@ export function SystemPolicyProvider({ children }: { children: ReactNode }) {
             <AlertTriangle className="mx-auto h-8 w-8 text-amber-600 dark:text-amber-400" />
           )}
           <h1 className="mt-4 text-xl font-semibold text-gray-800 dark:text-gray-100">
-            {loading ? 'Connecting to LigQ 2' : 'Configuration unavailable'}
+            {loading ? 'Connecting to LigQ2' : 'Configuration unavailable'}
           </h1>
           <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
             {error ?? 'Loading the server configuration…'}
